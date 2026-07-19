@@ -733,11 +733,13 @@ void test_track_selection_clears_incomplete_media() {
     stale_stream.insert(stale_stream.end(), boundary.begin(), boundary.end());
     demuxer.push(stale_stream.data(), stale_stream.size());
 
-    demuxer.push(discovery.data(), discovery.size());
+    const auto next_mpu_signalling = signalling_tlv(
+        10, 0, video_discovery_message(2));
+    demuxer.push(next_mpu_signalling.data(), next_mpu_signalling.size());
     auto add_video = [&](const std::uint32_t sequence, const bool rap,
                          const std::vector<std::uint8_t>& mfu) {
         const auto packet = tlv_for_mmtp(
-            1, mmtp_packet(0xf300, sequence, 100U << 16U, rap, mpu_payload(1, mfu)));
+            1, mmtp_packet(0xf300, sequence, 100U << 16U, rap, mpu_payload(2, mfu)));
         demuxer.push(packet.data(), packet.size());
     };
     add_video(10, true, {0, 0, 0, 2, 0x46, 0x01});
@@ -854,6 +856,58 @@ void test_reposition_preserves_timeline_and_absolute_offsets() {
           "first access unit after reposition was not marked discontinuous");
     check(sink.tracks.size() == original_track_callbacks,
           "reposition re-emitted unchanged track metadata");
+}
+
+void test_track_selection_preserves_timeline_and_waits_for_rap() {
+    auto initial = discovery_stream();
+    append_video_access_unit(initial, 1);
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(initial.data(), initial.size());
+    demuxer.flush();
+    const auto initial_video = std::find_if(
+        sink.access_units.begin(), sink.access_units.end(), [](const auto& unit) {
+            return unit.codec == tlvdemux::Codec::Hevc;
+        });
+    check(initial_video != sink.access_units.end() && initial_video->pts.value == 0,
+          "initial video did not establish the track-switch timeline");
+    const auto initial_video_index =
+        static_cast<std::size_t>(initial_video - sink.access_units.begin());
+    const auto video_track = initial_video->track_id;
+
+    demuxer.selectTrack(tlvdemux::TrackKind::Video, video_track);
+
+    auto shifted_pa = discovery_message();
+    const std::vector<std::uint8_t> timestamp_pattern{0x00, 0x01, 0x0c, 0, 0, 0, 1};
+    const auto video_timestamp = std::search(shifted_pa.begin(), shifted_pa.end(),
+                                             timestamp_pattern.begin(), timestamp_pattern.end());
+    check(video_timestamp != shifted_pa.end(), "track-switch fixture has no video timestamp");
+    const auto ntp_index = static_cast<std::size_t>(video_timestamp - shifted_pa.begin()) + 7;
+    shifted_pa[ntp_index + 0] = 0;
+    shifted_pa[ntp_index + 1] = 0;
+    shifted_pa[ntp_index + 2] = 0;
+    shifted_pa[ntp_index + 3] = 101;
+    shifted_pa[ntp_index + 4] = 0;
+    shifted_pa[ntp_index + 5] = 0;
+    shifted_pa[ntp_index + 6] = 0;
+    shifted_pa[ntp_index + 7] = 0;
+
+    auto shifted = signalling_tlv(100, 0, shifted_pa);
+    append_video_access_unit(shifted, 1000);
+    demuxer.push(shifted.data(), shifted.size());
+    demuxer.flush();
+
+    const auto selected_video = std::find_if(
+        sink.access_units.begin() + static_cast<std::ptrdiff_t>(initial_video_index + 1),
+        sink.access_units.end(), [](const auto& unit) {
+            return unit.codec == tlvdemux::Codec::Hevc;
+        });
+    check(selected_video != sink.access_units.end() &&
+              selected_video->track_id == video_track &&
+              selected_video->pts.value == 180000 &&
+              selected_video->random_access && selected_video->discontinuity,
+          "video track selection reset the timeline or did not resume at a discontinuous RAP");
 }
 
 void test_hevc_irap_detection_without_mmtp_rap() {
@@ -977,6 +1031,7 @@ int main() {
     test_track_selection_clears_incomplete_media();
     test_fragmented_signalling_restart_offset();
     test_reposition_preserves_timeline_and_absolute_offsets();
+    test_track_selection_preserves_timeline_and_waits_for_rap();
     test_hevc_irap_detection_without_mmtp_rap();
     test_access_unit_restart_offset_is_snapshotted();
     test_restart_offset_includes_timestamp_mapping_origin();

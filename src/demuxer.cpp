@@ -36,6 +36,11 @@ public:
             return;
         }
         tlv_.push(data, size);
+        if (size > std::numeric_limits<std::uint64_t>::max() - input_end_offset_) {
+            input_end_offset_ = std::numeric_limits<std::uint64_t>::max();
+        } else {
+            input_end_offset_ += size;
+        }
     }
 
     void flush() {
@@ -52,12 +57,28 @@ public:
         origin_.reset();
         reposition_epoch_ = 0;
         emitted_reposition_epochs_.clear();
+        input_end_offset_ = 0;
+        for (std::size_t index = 0; index < selected_tracks_.size(); ++index) {
+            selection_boundaries_[index] = 0;
+            selection_pending_[index] = selected_tracks_[index].has_value();
+            selection_wait_for_rap_[index] =
+                index == static_cast<std::size_t>(TrackKind::Video) &&
+                selected_tracks_[index].has_value();
+        }
     }
 
     void reposition(const RepositionOptions options) {
         tlv_.reset(options.input_offset);
         ip_.reset();
         if (!options.preserve_timeline) origin_.reset();
+        input_end_offset_ = options.input_offset;
+        for (std::size_t index = 0; index < selected_tracks_.size(); ++index) {
+            selection_boundaries_[index] = options.input_offset;
+            selection_pending_[index] = selected_tracks_[index].has_value();
+            selection_wait_for_rap_[index] =
+                index == static_cast<std::size_t>(TrackKind::Video) &&
+                selected_tracks_[index].has_value();
+        }
         ++reposition_epoch_;
         if (reposition_epoch_ == 0) ++reposition_epoch_;
     }
@@ -71,10 +92,13 @@ public:
     }
 
     void select_track(const TrackKind kind, std::optional<std::uint64_t> track_id) {
-        selected_tracks_[static_cast<std::size_t>(kind)] = track_id;
-        ip_.reset();
-        current_tracks_.clear();
-        origin_.reset();
+        const auto index = static_cast<std::size_t>(kind);
+        if (selected_tracks_[index] == track_id) return;
+        selected_tracks_[index] = track_id;
+        selection_boundaries_[index] = input_end_offset_;
+        selection_pending_[index] = track_id.has_value();
+        selection_wait_for_rap_[index] =
+            kind == TrackKind::Video && track_id.has_value();
     }
 
 private:
@@ -217,6 +241,13 @@ private:
             *selected_tracks_[kind_index] != unit.track_id) {
             return;
         }
+        if (selection_pending_[kind_index]) {
+            if (unit.input_offset < selection_boundaries_[kind_index]) return;
+            if (selection_wait_for_rap_[kind_index] && !unit.random_access) return;
+            unit.discontinuity = true;
+            selection_pending_[kind_index] = false;
+            selection_wait_for_rap_[kind_index] = false;
+        }
         if (unit.pts.timescale == 0 || unit.dts.timescale != unit.pts.timescale) {
             error(ErrorCode::MalformedInput, unit.input_offset, true,
                   "access unit has an invalid or inconsistent timescale");
@@ -272,6 +303,10 @@ private:
     detail::TlvParser tlv_;
     std::optional<std::uint32_t> selected_service_;
     std::array<std::optional<std::uint64_t>, 3> selected_tracks_{};
+    std::array<std::uint64_t, 3> selection_boundaries_{};
+    std::array<bool, 3> selection_pending_{};
+    std::array<bool, 3> selection_wait_for_rap_{};
+    std::uint64_t input_end_offset_ = 0;
     std::unordered_map<std::uint32_t, std::vector<std::uint8_t>> services_;
     std::unordered_map<std::string, std::uint64_t> track_ids_;
     std::unordered_map<std::uint64_t, TrackInfo> current_tracks_;

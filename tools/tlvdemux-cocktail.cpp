@@ -64,6 +64,7 @@ public:
             (!requested_video_packet_id_.has_value() ||
              track.packet_id == *requested_video_packet_id_)) {
             video_track_ = track.track_id;
+            video_packet_id_ = track.packet_id;
             index_.selectVideoTrack(video_track_);
         }
     }
@@ -154,6 +155,7 @@ public:
     const tlvdemux::RecordingIndex& index() const noexcept { return index_; }
     const std::vector<FrameStamp>& frames() const noexcept { return frames_; }
     std::optional<std::uint64_t> videoTrack() const noexcept { return video_track_; }
+    std::optional<std::uint16_t> videoPacketId() const noexcept { return video_packet_id_; }
     std::uint64_t accessUnitCount() const noexcept { return access_unit_count_; }
     std::uint64_t randomAccessVideoUnits() const noexcept {
         return random_access_video_units_;
@@ -196,6 +198,7 @@ private:
     tlvdemux::RecordingIndex index_;
     std::unordered_map<std::uint64_t, tlvdemux::TrackInfo> tracks_;
     std::optional<std::uint64_t> video_track_;
+    std::optional<std::uint16_t> video_packet_id_;
     std::vector<FrameStamp> frames_;
     std::unordered_map<unsigned, std::uint64_t> error_counts_;
     std::array<std::uint64_t, 64> video_nal_type_counts_{};
@@ -222,11 +225,13 @@ struct Options {
     std::uint64_t seed = 0x746c7664656d7578ULL;
     std::uint64_t max_seek_bytes = 256ULL * 1024ULL * 1024ULL;
     std::optional<std::uint16_t> video_packet_id;
+    std::optional<std::uint16_t> switch_video_packet_id;
 };
 
 void usage() {
     std::cerr << "usage: tlvdemux-cocktail [--cases N] [--seed N]"
-                 " [--max-seek-bytes N] [--video-packet-id ID] INPUT\n";
+                 " [--max-seek-bytes N] [--video-packet-id ID]"
+                 " [--switch-video-packet-id ID] INPUT\n";
 }
 
 Options parse_options(const int argc, char** argv) {
@@ -249,6 +254,13 @@ Options parse_options(const int argc, char** argv) {
                 throw std::runtime_error("--video-packet-id exceeds 16 bits");
             }
             options.video_packet_id = static_cast<std::uint16_t>(parsed);
+        } else if (argument == "--switch-video-packet-id") {
+            const auto parsed = std::stoull(
+                value("--switch-video-packet-id"), nullptr, 0);
+            if (parsed > std::numeric_limits<std::uint16_t>::max()) {
+                throw std::runtime_error("--switch-video-packet-id exceeds 16 bits");
+            }
+            options.switch_video_packet_id = static_cast<std::uint16_t>(parsed);
         } else if (argument == "-h" || argument == "--help") {
             usage();
             std::exit(0);
@@ -376,6 +388,153 @@ bool run_seek_case(std::ifstream& file, tlvdemux::Demuxer& demuxer,
     return passed;
 }
 
+class TrackSwitchSink final : public tlvdemux::Sink {
+public:
+    TrackSwitchSink(const std::uint16_t primary_packet_id,
+                    const std::uint16_t secondary_packet_id)
+        : primary_packet_id_(primary_packet_id),
+          secondary_packet_id_(secondary_packet_id) {}
+
+    void onService(const tlvdemux::ServiceInfo&) override {}
+
+    void onTrack(const tlvdemux::TrackInfo& track) override {
+        if (track.kind != tlvdemux::TrackKind::Video) return;
+        if (track.packet_id == primary_packet_id_) primary_track_id_ = track.track_id;
+        if (track.packet_id == secondary_packet_id_) secondary_track_id_ = track.track_id;
+    }
+
+    void onAccessUnit(tlvdemux::AccessUnit&& unit) override {
+        if (!expected_track_id_.has_value() || unit.codec != tlvdemux::Codec::Hevc) return;
+        if (unit.track_id != *expected_track_id_) {
+            wrong_track_seen_ = true;
+            return;
+        }
+        const auto pts = timestamp_us(unit.pts);
+        if (!pts.has_value()) return;
+        if (!first_seen_) {
+            first_seen_ = true;
+            first_pts_us_ = *pts;
+            first_random_access_ = unit.random_access;
+            first_discontinuity_ = unit.discontinuity;
+        }
+        latest_pts_us_ = *pts;
+        ++video_units_;
+    }
+
+    void onError(const tlvdemux::Error&) override {}
+
+    void begin(const std::uint64_t track_id) {
+        expected_track_id_ = track_id;
+        wrong_track_seen_ = false;
+        first_seen_ = false;
+        first_random_access_ = false;
+        first_discontinuity_ = false;
+        first_pts_us_ = 0;
+        latest_pts_us_ = 0;
+        video_units_ = 0;
+    }
+
+    bool readyToSwitch() const noexcept {
+        return first_seen_ && video_units_ >= 16 &&
+            latest_pts_us_ - first_pts_us_ >= 1000000;
+    }
+
+    bool validFirstOutput() const noexcept {
+        return first_seen_ && first_random_access_ && first_discontinuity_ &&
+            !wrong_track_seen_;
+    }
+
+    std::optional<std::uint64_t> primaryTrackId() const noexcept {
+        return primary_track_id_;
+    }
+    std::optional<std::uint64_t> secondaryTrackId() const noexcept {
+        return secondary_track_id_;
+    }
+    bool firstSeen() const noexcept { return first_seen_; }
+    bool wrongTrackSeen() const noexcept { return wrong_track_seen_; }
+    std::int64_t firstPtsUs() const noexcept { return first_pts_us_; }
+    std::int64_t latestPtsUs() const noexcept { return latest_pts_us_; }
+
+private:
+    std::uint16_t primary_packet_id_ = 0;
+    std::uint16_t secondary_packet_id_ = 0;
+    std::optional<std::uint64_t> primary_track_id_;
+    std::optional<std::uint64_t> secondary_track_id_;
+    std::optional<std::uint64_t> expected_track_id_;
+    bool wrong_track_seen_ = false;
+    bool first_seen_ = false;
+    bool first_random_access_ = false;
+    bool first_discontinuity_ = false;
+    std::int64_t first_pts_us_ = 0;
+    std::int64_t latest_pts_us_ = 0;
+    std::uint64_t video_units_ = 0;
+};
+
+bool run_track_switch_case(const std::string& path,
+                           const std::uint16_t primary_packet_id,
+                           const std::uint16_t secondary_packet_id) {
+    if (primary_packet_id == secondary_packet_id) {
+        throw std::runtime_error("track-switch packet IDs are identical");
+    }
+    std::ifstream file(path, std::ios::binary);
+    if (!file) throw std::runtime_error("cannot reopen input for track switching");
+
+    TrackSwitchSink sink(primary_packet_id, secondary_packet_id);
+    tlvdemux::Demuxer demuxer(sink);
+    constexpr std::size_t switch_read_size = 64 * 1024;
+    std::array<std::uint8_t, switch_read_size> buffer{};
+    enum class Stage { Discovering, Primary, Secondary, Returned };
+    auto stage = Stage::Discovering;
+    std::int64_t primary_first_us = 0;
+    std::int64_t primary_last_us = 0;
+    std::int64_t secondary_first_us = 0;
+    std::int64_t secondary_last_us = 0;
+
+    while (file) {
+        file.read(reinterpret_cast<char*>(buffer.data()),
+                  static_cast<std::streamsize>(buffer.size()));
+        const auto count = file.gcount();
+        if (count <= 0) break;
+        demuxer.push(buffer.data(), static_cast<std::size_t>(count));
+
+        if (sink.wrongTrackSeen()) break;
+        if (stage == Stage::Discovering && sink.primaryTrackId().has_value() &&
+            sink.secondaryTrackId().has_value()) {
+            demuxer.selectTrack(tlvdemux::TrackKind::Video, sink.primaryTrackId());
+            sink.begin(*sink.primaryTrackId());
+            stage = Stage::Primary;
+        } else if (stage == Stage::Primary && sink.readyToSwitch()) {
+            if (!sink.validFirstOutput()) break;
+            primary_first_us = sink.firstPtsUs();
+            primary_last_us = sink.latestPtsUs();
+            demuxer.selectTrack(tlvdemux::TrackKind::Video, sink.secondaryTrackId());
+            sink.begin(*sink.secondaryTrackId());
+            stage = Stage::Secondary;
+        } else if (stage == Stage::Secondary && sink.readyToSwitch()) {
+            if (!sink.validFirstOutput()) break;
+            secondary_first_us = sink.firstPtsUs();
+            secondary_last_us = sink.latestPtsUs();
+            demuxer.selectTrack(tlvdemux::TrackKind::Video, sink.primaryTrackId());
+            sink.begin(*sink.primaryTrackId());
+            stage = Stage::Returned;
+        } else if (stage == Stage::Returned && sink.firstSeen()) {
+            break;
+        }
+    }
+
+    const bool passed = stage == Stage::Returned && sink.validFirstOutput() &&
+        primary_first_us >= 0 && secondary_first_us > 0 && sink.firstPtsUs() > 0 &&
+        secondary_first_us + 1000000 >= primary_last_us &&
+        sink.firstPtsUs() + 1000000 >= secondary_last_us;
+    std::cerr << "track-switch primary-pid=0x" << std::hex << primary_packet_id
+              << " secondary-pid=0x" << secondary_packet_id << std::dec
+              << " primary-first=" << seconds(primary_first_us)
+              << " secondary-first=" << seconds(secondary_first_us)
+              << " return-first=" << seconds(sink.firstPtsUs())
+              << " result=" << (passed ? "PASS" : "FAIL") << '\n';
+    return passed;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -481,6 +640,15 @@ int main(int argc, char** argv) {
             }
             if (!run_seek_case(file, demuxer, sink, state, *point, *expected, target,
                                size, options.max_seek_bytes, index)) {
+                ++failures;
+            }
+        }
+        if (options.switch_video_packet_id.has_value()) {
+            if (!sink.videoPacketId().has_value()) {
+                throw std::runtime_error("primary video packet ID was not discovered");
+            }
+            if (!run_track_switch_case(options.path, *sink.videoPacketId(),
+                                       *options.switch_video_packet_id)) {
                 ++failures;
             }
         }
