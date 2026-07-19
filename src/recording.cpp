@@ -115,10 +115,9 @@ bool RecordingIndex::observe(const AccessUnit& unit) {
         maximum_pts_us_ = pts_us;
     }
 
-    if (minimum_pts_us_.has_value() && maximum_pts_us_.has_value()) {
-        const auto span = *maximum_pts_us_ - *minimum_pts_us_;
-        const auto candidate = span;
-        if (candidate >= 0 && (!duration_us_.has_value() || candidate > *duration_us_)) {
+    if (maximum_pts_us_.has_value()) {
+        const auto candidate = std::max<std::int64_t>(0, *maximum_pts_us_);
+        if (!duration_us_.has_value() || candidate > *duration_us_) {
             duration_us_ = candidate;
         }
     }
@@ -315,10 +314,13 @@ DurationInfo RecordingIndex::duration() const noexcept {
 }
 
 void RecordingIndex::update_duration_status() {
-    if (state_ == IndexState::Complete && minimum_pts_us_.has_value() &&
-        maximum_pts_us_.has_value()) {
-        const auto final_candidate =
-            *maximum_pts_us_ - *minimum_pts_us_ + inferred_frame_duration_us_;
+    if (state_ == IndexState::Complete && maximum_pts_us_.has_value()) {
+        auto final_candidate = std::max<std::int64_t>(0, *maximum_pts_us_);
+        if (inferred_frame_duration_us_ > 0 &&
+            final_candidate <= std::numeric_limits<std::int64_t>::max() -
+                inferred_frame_duration_us_) {
+            final_candidate += inferred_frame_duration_us_;
+        }
         if (final_candidate >= 0 &&
             (!duration_us_.has_value() || final_candidate > *duration_us_)) {
             duration_us_ = final_candidate;

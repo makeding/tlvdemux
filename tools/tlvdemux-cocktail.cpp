@@ -53,11 +53,16 @@ class CocktailSink final : public tlvdemux::Sink {
 public:
     enum class Phase { Indexing, Seeking };
 
+    explicit CocktailSink(const std::optional<std::uint16_t> video_packet_id)
+        : requested_video_packet_id_(video_packet_id) {}
+
     void onService(const tlvdemux::ServiceInfo&) override {}
 
     void onTrack(const tlvdemux::TrackInfo& track) override {
         tracks_[track.track_id] = track;
-        if (!video_track_.has_value() && track.kind == tlvdemux::TrackKind::Video) {
+        if (!video_track_.has_value() && track.kind == tlvdemux::TrackKind::Video &&
+            (!requested_video_packet_id_.has_value() ||
+             track.packet_id == *requested_video_packet_id_)) {
             video_track_ = track.track_id;
             index_.selectVideoTrack(video_track_);
         }
@@ -131,13 +136,17 @@ public:
                       frames_.end());
     }
 
-    std::optional<FrameStamp> frameAtOrAfter(const std::int64_t target_us) const {
+    std::optional<FrameStamp> frameAtOrAfter(const std::int64_t target_us,
+                                             const std::int64_t duration_us) const {
         const auto found = std::lower_bound(
             frames_.begin(), frames_.end(), target_us,
             [](const FrameStamp& frame, const std::int64_t value) {
                 return frame.pts_us < value;
             });
-        if (found == frames_.end()) return std::nullopt;
+        if (found == frames_.end()) {
+            if (!frames_.empty() && target_us < duration_us) return frames_.back();
+            return std::nullopt;
+        }
         return *found;
     }
 
@@ -183,6 +192,7 @@ private:
     }
 
     Phase phase_ = Phase::Indexing;
+    std::optional<std::uint16_t> requested_video_packet_id_;
     tlvdemux::RecordingIndex index_;
     std::unordered_map<std::uint64_t, tlvdemux::TrackInfo> tracks_;
     std::optional<std::uint64_t> video_track_;
@@ -211,11 +221,12 @@ struct Options {
     std::size_t cases = 12;
     std::uint64_t seed = 0x746c7664656d7578ULL;
     std::uint64_t max_seek_bytes = 256ULL * 1024ULL * 1024ULL;
+    std::optional<std::uint16_t> video_packet_id;
 };
 
 void usage() {
     std::cerr << "usage: tlvdemux-cocktail [--cases N] [--seed N]"
-                 " [--max-seek-bytes N] INPUT\n";
+                 " [--max-seek-bytes N] [--video-packet-id ID] INPUT\n";
 }
 
 Options parse_options(const int argc, char** argv) {
@@ -232,6 +243,12 @@ Options parse_options(const int argc, char** argv) {
             options.seed = std::stoull(value("--seed"), nullptr, 0);
         } else if (argument == "--max-seek-bytes") {
             options.max_seek_bytes = std::stoull(value("--max-seek-bytes"), nullptr, 0);
+        } else if (argument == "--video-packet-id") {
+            const auto parsed = std::stoull(value("--video-packet-id"), nullptr, 0);
+            if (parsed > std::numeric_limits<std::uint16_t>::max()) {
+                throw std::runtime_error("--video-packet-id exceeds 16 bits");
+            }
+            options.video_packet_id = static_cast<std::uint16_t>(parsed);
         } else if (argument == "-h" || argument == "--help") {
             usage();
             std::exit(0);
@@ -368,7 +385,7 @@ int main(int argc, char** argv) {
         if (!file) throw std::runtime_error("cannot open input: " + options.path);
         const auto size = file_size(file);
 
-        CocktailSink sink;
+        CocktailSink sink(options.video_packet_id);
         sink.index().begin(false);
         tlvdemux::Demuxer demuxer(sink);
         std::array<std::uint8_t, read_size> buffer{};
@@ -455,7 +472,7 @@ int main(int argc, char** argv) {
             const auto target = requested[index];
             const auto point = sink.index().previousSync(
                 tlvdemux::Timestamp{target, 1000000});
-            const auto expected = sink.frameAtOrAfter(target);
+            const auto expected = sink.frameAtOrAfter(target, duration.value.value);
             if (!point.has_value() || !expected.has_value()) {
                 std::cerr << "case=" << index << " target=" << seconds(target)
                           << " result=FAIL reason=no-baseline-point\n";

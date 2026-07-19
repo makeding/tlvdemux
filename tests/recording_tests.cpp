@@ -168,12 +168,27 @@ void test_recording_index() {
           "complete duration was allowed to decrease");
 }
 
+void test_duration_uses_recording_timeline_endpoint() {
+    tlvdemux::RecordingIndex index;
+    index.begin(false);
+    check(index.observe(video_unit(500000, 100, 20, true)) &&
+              index.observe(video_unit(1500000, 1100, 20, false)) &&
+              index.observe(video_unit(2500000, 2100, 60, true)),
+          "non-zero-origin video AUs were rejected");
+    check(index.duration().status == tlvdemux::DurationStatus::Provisional &&
+              index.duration().value.value == 2500000,
+          "provisional duration subtracted the first video PTS from the timeline endpoint");
+    check(index.finalize() && index.duration().value.value == 3500000,
+          "complete duration did not include the final frame interval on the recording timeline");
+}
+
 } // namespace
 
 int main() {
     test_seek_policy_selection();
     test_playback_state_machine();
     test_recording_index();
+    test_duration_uses_recording_timeline_endpoint();
     std::cout << "all recording tests passed\n";
     return 0;
 }
