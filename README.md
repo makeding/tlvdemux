@@ -43,7 +43,3 @@ The library assumes any required B61 descrambling has already happened before
 the bytes reach `Demuxer::push()`. In the validation setup, Mirakurun
 `decode=0` preserves the MMT/TLV stream while the tuner/frontend path supplies
 already-usable media payloads.
-
-See [docs/VALIDATION.md](docs/VALIDATION.md) for the real BS4K differential
-results and the required local FFmpeg build option.
-
