@@ -1,0 +1,1026 @@
+#include "mmtp_parser.hpp"
+
+#include <algorithm>
+#include <limits>
+#include <string>
+#include <utility>
+
+#include "byte_reader.hpp"
+
+namespace tlvdemux::detail {
+
+MmtpParser::MmtpParser(const std::uint32_t context_id, const Limits& limits,
+                       PackageCallback on_package, TrackCallback on_track,
+                       AccessUnitCallback on_access_unit, ErrorCallback on_error)
+    : context_id_(context_id), limits_(limits), on_package_(std::move(on_package)),
+      on_track_(std::move(on_track)), on_access_unit_(std::move(on_access_unit)),
+      on_error_(std::move(on_error)) {}
+
+void MmtpParser::reset() {
+    signalling_.clear();
+    tracks_.clear();
+    latest_full_ntp_.reset();
+}
+
+void MmtpParser::flush() {
+    for (auto& entry : signalling_) {
+        auto& assembler = entry.second;
+        if (assembler.state == FragmentState::Collecting && !assembler.data.empty()) {
+            on_error_(ErrorCode::MalformedInput, 0, true,
+                      "dropped incomplete MMTP signalling fragment at end of input");
+        }
+    }
+    for (auto& entry : tracks_) {
+        auto& track = entry.second;
+        if (track.media.state == FragmentState::Collecting && !track.media.data.empty()) {
+            on_error_(ErrorCode::MalformedInput, track.media.input_offset, true,
+                      "dropped incomplete MMTP media fragment at end of input");
+        }
+        finalize_hevc(track);
+        if (track.subtitle.active) {
+            track.discontinuity = true;
+            on_error_(ErrorCode::MalformedInput, track.subtitle.input_offset, true,
+                      "dropped incomplete TTML subsample group at end of input");
+        }
+        track.media = {};
+        track.subtitle = {};
+        track.current_mpu_sequence.reset();
+        track.au_index = 0;
+        track.discontinuity = true;
+        if (track.info.kind == TrackKind::Video) track.wait_for_rap = true;
+    }
+    signalling_.clear();
+}
+
+void MmtpParser::push(const std::uint8_t* data, const std::size_t size,
+                      const std::uint64_t input_offset) {
+    if (size < 12) {
+        on_error_(ErrorCode::MalformedInput, input_offset, true,
+                  "MMTP packet is shorter than its fixed header");
+        return;
+    }
+
+    const auto first = data[0];
+    const auto version = static_cast<std::uint8_t>(first >> 6U);
+    if (version != 0) {
+        on_error_(ErrorCode::UnsupportedFeature, input_offset, true,
+                  "unsupported MMTP version");
+        return;
+    }
+    const bool packet_counter_flag = ((first >> 5U) & 1U) != 0;
+    const bool extension_header_flag = ((first >> 1U) & 1U) != 0;
+    const bool random_access = (first & 1U) != 0;
+    const auto payload_type = static_cast<std::uint8_t>(data[1] & 0x3fU);
+    const auto packet_id = read_be16(data + 2);
+    const auto delivery_timestamp = read_be32(data + 4);
+    const auto sequence = read_be32(data + 8);
+
+    std::size_t cursor = 12;
+    if (packet_counter_flag) {
+        if (size - cursor < 4) {
+            on_error_(ErrorCode::MalformedInput, input_offset, true,
+                      "truncated MMTP packet counter");
+            return;
+        }
+        cursor += 4;
+    }
+    if (extension_header_flag) {
+        if (size - cursor < 4) {
+            on_error_(ErrorCode::MalformedInput, input_offset, true,
+                      "truncated MMTP extension header");
+            return;
+        }
+        const auto extension_size = static_cast<std::size_t>(read_be16(data + cursor + 2));
+        cursor += 4;
+        if (extension_size > size - cursor) {
+            on_error_(ErrorCode::MalformedInput, input_offset, true,
+                      "MMTP extension length exceeds packet bounds");
+            return;
+        }
+        cursor += extension_size;
+    }
+
+    const auto* payload = data + cursor;
+    const auto payload_size = size - cursor;
+    if (payload_type == 0x02) {
+        parse_signalling(packet_id, sequence, payload, payload_size, input_offset);
+    } else if (payload_type == 0x00) {
+        parse_mpu(packet_id, sequence, delivery_timestamp, random_access,
+                  payload, payload_size, input_offset);
+    } else {
+        on_error_(ErrorCode::UnsupportedFeature, input_offset, true,
+                  "unsupported MMTP payload type in context " + std::to_string(context_id_));
+    }
+}
+
+bool MmtpParser::append(SignallingAssembler& assembler, const std::uint8_t* data,
+                        const std::size_t size, const std::uint64_t input_offset) {
+    if (size > limits_.max_signalling_message - assembler.data.size()) {
+        assembler.data.clear();
+        assembler.state = FragmentState::Skipping;
+        on_error_(ErrorCode::ResourceLimit, input_offset, true,
+                  "MMTP signalling message exceeds configured limit");
+        return false;
+    }
+    assembler.data.insert(assembler.data.end(), data, data + size);
+    return true;
+}
+
+void MmtpParser::accept_signalling_unit(const std::uint8_t* data, const std::size_t size,
+                                        const std::uint64_t input_offset) {
+    if (size < 2) {
+        on_error_(ErrorCode::MalformedInput, input_offset, true,
+                  "signalling message is too short for a message ID");
+        return;
+    }
+    const auto message_id = read_be16(data);
+    bool valid = true;
+    if (message_id == 0x0000) {
+        valid = parse_pa_message(data, size, input_offset);
+    } else if (message_id == 0x8000) {
+        valid = parse_m2_message(data, size, input_offset);
+    }
+    if (!valid) {
+        on_error_(ErrorCode::MalformedInput, input_offset, true,
+                  "malformed MMTP signalling message or nested table");
+    }
+}
+
+namespace {
+
+bool skip_general_location(ByteReader& reader, std::optional<std::uint16_t>& packet_id) {
+    std::uint8_t type = 0;
+    if (!reader.read_u8(type)) return false;
+    switch (type) {
+    case 0x00: {
+        std::uint16_t value = 0;
+        if (!reader.read_u16(value)) return false;
+        if (!packet_id.has_value()) packet_id = value;
+        return true;
+    }
+    case 0x01: return reader.skip(12);
+    case 0x02: return reader.skip(36);
+    case 0x03: return reader.skip(6);
+    case 0x04: return reader.skip(38);
+    case 0x05: {
+        std::uint8_t length = 0;
+        return reader.read_u8(length) && reader.skip(length);
+    }
+    default:
+        return false;
+    }
+}
+
+bool descriptor_length(ByteReader& reader, const std::uint16_t tag, std::uint32_t& length) {
+    if (tag <= 0x3fff || (tag >= 0x8000 && tag <= 0xefff)) {
+        std::uint8_t value = 0;
+        if (!reader.read_u8(value)) return false;
+        length = value;
+        return true;
+    }
+    if (tag <= 0x6fff || tag >= 0xf000) {
+        std::uint16_t value = 0;
+        if (!reader.read_u16(value)) return false;
+        length = value;
+        return true;
+    }
+    return reader.read_u32(length);
+}
+
+bool parse_descriptors(ByteReader& reader, AssetMetadata& metadata) {
+    while (reader.remaining() != 0) {
+        std::uint16_t tag = 0;
+        std::uint32_t length = 0;
+        if (!reader.read_u16(tag) || !descriptor_length(reader, tag, length) ||
+            length > reader.remaining()) {
+            return false;
+        }
+        const std::uint8_t* payload = nullptr;
+        if (!reader.read_view(length, payload)) return false;
+
+        if (tag == 0x0001) {
+            if (length % 12 != 0) return false;
+            ByteReader values(payload, length);
+            while (values.remaining() != 0) {
+                std::uint32_t sequence = 0;
+                const std::uint8_t* ntp = nullptr;
+                if (!values.read_u32(sequence) || !values.read_view(8, ntp)) return false;
+                metadata.timestamps[sequence] = TimestampMapping{read_be64(ntp)};
+            }
+        } else if (tag == 0x8011 && length >= 2) {
+            metadata.component_tag = payload[1];
+        } else if (tag == 0x8010 && length >= 8) {
+            if (metadata.component_tag == 0) metadata.component_tag = payload[3];
+            metadata.language.assign(reinterpret_cast<const char*>(payload + 5), 3);
+        } else if (tag == 0x8014 && length >= 10) {
+            const auto stream_content = static_cast<std::uint8_t>(payload[0] & 0x0fU);
+            const auto stream_type = payload[4];
+            if (metadata.component_tag == 0) metadata.component_tag = payload[3];
+            metadata.language.assign(reinterpret_cast<const char*>(payload + 7), 3);
+            metadata.aac_latm = stream_content == 0x03 && stream_type == 0x11;
+        } else if (tag == 0x8020 && length >= 8 && read_be16(payload) == 0x0020) {
+            const auto* additional = payload + 2;
+            const auto additional_size = length - 2;
+            if (additional_size < 6) return false;
+            metadata.language.assign(reinterpret_cast<const char*>(additional + 2), 3);
+            const auto subtitle_format = static_cast<std::uint8_t>((additional[5] >> 2U) & 0x0fU);
+            metadata.ttml = subtitle_format == 0;
+        } else if (tag == 0x8026 && length >= 1) {
+            ByteReader values(payload, length);
+            std::uint8_t flags = 0;
+            if (!values.read_u8(flags)) return false;
+            const auto pts_offset_type = static_cast<std::uint8_t>((flags >> 1U) & 0x03U);
+            const bool timescale_present = (flags & 1U) != 0;
+            if (timescale_present) {
+                std::uint32_t timescale = 0;
+                if (!values.read_u32(timescale) || timescale == 0) return false;
+                metadata.timescale = timescale;
+            }
+            std::uint16_t default_pts_offset = 0;
+            if (pts_offset_type == 1 && !values.read_u16(default_pts_offset)) return false;
+            if (pts_offset_type == 0) continue;
+            while (values.remaining() != 0) {
+                std::uint32_t sequence = 0;
+                std::uint8_t leap_and_reserved = 0;
+                std::uint16_t decoding_offset = 0;
+                std::uint8_t au_count = 0;
+                if (!values.read_u32(sequence) || !values.read_u8(leap_and_reserved) ||
+                    !values.read_u16(decoding_offset) || !values.read_u8(au_count)) {
+                    return false;
+                }
+                (void)leap_and_reserved;
+                ExtendedTimestampMapping timing;
+                timing.decoding_time_offset = decoding_offset;
+                timing.dts_pts_offsets.reserve(au_count);
+                timing.pts_offsets.reserve(au_count);
+                for (std::uint16_t index = 0; index < au_count; ++index) {
+                    std::uint16_t dts_pts = 0;
+                    std::uint16_t pts = default_pts_offset;
+                    if (!values.read_u16(dts_pts)) return false;
+                    if (pts_offset_type == 2 && !values.read_u16(pts)) return false;
+                    timing.dts_pts_offsets.push_back(dts_pts);
+                    timing.pts_offsets.push_back(pts);
+                }
+                metadata.extended_timestamps[sequence] = std::move(timing);
+            }
+        }
+    }
+    return true;
+}
+
+std::uint64_t expand_short_ntp(const std::uint32_t short_ntp,
+                               const std::uint64_t reference) {
+    const auto reference_seconds = static_cast<std::int64_t>(reference >> 32U);
+    const auto short_seconds = static_cast<std::int64_t>(short_ntp >> 16U);
+    auto seconds = (reference_seconds & ~0xffffLL) | short_seconds;
+    if (seconds - reference_seconds > 32768) seconds -= 65536;
+    if (reference_seconds - seconds > 32768) seconds += 65536;
+    const auto fraction = static_cast<std::uint64_t>(short_ntp & 0xffffU) << 16U;
+    return (static_cast<std::uint64_t>(seconds) << 32U) | fraction;
+}
+
+} // namespace
+
+bool MmtpParser::parse_pa_message(const std::uint8_t* data, const std::size_t size,
+                                  const std::uint64_t input_offset) {
+    if (size < 7 || read_be16(data) != 0x0000) return false;
+    const auto length = static_cast<std::size_t>(read_be32(data + 3));
+    if (length > size - 7) return false;
+    ByteReader body(data + 7, length);
+    std::uint8_t table_count = 0;
+    if (!body.read_u8(table_count) || !body.skip(static_cast<std::size_t>(table_count) * 4)) {
+        return false;
+    }
+    return parse_tables(body.current(), body.remaining(), input_offset);
+}
+
+bool MmtpParser::parse_m2_message(const std::uint8_t* data, const std::size_t size,
+                                  const std::uint64_t input_offset) {
+    if (size < 5 || read_be16(data) != 0x8000) return false;
+    const auto length = static_cast<std::size_t>(read_be16(data + 3));
+    if (length > size - 5) return false;
+    return parse_tables(data + 5, length, input_offset);
+}
+
+bool MmtpParser::parse_tables(const std::uint8_t* data, const std::size_t size,
+                              const std::uint64_t input_offset) {
+    ByteReader tables(data, size);
+    while (tables.remaining() != 0) {
+        std::uint8_t table_id = 0;
+        if (!tables.peek_u8(table_id)) return false;
+        if (table_id == 0x20 || table_id == 0x80) {
+            if (tables.remaining() < 4) return false;
+            const auto table_size = 4 + static_cast<std::size_t>(read_be16(tables.current() + 2));
+            const std::uint8_t* table = nullptr;
+            if (!tables.read_view(table_size, table)) return false;
+            const bool valid = table_id == 0x20
+                ? parse_mpt(table, table_size, input_offset)
+                : parse_package_list(table, table_size, input_offset);
+            if (!valid) return false;
+        } else if (table_id >= 0x81) {
+            if (tables.remaining() < 3) return false;
+            const auto section_size = 3 + static_cast<std::size_t>(read_be16(tables.current() + 1) & 0x0fffU);
+            if (!tables.skip(section_size)) return false;
+        } else {
+            // ARIB MMT tables in PA/M2 use a one-byte ID/version followed by a
+            // 16-bit payload length. This lets v1 skip unneeded tables without
+            // interpreting their contents.
+            if (tables.remaining() < 4) return false;
+            const auto table_size = 4 + static_cast<std::size_t>(read_be16(tables.current() + 2));
+            if (!tables.skip(table_size)) return false;
+        }
+    }
+    return true;
+}
+
+bool MmtpParser::parse_mpt(const std::uint8_t* data, const std::size_t size,
+                           const std::uint64_t input_offset) {
+    (void)input_offset;
+    if (size < 4 || data[0] != 0x20) return false;
+    const auto declared_size = static_cast<std::size_t>(read_be16(data + 2));
+    if (declared_size != size - 4) return false;
+    ByteReader body(data + 4, declared_size);
+
+    std::uint8_t mode = 0;
+    std::uint8_t package_length = 0;
+    std::vector<std::uint8_t> package_id;
+    std::uint16_t program_descriptors_length = 0;
+    std::uint8_t asset_count = 0;
+    if (!body.read_u8(mode) || !body.read_u8(package_length) ||
+        !body.read_bytes(package_length, package_id) ||
+        !body.read_u16(program_descriptors_length) ||
+        !body.skip(program_descriptors_length) || !body.read_u8(asset_count)) {
+        return false;
+    }
+    (void)mode;
+    on_package_(context_id_, std::move(package_id));
+
+    for (std::uint16_t asset_index = 0; asset_index < asset_count; ++asset_index) {
+        std::uint8_t identifier_type = 0;
+        std::uint8_t asset_id_length = 0;
+        std::vector<std::uint8_t> asset_id;
+        const std::uint8_t* asset_type_data = nullptr;
+        std::uint8_t clock_flags = 0;
+        std::uint8_t location_count = 0;
+        if (!body.read_u8(identifier_type) || !body.skip(4) ||
+            !body.read_u8(asset_id_length) || !body.read_bytes(asset_id_length, asset_id) ||
+            !body.read_view(4, asset_type_data) || !body.read_u8(clock_flags) ||
+            !body.read_u8(location_count)) {
+            return false;
+        }
+        (void)identifier_type;
+        (void)clock_flags;
+
+        std::optional<std::uint16_t> packet_id;
+        for (std::uint16_t location_index = 0; location_index < location_count; ++location_index) {
+            if (!skip_general_location(body, packet_id)) return false;
+        }
+
+        std::uint16_t descriptors_length = 0;
+        const std::uint8_t* descriptors = nullptr;
+        if (!body.read_u16(descriptors_length) ||
+            !body.read_view(descriptors_length, descriptors)) {
+            return false;
+        }
+        AssetMetadata metadata;
+        ByteReader descriptor_reader(descriptors, descriptors_length);
+        if (!parse_descriptors(descriptor_reader, metadata)) return false;
+        if (!packet_id.has_value()) continue;
+
+        const std::string asset_type(reinterpret_cast<const char*>(asset_type_data), 4);
+        TrackInfo track;
+        track.context_id = context_id_;
+        track.packet_id = *packet_id;
+        track.asset_id = std::move(asset_id);
+        track.language = metadata.language;
+        track.component_tag = metadata.component_tag;
+        track.timescale = metadata.timescale;
+
+        bool supported = true;
+        if (asset_type == "hev1") {
+            track.kind = TrackKind::Video;
+            track.codec = Codec::Hevc;
+        } else if (asset_type == "mp4a" && metadata.aac_latm) {
+            track.kind = TrackKind::Audio;
+            track.codec = Codec::AacLatm;
+        } else if (asset_type == "stpp" && metadata.ttml) {
+            track.kind = TrackKind::Subtitle;
+            track.codec = Codec::Ttml;
+            if (track.timescale == 1) track.timescale = 65536;
+        } else {
+            supported = false;
+        }
+        if (supported) install_track(std::move(track), std::move(metadata));
+    }
+    return body.remaining() == 0;
+}
+
+bool MmtpParser::parse_package_list(const std::uint8_t* data, const std::size_t size,
+                                    const std::uint64_t input_offset) {
+    (void)input_offset;
+    if (size < 4 || data[0] != 0x80) return false;
+    const auto declared_size = static_cast<std::size_t>(read_be16(data + 2));
+    if (declared_size != size - 4) return false;
+    ByteReader body(data + 4, declared_size);
+    std::uint8_t package_count = 0;
+    if (!body.read_u8(package_count)) return false;
+    for (std::uint16_t index = 0; index < package_count; ++index) {
+        std::uint8_t package_length = 0;
+        std::vector<std::uint8_t> package_id;
+        std::optional<std::uint16_t> ignored_packet_id;
+        if (!body.read_u8(package_length) || !body.read_bytes(package_length, package_id) ||
+            !skip_general_location(body, ignored_packet_id)) {
+            return false;
+        }
+        on_package_(context_id_, std::move(package_id));
+    }
+    std::uint8_t ip_delivery_count = 0;
+    if (!body.read_u8(ip_delivery_count)) return false;
+    if (ip_delivery_count != 0) {
+        on_error_(ErrorCode::UnsupportedFeature, input_offset, true,
+                  "package-list IP delivery alternatives are not supported");
+    }
+    return true;
+}
+
+void MmtpParser::parse_signalling(const std::uint16_t packet_id,
+                                  const std::uint32_t sequence,
+                                  const std::uint8_t* data, const std::size_t size,
+                                  const std::uint64_t input_offset) {
+    if (size < 2) {
+        on_error_(ErrorCode::MalformedInput, input_offset, true,
+                  "truncated MMTP signalling payload header");
+        return;
+    }
+    if (signalling_.size() >= limits_.max_packet_states &&
+        signalling_.find(packet_id) == signalling_.end()) {
+        on_error_(ErrorCode::ResourceLimit, input_offset, true,
+                  "MMTP packet-state limit exceeded");
+        return;
+    }
+
+    auto& assembler = signalling_[packet_id];
+    const auto flags = data[0];
+    const auto fragmentation = static_cast<std::uint8_t>(flags >> 6U);
+    const bool length_extension = ((flags >> 1U) & 1U) != 0;
+    const bool aggregation = (flags & 1U) != 0;
+    const auto* body = data + 2;
+    auto body_size = size - 2;
+
+    if (assembler.state != FragmentState::Initial && sequence != assembler.last_sequence + 1U) {
+        if (!assembler.data.empty()) {
+            on_error_(ErrorCode::Discontinuity, input_offset, true,
+                      "MMTP signalling sequence jump dropped an incomplete unit");
+        }
+        assembler.data.clear();
+        assembler.state = FragmentState::Skipping;
+    }
+    assembler.last_sequence = sequence;
+
+    if (aggregation) {
+        if (fragmentation != 0) {
+            on_error_(ErrorCode::MalformedInput, input_offset, true,
+                      "aggregated signalling payload is also fragmented");
+            return;
+        }
+        const std::size_t length_size = length_extension ? 4 : 2;
+        while (body_size != 0) {
+            if (body_size < length_size) {
+                on_error_(ErrorCode::MalformedInput, input_offset, true,
+                          "truncated aggregated signalling length");
+                return;
+            }
+            const auto unit_size = length_extension
+                ? static_cast<std::size_t>(read_be32(body))
+                : static_cast<std::size_t>(read_be16(body));
+            body += length_size;
+            body_size -= length_size;
+            if (unit_size > body_size || unit_size > limits_.max_signalling_message) {
+                on_error_(unit_size > limits_.max_signalling_message
+                              ? ErrorCode::ResourceLimit
+                              : ErrorCode::MalformedInput,
+                          input_offset, true,
+                          "aggregated signalling unit length exceeds bounds");
+                return;
+            }
+            accept_signalling_unit(body, unit_size, input_offset);
+            body += unit_size;
+            body_size -= unit_size;
+        }
+        assembler.state = FragmentState::Idle;
+        return;
+    }
+
+    switch (fragmentation) {
+    case 0:
+        if (assembler.state == FragmentState::Collecting) {
+            on_error_(ErrorCode::MalformedInput, input_offset, true,
+                      "complete signalling unit interrupted a fragmented unit");
+        }
+        assembler.data.clear();
+        assembler.state = FragmentState::Idle;
+        accept_signalling_unit(body, body_size, input_offset);
+        break;
+    case 1:
+        assembler.data.clear();
+        assembler.state = FragmentState::Collecting;
+        append(assembler, body, body_size, input_offset);
+        break;
+    case 2:
+        if (assembler.state == FragmentState::Skipping) {
+            return;
+        }
+        if (assembler.state != FragmentState::Collecting) {
+            on_error_(ErrorCode::MalformedInput, input_offset, true,
+                      "middle signalling fragment has no first fragment");
+            assembler.state = FragmentState::Skipping;
+            return;
+        }
+        append(assembler, body, body_size, input_offset);
+        break;
+    case 3:
+        if (assembler.state == FragmentState::Skipping) {
+            assembler.state = FragmentState::Idle;
+            assembler.data.clear();
+            return;
+        }
+        if (assembler.state != FragmentState::Collecting) {
+            on_error_(ErrorCode::MalformedInput, input_offset, true,
+                      "last signalling fragment has no first fragment");
+            return;
+        }
+        if (append(assembler, body, body_size, input_offset)) {
+            accept_signalling_unit(assembler.data.data(), assembler.data.size(), input_offset);
+        }
+        assembler.data.clear();
+        assembler.state = FragmentState::Idle;
+        break;
+    default:
+        break;
+    }
+}
+
+void MmtpParser::install_track(TrackInfo info, AssetMetadata metadata) {
+    auto& state = tracks_[info.packet_id];
+    const bool first_install = state.stable_track_id == 0;
+    const bool codec_changed = !first_install && state.info.codec != info.codec;
+    state.stable_track_id = on_track_(info);
+    info.track_id = state.stable_track_id;
+    state.info = std::move(info);
+    for (auto& entry : metadata.timestamps) {
+        state.timestamps[entry.first] = entry.second;
+        if (!latest_full_ntp_.has_value() || entry.second.ntp > *latest_full_ntp_) {
+            latest_full_ntp_ = entry.second.ntp;
+        }
+    }
+    for (auto& entry : metadata.extended_timestamps) {
+        state.extended_timestamps[entry.first] = std::move(entry.second);
+    }
+    constexpr std::size_t max_timestamp_entries = 32;
+    while (state.timestamps.size() > max_timestamp_entries) state.timestamps.erase(state.timestamps.begin());
+    while (state.extended_timestamps.size() > max_timestamp_entries) {
+        state.extended_timestamps.erase(state.extended_timestamps.begin());
+    }
+    if ((first_install || codec_changed) && state.info.kind == TrackKind::Video) {
+        state.wait_for_rap = true;
+        state.pending_hevc = {};
+        state.media = {};
+    }
+}
+
+bool MmtpParser::append_media(TrackState& track, const std::uint8_t* data,
+                              const std::size_t size, const std::uint64_t input_offset) {
+    if (track.media.data.size() > limits_.max_access_unit ||
+        size > limits_.max_access_unit - track.media.data.size()) {
+        track.media.data.clear();
+        track.media.state = FragmentState::Skipping;
+        track.discontinuity = true;
+        on_error_(ErrorCode::ResourceLimit, input_offset, true,
+                  "fragmented MFU exceeds configured access-unit limit");
+        return false;
+    }
+    track.media.data.insert(track.media.data.end(), data, data + size);
+    return true;
+}
+
+void MmtpParser::consume_mfu_piece(TrackState& track,
+                                   const std::uint32_t packet_sequence,
+                                   const std::uint32_t mpu_sequence,
+                                   const bool timed, const std::uint8_t fragmentation,
+                                   const bool aggregation, const bool random_access,
+                                   const std::uint8_t* data, const std::size_t size,
+                                   const std::uint64_t input_offset) {
+    const std::size_t header_size = timed ? 14 : 4;
+    if (size < header_size) {
+        track.discontinuity = true;
+        on_error_(ErrorCode::MalformedInput, input_offset, true,
+                  "truncated timed/non-timed MFU header");
+        return;
+    }
+    const auto sample_number = timed ? read_be32(data + 4) : read_be32(data);
+    const auto* payload = data + header_size;
+    const auto payload_size = size - header_size;
+    auto& assembler = track.media;
+
+    if (assembler.state != FragmentState::Initial &&
+        packet_sequence != assembler.last_packet_sequence + 1U &&
+        !(aggregation && fragmentation == 0 && packet_sequence == assembler.last_packet_sequence)) {
+        if (packet_sequence == assembler.last_packet_sequence) {
+            return; // duplicate MMTP packet
+        }
+        if (!assembler.data.empty()) {
+            on_error_(ErrorCode::Discontinuity, input_offset, true,
+                      "MMTP media sequence jump dropped an incomplete MFU");
+        }
+        assembler.data.clear();
+        assembler.state = FragmentState::Skipping;
+        track.discontinuity = true;
+    }
+    assembler.last_packet_sequence = packet_sequence;
+
+    switch (fragmentation) {
+    case 0:
+        if (assembler.state == FragmentState::Collecting) {
+            assembler.data.clear();
+            track.discontinuity = true;
+            on_error_(ErrorCode::Discontinuity, input_offset, true,
+                      "complete MFU interrupted a fragmented MFU");
+        }
+        assembler.state = FragmentState::Idle;
+        consume_complete_mfu(track, mpu_sequence, sample_number, random_access,
+                             payload, payload_size, input_offset);
+        break;
+    case 1:
+        assembler.data.clear();
+        assembler.state = FragmentState::Collecting;
+        assembler.mpu_sequence = mpu_sequence;
+        assembler.sample_number = sample_number;
+        assembler.input_offset = input_offset;
+        assembler.random_access = random_access;
+        append_media(track, payload, payload_size, input_offset);
+        break;
+    case 2:
+        if (assembler.state == FragmentState::Skipping) return;
+        if (assembler.state != FragmentState::Collecting ||
+            assembler.mpu_sequence != mpu_sequence || assembler.sample_number != sample_number) {
+            assembler.data.clear();
+            assembler.state = FragmentState::Skipping;
+            track.discontinuity = true;
+            on_error_(ErrorCode::MalformedInput, input_offset, true,
+                      "middle MFU fragment has no matching first fragment");
+            return;
+        }
+        assembler.random_access = assembler.random_access || random_access;
+        append_media(track, payload, payload_size, input_offset);
+        break;
+    case 3:
+        if (assembler.state == FragmentState::Skipping) {
+            assembler.state = FragmentState::Idle;
+            assembler.data.clear();
+            return;
+        }
+        if (assembler.state != FragmentState::Collecting ||
+            assembler.mpu_sequence != mpu_sequence || assembler.sample_number != sample_number) {
+            assembler.data.clear();
+            assembler.state = FragmentState::Idle;
+            track.discontinuity = true;
+            on_error_(ErrorCode::MalformedInput, input_offset, true,
+                      "last MFU fragment has no matching first fragment");
+            return;
+        }
+        assembler.random_access = assembler.random_access || random_access;
+        if (append_media(track, payload, payload_size, input_offset)) {
+            consume_complete_mfu(track, assembler.mpu_sequence, assembler.sample_number,
+                                 assembler.random_access, assembler.data.data(),
+                                 assembler.data.size(), assembler.input_offset);
+        }
+        assembler.data.clear();
+        assembler.state = FragmentState::Idle;
+        break;
+    default:
+        break;
+    }
+}
+
+void MmtpParser::finalize_hevc(TrackState& track) {
+    auto& pending = track.pending_hevc;
+    if (!pending.active) return;
+    emit_access_unit(track, pending.mpu_sequence, std::move(pending.data),
+                     pending.random_access, pending.input_offset);
+    pending = {};
+}
+
+void MmtpParser::consume_complete_mfu(TrackState& track,
+                                      const std::uint32_t mpu_sequence,
+                                      const std::uint32_t sample_number,
+                                      const bool random_access,
+                                      const std::uint8_t* data, const std::size_t size,
+                                      const std::uint64_t input_offset) {
+    if (track.info.codec == Codec::Hevc) {
+        if (size < 4 || static_cast<std::size_t>(read_be32(data)) != size - 4) {
+            track.discontinuity = true;
+            on_error_(ErrorCode::MalformedInput, input_offset, true,
+                      "HEVC MFU does not contain one bounded length-prefixed NAL unit");
+            return;
+        }
+        const auto nal_size = size - 4;
+        if (nal_size < 2) {
+            track.discontinuity = true;
+            on_error_(ErrorCode::MalformedInput, input_offset, true,
+                      "HEVC NAL unit is shorter than its header");
+            return;
+        }
+        const auto nal_type = static_cast<std::uint8_t>((data[4] >> 1U) & 0x3fU);
+        const bool is_vcl = nal_type <= 31;
+        const bool first_slice = is_vcl && nal_size >= 3 && (data[6] & 0x80U) != 0;
+        auto& pending = track.pending_hevc;
+        const bool begins_access_unit = nal_type == 35 ||
+            (first_slice && pending.has_vcl) ||
+            ((nal_type == 32 || nal_type == 33 || nal_type == 34 || nal_type == 39) &&
+             pending.has_vcl);
+        if (pending.active && begins_access_unit) {
+            finalize_hevc(track);
+        }
+        if (!pending.active) {
+            pending.active = true;
+            pending.mpu_sequence = mpu_sequence;
+            pending.sample_number = sample_number;
+            pending.input_offset = input_offset;
+        }
+        if (pending.data.size() > limits_.max_access_unit ||
+            limits_.max_access_unit - pending.data.size() < nal_size + 3) {
+            pending = {};
+            track.discontinuity = true;
+            on_error_(ErrorCode::ResourceLimit, input_offset, true,
+                      "HEVC decoded access unit exceeds configured limit");
+            return;
+        }
+        pending.random_access = pending.random_access || random_access;
+        pending.has_vcl = pending.has_vcl || is_vcl;
+        pending.data.insert(pending.data.end(), {0x00, 0x00, 0x01});
+        pending.data.insert(pending.data.end(), data + 4, data + size);
+        return;
+    }
+
+    if (track.info.codec == Codec::AacLatm) {
+        if (size > 0x1fff) {
+            track.discontinuity = true;
+            on_error_(ErrorCode::ResourceLimit, input_offset, true,
+                      "AAC AudioMuxElement exceeds the 13-bit LOAS length");
+            return;
+        }
+        std::vector<std::uint8_t> loas;
+        loas.reserve(size + 3);
+        loas.push_back(0x56);
+        loas.push_back(static_cast<std::uint8_t>(0xe0U | (size >> 8U)));
+        loas.push_back(static_cast<std::uint8_t>(size));
+        loas.insert(loas.end(), data, data + size);
+        emit_access_unit(track, mpu_sequence, std::move(loas), random_access, input_offset);
+        return;
+    }
+
+    if (track.info.codec != Codec::Ttml || size < 7) {
+        track.discontinuity = true;
+        on_error_(ErrorCode::MalformedInput, input_offset, true,
+                  "truncated or unsupported TTML MFU");
+        return;
+    }
+
+    const auto subtitle_sequence = data[1];
+    const auto subsample_number = data[2];
+    const auto last_subsample = data[3];
+    const auto flags = data[4];
+    const auto data_type = static_cast<std::uint8_t>(flags >> 4U);
+    const bool length_extended = ((flags >> 3U) & 1U) != 0;
+    const bool info_list = ((flags >> 2U) & 1U) != 0;
+    if (data_type != 0 || subsample_number > last_subsample) {
+        track.discontinuity = true;
+        on_error_(ErrorCode::UnsupportedFeature, input_offset, true,
+                  "unsupported TTML data type or invalid subsample number");
+        return;
+    }
+    std::size_t cursor = 5;
+    const std::size_t length_size = length_extended ? 4 : 2;
+    if (size - cursor < length_size) {
+        track.discontinuity = true;
+        on_error_(ErrorCode::MalformedInput, input_offset, true,
+                  "truncated TTML data length");
+        return;
+    }
+    const auto data_size = length_extended
+        ? static_cast<std::size_t>(read_be32(data + cursor))
+        : static_cast<std::size_t>(read_be16(data + cursor));
+    cursor += length_size;
+    if (subsample_number == 0 && last_subsample > 0 && info_list) {
+        for (std::uint16_t index = 0; index < last_subsample; ++index) {
+            if (size - cursor < 1 + length_size) {
+                track.discontinuity = true;
+                on_error_(ErrorCode::MalformedInput, input_offset, true,
+                          "truncated TTML subsample information list");
+                return;
+            }
+            cursor += 1 + length_size;
+        }
+    }
+    if (data_size > size - cursor || data_size > limits_.max_ttml_sample) {
+        track.discontinuity = true;
+        on_error_(data_size > limits_.max_ttml_sample
+                      ? ErrorCode::ResourceLimit : ErrorCode::MalformedInput,
+                  input_offset, true, "TTML subsample length exceeds bounds");
+        return;
+    }
+
+    auto& subtitle = track.subtitle;
+    if (!subtitle.active || subtitle.sequence != subtitle_sequence ||
+        subtitle.last_subsample != last_subsample || subtitle.mpu_sequence != mpu_sequence) {
+        if (subtitle.active) {
+            track.discontinuity = true;
+            on_error_(ErrorCode::Discontinuity, input_offset, true,
+                      "new TTML unit replaced an incomplete subsample group");
+        }
+        subtitle = {};
+        subtitle.active = true;
+        subtitle.sequence = subtitle_sequence;
+        subtitle.last_subsample = last_subsample;
+        subtitle.mpu_sequence = mpu_sequence;
+        subtitle.input_offset = input_offset;
+        subtitle.random_access = random_access;
+        subtitle.subsamples.resize(static_cast<std::size_t>(last_subsample) + 1);
+    }
+    subtitle.random_access = subtitle.random_access || random_access;
+    auto& slot = subtitle.subsamples[subsample_number];
+    if (!slot.has_value()) {
+        slot = std::vector<std::uint8_t>(data + cursor, data + cursor + data_size);
+    }
+    if (!std::all_of(subtitle.subsamples.begin(), subtitle.subsamples.end(),
+                     [](const auto& value) { return value.has_value(); })) {
+        return;
+    }
+    std::size_t total_size = 0;
+    for (const auto& value : subtitle.subsamples) total_size += value->size();
+    if (total_size > limits_.max_ttml_sample) {
+        subtitle = {};
+        track.discontinuity = true;
+        on_error_(ErrorCode::ResourceLimit, input_offset, true,
+                  "reassembled TTML sample exceeds configured limit");
+        return;
+    }
+    std::vector<std::uint8_t> ttml;
+    ttml.reserve(total_size);
+    for (auto& value : subtitle.subsamples) {
+        ttml.insert(ttml.end(), value->begin(), value->end());
+    }
+    const auto output_offset = subtitle.input_offset;
+    const auto output_rap = subtitle.random_access;
+    subtitle = {};
+    emit_access_unit(track, mpu_sequence, std::move(ttml), output_rap, output_offset);
+}
+
+void MmtpParser::emit_access_unit(TrackState& track, const std::uint32_t mpu_sequence,
+                                  std::vector<std::uint8_t> data,
+                                  const bool random_access,
+                                  const std::uint64_t input_offset) {
+    const auto timestamp = track.timestamps.find(mpu_sequence);
+    const auto extended = track.extended_timestamps.find(mpu_sequence);
+    std::int64_t dts_offset = 0;
+    std::int64_t pts_offset = 0;
+    std::uint64_t ntp = 0;
+    if (timestamp != track.timestamps.end() && extended != track.extended_timestamps.end() &&
+        track.au_index < extended->second.dts_pts_offsets.size() &&
+        track.au_index < extended->second.pts_offsets.size()) {
+        dts_offset = -static_cast<std::int64_t>(extended->second.decoding_time_offset);
+        for (std::size_t index = 0; index < track.au_index; ++index) {
+            dts_offset += extended->second.pts_offsets[index];
+        }
+        pts_offset = dts_offset + extended->second.dts_pts_offsets[track.au_index];
+        ntp = timestamp->second.ntp;
+        ++track.au_index;
+    } else if (track.info.codec == Codec::Ttml && latest_full_ntp_.has_value()) {
+        const auto delivery = track.delivery_timestamps.find(mpu_sequence);
+        if (delivery == track.delivery_timestamps.end()) {
+            track.discontinuity = true;
+            on_error_(ErrorCode::Discontinuity, input_offset, true,
+                      "dropped TTML sample without a delivery timestamp");
+            return;
+        }
+        // B60 provides no MPU timestamp descriptors on the subtitle assets in
+        // the broadcast samples. Their timed MPU is therefore anchored to the
+        // MMTP short-form NTP delivery timestamp, expanded around the latest
+        // full NTP mapping received for the same context.
+        ntp = expand_short_ntp(delivery->second, *latest_full_ntp_);
+    } else {
+        track.discontinuity = true;
+        ++track.au_index;
+        on_error_(ErrorCode::Discontinuity, input_offset, true,
+                  "dropped access unit without a matching timestamp descriptor");
+        return;
+    }
+
+    const auto ntp_seconds = ntp >> 32U;
+    const auto ntp_fraction = static_cast<std::uint32_t>(ntp);
+    const auto ntp_microseconds = static_cast<std::int64_t>(
+        ntp_seconds * 1000000ULL +
+        (static_cast<std::uint64_t>(ntp_fraction) * 1000000ULL >> 32U));
+
+    AccessUnit unit;
+    unit.track_id = track.stable_track_id;
+    unit.codec = track.info.codec;
+    unit.data = std::move(data);
+    unit.pts = Timestamp{pts_offset, track.info.timescale};
+    unit.dts = Timestamp{dts_offset, track.info.timescale};
+    unit.source_ntp = Timestamp{ntp_microseconds, 1000000};
+    unit.input_offset = input_offset;
+    unit.random_access = random_access;
+    unit.discontinuity = track.discontinuity;
+    track.discontinuity = false;
+    on_access_unit_(TimedAccessUnit{std::move(unit), ntp});
+}
+
+void MmtpParser::parse_mpu(const std::uint16_t packet_id,
+                           const std::uint32_t packet_sequence,
+                           const std::uint32_t delivery_timestamp,
+                           const bool random_access, const std::uint8_t* data,
+                           const std::size_t size, const std::uint64_t input_offset) {
+    if (size < 8) {
+        on_error_(ErrorCode::MalformedInput, input_offset, true,
+                  "truncated MMTP MPU payload");
+        return;
+    }
+    const auto declared_size = static_cast<std::size_t>(read_be16(data));
+    if (declared_size != size - 2) {
+        on_error_(ErrorCode::MalformedInput, input_offset, true,
+                  "MMTP MPU payload length does not match its container");
+        return;
+    }
+    const auto fragment_type = static_cast<std::uint8_t>(data[2] >> 4U);
+    if (fragment_type != 2) {
+        return;
+    }
+    const auto track_entry = tracks_.find(packet_id);
+    if (track_entry == tracks_.end()) return;
+    auto& track = track_entry->second;
+
+    const auto flags = data[2];
+    const bool timed = ((flags >> 3U) & 1U) != 0;
+    const auto fragmentation = static_cast<std::uint8_t>((flags >> 1U) & 0x03U);
+    const bool aggregation = (flags & 1U) != 0;
+    const auto mpu_sequence = read_be32(data + 4);
+    track.delivery_timestamps[mpu_sequence] = delivery_timestamp;
+    while (track.delivery_timestamps.size() > 32) {
+        track.delivery_timestamps.erase(track.delivery_timestamps.begin());
+    }
+
+    if (aggregation && fragmentation != 0) {
+        track.discontinuity = true;
+        on_error_(ErrorCode::MalformedInput, input_offset, true,
+                  "aggregated MPU payload is also fragmented");
+        return;
+    }
+    if (track.wait_for_rap) {
+        if (!random_access) return;
+        track.wait_for_rap = false;
+    }
+    if (!track.current_mpu_sequence.has_value() || *track.current_mpu_sequence != mpu_sequence) {
+        if (track.current_mpu_sequence.has_value()) {
+            finalize_hevc(track);
+            if (mpu_sequence != *track.current_mpu_sequence + 1U) track.discontinuity = true;
+            if (track.subtitle.active) {
+                track.subtitle = {};
+                track.discontinuity = true;
+            }
+        }
+        track.current_mpu_sequence = mpu_sequence;
+        track.au_index = 0;
+    }
+
+    const auto* body = data + 8;
+    auto body_size = size - 8;
+    if (!aggregation) {
+        consume_mfu_piece(track, packet_sequence, mpu_sequence, timed, fragmentation,
+                          false, random_access, body, body_size, input_offset);
+        return;
+    }
+    while (body_size != 0) {
+        if (body_size < 2) {
+            track.discontinuity = true;
+            on_error_(ErrorCode::MalformedInput, input_offset, true,
+                      "truncated aggregated MFU length");
+            return;
+        }
+        const auto unit_size = static_cast<std::size_t>(read_be16(body));
+        body += 2;
+        body_size -= 2;
+        if (unit_size > body_size) {
+            track.discontinuity = true;
+            on_error_(ErrorCode::MalformedInput, input_offset, true,
+                      "aggregated MFU length exceeds MPU payload");
+            return;
+        }
+        consume_mfu_piece(track, packet_sequence, mpu_sequence, timed, 0,
+                          true, random_access, body, unit_size, input_offset);
+        body += unit_size;
+        body_size -= unit_size;
+    }
+}
+
+} // namespace tlvdemux::detail
