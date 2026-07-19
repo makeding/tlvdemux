@@ -324,7 +324,7 @@ std::vector<std::uint8_t> audio_discovery_message() {
     };
 
     std::vector<std::uint8_t> mpt_body{0xfc, 2, 0x00, 0x66, 0x00, 0x00, 3};
-    asset(mpt_body, 0xe210, "mp4a", audio_descriptors(0x11, 0x0010, true));
+    asset(mpt_body, 0xe210, "mp4a", audio_descriptors(0x11, 0x0110, true));
     asset(mpt_body, 0xe275, "mp4a", audio_descriptors(0x09, 0x0011, false));
     asset(mpt_body, 0xe2aa, "mp4a", audio_descriptors(0x03, 0x0012, false, true));
 
@@ -534,6 +534,8 @@ void test_dynamic_audio_layout_metadata() {
     const auto surround51 = find_layout(tlvdemux::AudioChannelLayout::Channels5_1);
     const auto stereo = find_layout(tlvdemux::AudioChannelLayout::Stereo);
     check(surround22 != sink.tracks.end() && surround22->packet_id == 0xe210 &&
+              surround22->component_tag == 0x0110 &&
+              surround22->audio->component_tag == 0x0110 &&
               surround22->audio->main_component,
           "22.2ch track was not identified from its descriptor metadata");
     check(surround51 != sink.tracks.end() && surround51->packet_id == 0xe275 &&

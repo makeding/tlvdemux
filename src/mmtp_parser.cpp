@@ -325,7 +325,7 @@ bool parse_descriptors(ByteReader& reader, AssetMetadata& metadata) {
             const auto stream_type = payload[4];
             const auto flags = payload[6];
             if (metadata.component_tag == 0) {
-                metadata.component_tag = static_cast<std::uint8_t>(read_be16(payload + 2));
+                metadata.component_tag = read_be16(payload + 2);
             }
             metadata.language.assign(reinterpret_cast<const char*>(payload + 7), 3);
             AudioInfo audio;
