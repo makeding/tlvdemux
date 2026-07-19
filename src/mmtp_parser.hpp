@@ -91,6 +91,11 @@ private:
     };
 
     struct SubtitleAssembly {
+        struct Subsample {
+            std::uint8_t data_type = 0;
+            std::vector<std::uint8_t> data;
+        };
+
         bool active = false;
         std::uint8_t sequence = 0;
         std::uint8_t last_subsample = 0;
@@ -98,7 +103,7 @@ private:
         std::uint64_t input_offset = 0;
         std::uint64_t restart_offset = 0;
         bool random_access = false;
-        std::vector<std::optional<std::vector<std::uint8_t>>> subsamples;
+        std::vector<std::optional<Subsample>> subsamples;
     };
 
     struct TrackState {
@@ -138,7 +143,8 @@ private:
                       std::uint64_t input_offset);
     void emit_access_unit(TrackState&, std::uint32_t mpu_sequence,
                           std::vector<std::uint8_t>, bool random_access,
-                          std::uint64_t input_offset, std::uint64_t restart_offset);
+                          std::uint64_t input_offset, std::uint64_t restart_offset,
+                          std::vector<SubtitleResource> subtitle_resources = {});
     void finalize_hevc(TrackState&);
     void install_track(TrackInfo, AssetMetadata, std::uint64_t input_offset);
     void release_all_states();

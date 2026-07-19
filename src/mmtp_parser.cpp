@@ -906,7 +906,8 @@ void MmtpParser::consume_complete_mfu(TrackState& track,
     const auto data_type = static_cast<std::uint8_t>(flags >> 4U);
     const bool length_extended = ((flags >> 3U) & 1U) != 0;
     const bool info_list = ((flags >> 2U) & 1U) != 0;
-    if (data_type != 0 || subsample_number > last_subsample) {
+    if (data_type > 7 || subsample_number > last_subsample ||
+        (subsample_number == 0 && data_type != 0)) {
         track.discontinuity = true;
         on_error_(ErrorCode::UnsupportedFeature, input_offset, true,
                   "unsupported TTML data type or invalid subsample number");
@@ -930,6 +931,13 @@ void MmtpParser::consume_complete_mfu(TrackState& track,
                 track.discontinuity = true;
                 on_error_(ErrorCode::MalformedInput, input_offset, true,
                           "truncated TTML subsample information list");
+                return;
+            }
+            const auto listed_data_type = static_cast<std::uint8_t>(data[cursor] >> 4U);
+            if (listed_data_type > 7) {
+                track.discontinuity = true;
+                on_error_(ErrorCode::UnsupportedFeature, input_offset, true,
+                          "unsupported TTML resource data type");
                 return;
             }
             cursor += 1 + length_size;
@@ -964,14 +972,16 @@ void MmtpParser::consume_complete_mfu(TrackState& track,
     subtitle.random_access = subtitle.random_access || random_access;
     auto& slot = subtitle.subsamples[subsample_number];
     if (!slot.has_value()) {
-        slot = std::vector<std::uint8_t>(data + cursor, data + cursor + data_size);
+        slot = SubtitleAssembly::Subsample{
+            data_type,
+            std::vector<std::uint8_t>(data + cursor, data + cursor + data_size)};
     }
     if (!std::all_of(subtitle.subsamples.begin(), subtitle.subsamples.end(),
                      [](const auto& value) { return value.has_value(); })) {
         return;
     }
     std::size_t total_size = 0;
-    for (const auto& value : subtitle.subsamples) total_size += value->size();
+    for (const auto& value : subtitle.subsamples) total_size += value->data.size();
     if (total_size > limits_.max_ttml_sample) {
         subtitle = {};
         track.discontinuity = true;
@@ -979,24 +989,36 @@ void MmtpParser::consume_complete_mfu(TrackState& track,
                   "reassembled TTML sample exceeds configured limit");
         return;
     }
-    std::vector<std::uint8_t> ttml;
-    ttml.reserve(total_size);
-    for (auto& value : subtitle.subsamples) {
-        ttml.insert(ttml.end(), value->begin(), value->end());
+    if (subtitle.subsamples.empty() || !subtitle.subsamples[0].has_value() ||
+        subtitle.subsamples[0]->data_type != 0) {
+        subtitle = {};
+        track.discontinuity = true;
+        on_error_(ErrorCode::MalformedInput, input_offset, true,
+                  "TTML subtitle group has no document in subsample zero");
+        return;
+    }
+    std::vector<std::uint8_t> ttml = std::move(subtitle.subsamples[0]->data);
+    std::vector<SubtitleResource> resources;
+    resources.reserve(subtitle.subsamples.size() - 1);
+    for (std::size_t index = 1; index < subtitle.subsamples.size(); ++index) {
+        auto& value = *subtitle.subsamples[index];
+        resources.push_back(SubtitleResource{
+            static_cast<std::uint8_t>(index), value.data_type, std::move(value.data)});
     }
     const auto output_offset = subtitle.input_offset;
     const auto output_restart_offset = subtitle.restart_offset;
     const auto output_rap = subtitle.random_access;
     subtitle = {};
     emit_access_unit(track, mpu_sequence, std::move(ttml), output_rap, output_offset,
-                     output_restart_offset);
+                     output_restart_offset, std::move(resources));
 }
 
 void MmtpParser::emit_access_unit(TrackState& track, const std::uint32_t mpu_sequence,
                                   std::vector<std::uint8_t> data,
                                   const bool random_access,
                                   const std::uint64_t input_offset,
-                                  const std::uint64_t restart_offset) {
+                                  const std::uint64_t restart_offset,
+                                  std::vector<SubtitleResource> subtitle_resources) {
     const auto timestamp = track.timestamps.find(mpu_sequence);
     const auto extended = track.extended_timestamps.find(mpu_sequence);
     std::int64_t dts_offset = 0;
@@ -1048,6 +1070,7 @@ void MmtpParser::emit_access_unit(TrackState& track, const std::uint32_t mpu_seq
     unit.track_id = track.stable_track_id;
     unit.codec = track.info.codec;
     unit.data = std::move(data);
+    unit.subtitle_resources = std::move(subtitle_resources);
     unit.pts = Timestamp{pts_offset, track.info.timescale};
     unit.dts = Timestamp{dts_offset, track.info.timescale};
     unit.source_ntp = Timestamp{ntp_microseconds, 1000000};

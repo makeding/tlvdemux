@@ -67,10 +67,17 @@ struct TrackInfo {
     std::optional<AudioInfo> audio;
 };
 
+struct SubtitleResource {
+    std::uint8_t subsample_number = 0;
+    std::uint8_t data_type = 0;
+    std::vector<std::uint8_t> data;
+};
+
 struct AccessUnit {
     std::uint64_t track_id = 0;
     Codec codec = Codec::Hevc;
     std::vector<std::uint8_t> data;
+    std::vector<SubtitleResource> subtitle_resources;
     Timestamp pts;
     Timestamp dts;
     std::optional<Timestamp> source_ntp;

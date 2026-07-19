@@ -623,8 +623,8 @@ void test_codec_output_and_timeline() {
     add_media(0xf310, 1, true, {0x11, 0x22});
     add_media(0xf310, 2, false, {0x33, 0x44});
     add_media(0xf330, 1, true, {0x30, 0x01, 0x00, 0x01, 0x04, 0x00, 0x03,
-                                0x00, 0x00, 0x03, 'a', 'b', 'c'});
-    add_media(0xf330, 2, false, {0x30, 0x01, 0x01, 0x01, 0x00, 0x00, 0x03,
+                                0x10, 0x00, 0x03, 'a', 'b', 'c'});
+    add_media(0xf330, 2, false, {0x30, 0x01, 0x01, 0x01, 0x10, 0x00, 0x03,
                                  'd', 'e', 'f'});
 
     TestSink sink;
@@ -655,8 +655,13 @@ void test_codec_output_and_timeline() {
     check(second_audio != sink.access_units.end() && second_audio->pts.value == 3000,
           "multi-AU timestamp offsets were not applied in presentation order");
     check(subtitle != sink.access_units.end() &&
-              subtitle->data == std::vector<std::uint8_t>({'a', 'b', 'c', 'd', 'e', 'f'}),
-          "TTML subsamples were not reassembled in order");
+              subtitle->data == std::vector<std::uint8_t>({'a', 'b', 'c'}),
+          "TTML document was not separated from its resource subsamples");
+    check(subtitle != sink.access_units.end() && subtitle->subtitle_resources.size() == 1 &&
+              subtitle->subtitle_resources[0].subsample_number == 1 &&
+              subtitle->subtitle_resources[0].data_type == 1 &&
+              subtitle->subtitle_resources[0].data == std::vector<std::uint8_t>({'d', 'e', 'f'}),
+          "TTML resource subsample metadata was not preserved");
     check(video->pts.value == 0 && video->dts.value == 0,
           "first selected media timestamp was not normalized to zero");
 }
