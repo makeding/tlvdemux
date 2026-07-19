@@ -261,7 +261,9 @@ std::vector<std::uint8_t> discovery_message() {
     std::vector<std::uint8_t> subtitle_descriptors;
     descriptor(subtitle_descriptors, 0x8011, {0x12, 0x30});
     descriptor(subtitle_descriptors, 0x8020,
-               {0x00, 0x20, 0x30, 0x07, 'j', 'p', 'n', 0x01, 0xff, 0x00});
+               {0x00, 0x20, 0x30, 0x08, 'j', 'p', 'n', 0x02, 0x2a, 0x10,
+                0x00, 0x00, 0x00, 0x05,
+                0x00, 0x00, 0x00, 0x64, 0x80, 0x00, 0x00, 0x00});
 
     std::vector<std::uint8_t> mpt_body{0xfc, 2, 0x00, 0x65, 0x00, 0x00, 3};
     asset(mpt_body, 0xf300, "hev1", video_descriptors);
@@ -496,6 +498,15 @@ void test_track_discovery_and_deduplication() {
           "TTML metadata was not parsed from MPT descriptors");
     check(sink.tracks[2].timescale == 65536,
           "TTML without a timestamp descriptor did not use short-NTP timescale");
+    check(sink.tracks[2].subtitle.has_value() &&
+              sink.tracks[2].subtitle->operation_mode == 2 &&
+              sink.tracks[2].subtitle->timing_mode == 2 &&
+              sink.tracks[2].subtitle->display_mode == 10 &&
+              sink.tracks[2].subtitle->resolution == 1 &&
+              sink.tracks[2].subtitle->start_mpu_sequence_number == 5 &&
+              sink.tracks[2].subtitle->reference_start_ntp ==
+                  std::optional<std::uint64_t>{(100ULL << 32U) | 0x80000000ULL},
+          "ARIB B62 subtitle timing metadata was not exposed on the subtitle track");
 
     const auto stable_id = sink.tracks[0].track_id;
     demuxer.reset();

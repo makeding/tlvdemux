@@ -49,6 +49,21 @@ struct Timestamp {
     std::uint32_t timescale = 1;
 };
 
+struct SubtitleInfo {
+    std::uint8_t tag = 0;
+    std::uint8_t info_version = 0;
+    std::uint8_t type = 0;
+    std::uint8_t format = 0;
+    std::uint8_t operation_mode = 0;
+    std::uint8_t timing_mode = 0;
+    std::uint8_t display_mode = 0;
+    std::uint8_t resolution = 0;
+    std::uint8_t compression_type = 0;
+    std::optional<std::uint32_t> start_mpu_sequence_number;
+    // ARIB STD-B60 reference_start_time in unsigned 64-bit NTP format.
+    std::optional<std::uint64_t> reference_start_ntp;
+};
+
 struct ServiceInfo {
     std::uint32_t context_id = 0;
     std::vector<std::uint8_t> package_id;
@@ -65,6 +80,7 @@ struct TrackInfo {
     std::uint16_t component_tag = 0;
     std::uint32_t timescale = 1;
     std::optional<AudioInfo> audio;
+    std::optional<SubtitleInfo> subtitle;
 };
 
 struct SubtitleResource {
@@ -81,6 +97,9 @@ struct AccessUnit {
     Timestamp pts;
     Timestamp dts;
     std::optional<Timestamp> source_ntp;
+    std::optional<std::uint32_t> mpu_sequence_number;
+    // Media-timeline position corresponding to SubtitleInfo::reference_start_ntp.
+    std::optional<Timestamp> subtitle_reference_start_pts;
     std::uint64_t restart_offset = 0;
     std::uint64_t input_offset = 0;
     bool random_access = false;

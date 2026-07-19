@@ -30,6 +30,7 @@ struct AssetMetadata {
     std::uint16_t component_tag = 0;
     std::uint32_t timescale = 1;
     std::optional<AudioInfo> audio;
+    std::optional<SubtitleInfo> subtitle;
     bool aac_latm = false;
     bool ttml = false;
     std::map<std::uint32_t, TimestampMapping> timestamps;

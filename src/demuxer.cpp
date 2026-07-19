@@ -120,11 +120,27 @@ private:
                    first->sample_rate == second->sample_rate &&
                    first->secondary_language == second->secondary_language;
         };
+        const auto same_subtitle = [](const std::optional<SubtitleInfo>& first,
+                                      const std::optional<SubtitleInfo>& second) {
+            if (first.has_value() != second.has_value()) return false;
+            if (!first.has_value()) return true;
+            return first->tag == second->tag &&
+                   first->info_version == second->info_version &&
+                   first->type == second->type && first->format == second->format &&
+                   first->operation_mode == second->operation_mode &&
+                   first->timing_mode == second->timing_mode &&
+                   first->display_mode == second->display_mode &&
+                   first->resolution == second->resolution &&
+                   first->compression_type == second->compression_type &&
+                   first->start_mpu_sequence_number == second->start_mpu_sequence_number &&
+                   first->reference_start_ntp == second->reference_start_ntp;
+        };
         return left.track_id == right.track_id && left.context_id == right.context_id &&
                left.packet_id == right.packet_id && left.asset_id == right.asset_id &&
                left.kind == right.kind && left.codec == right.codec &&
                left.language == right.language && left.component_tag == right.component_tag &&
-               left.timescale == right.timescale && same_audio(left.audio, right.audio);
+               left.timescale == right.timescale && same_audio(left.audio, right.audio) &&
+               same_subtitle(left.subtitle, right.subtitle);
     }
 
     void service(ServiceInfo info) {
@@ -278,6 +294,21 @@ private:
         }
         unit.pts.value = normalized_pts;
         unit.dts.value = normalized_dts;
+        if (track_info->second.subtitle &&
+            track_info->second.subtitle->reference_start_ntp) {
+            std::int64_t reference_ticks = 0;
+            std::int64_t reference_pts = 0;
+            if (ntp_delta_ticks(*track_info->second.subtitle->reference_start_ntp,
+                                origin_->ntp, unit.pts.timescale, reference_ticks) &&
+                subtract_checked(reference_ticks, origin_offset, reference_pts)) {
+                unit.subtitle_reference_start_pts =
+                    Timestamp{reference_pts, unit.pts.timescale};
+            } else {
+                unit.discontinuity = true;
+                error(ErrorCode::Discontinuity, unit.input_offset, true,
+                      "subtitle reference timestamp normalization overflowed");
+            }
+        }
         if (reposition_epoch_ != 0 &&
             emitted_reposition_epochs_[unit.track_id] != reposition_epoch_) {
             unit.discontinuity = true;

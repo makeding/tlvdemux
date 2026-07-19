@@ -351,8 +351,29 @@ bool parse_descriptors(ByteReader& reader, AssetMetadata& metadata) {
             const auto additional_size = length - 2;
             if (additional_size < 8) return false;
             metadata.language.assign(reinterpret_cast<const char*>(additional + 2), 3);
-            const auto subtitle_format = static_cast<std::uint8_t>((additional[5] >> 2U) & 0x0fU);
-            metadata.ttml = subtitle_format == 0;
+            SubtitleInfo subtitle;
+            subtitle.tag = additional[0];
+            subtitle.info_version = static_cast<std::uint8_t>((additional[1] >> 4U) & 0x0fU);
+            const bool has_start_mpu_sequence_number = (additional[1] & 0x08U) != 0;
+            subtitle.type = static_cast<std::uint8_t>((additional[5] >> 6U) & 0x03U);
+            subtitle.format = static_cast<std::uint8_t>((additional[5] >> 2U) & 0x0fU);
+            subtitle.operation_mode = static_cast<std::uint8_t>(additional[5] & 0x03U);
+            subtitle.timing_mode = static_cast<std::uint8_t>((additional[6] >> 4U) & 0x0fU);
+            subtitle.display_mode = static_cast<std::uint8_t>(additional[6] & 0x0fU);
+            subtitle.resolution = static_cast<std::uint8_t>((additional[7] >> 4U) & 0x0fU);
+            subtitle.compression_type = static_cast<std::uint8_t>(additional[7] & 0x0fU);
+            std::size_t offset = 8;
+            if (has_start_mpu_sequence_number) {
+                if (additional_size < offset + 4) return false;
+                subtitle.start_mpu_sequence_number = read_be32(additional + offset);
+                offset += 4;
+            }
+            if (subtitle.timing_mode == 0x02) {
+                if (additional_size < offset + 8) return false;
+                subtitle.reference_start_ntp = read_be64(additional + offset);
+            }
+            metadata.ttml = subtitle.format == 0;
+            metadata.subtitle = subtitle;
         } else if (tag == 0x8026 && length >= 1) {
             ByteReader values(payload, length);
             std::uint8_t flags = 0;
@@ -524,6 +545,7 @@ bool MmtpParser::parse_mpt(const std::uint8_t* data, const std::size_t size,
         track.component_tag = metadata.component_tag;
         track.timescale = metadata.timescale;
         track.audio = metadata.audio;
+        track.subtitle = metadata.subtitle;
 
         bool supported = true;
         if (asset_type == "hev1") {
@@ -1132,6 +1154,7 @@ void MmtpParser::emit_access_unit(TrackState& track, const std::uint32_t mpu_seq
     unit.pts = Timestamp{pts_offset, track.info.timescale};
     unit.dts = Timestamp{dts_offset, track.info.timescale};
     unit.source_ntp = Timestamp{ntp_microseconds, 1000000};
+    unit.mpu_sequence_number = mpu_sequence;
     unit.restart_offset = output_restart_offset;
     unit.input_offset = input_offset;
     unit.random_access = random_access;
