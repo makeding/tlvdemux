@@ -7,6 +7,7 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 option(BUILD_SHARED_LIBS "Build libtlvdemux as a shared library" ON)
+option(TLVDEMUX_BUILD_TOOLS "Build tlvdemux command-line tools" ON)
 
 add_library(tlvdemux
     src/compressed_ip_parser.cpp
@@ -26,7 +27,7 @@ target_compile_features(tlvdemux PUBLIC cxx_std_17)
 target_include_directories(tlvdemux
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
@@ -45,6 +46,7 @@ install(TARGETS tlvdemux
     INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/tlvdemux)
 install(EXPORT tlvdemuxTargets
     FILE tlvdemuxTargets.cmake
     NAMESPACE tlvdemux::
@@ -66,14 +68,16 @@ install(FILES
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/tlvdemux
 )
 
-add_executable(tlvdemux-inspect tools/tlvdemux-inspect.cpp)
-target_link_libraries(tlvdemux-inspect PRIVATE tlvdemux::tlvdemux)
-if(MSVC)
-    target_compile_options(tlvdemux-inspect PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(tlvdemux-inspect PRIVATE -Wall -Wextra -Wpedantic)
+if(TLVDEMUX_BUILD_TOOLS)
+    add_executable(tlvdemux-inspect tools/tlvdemux-inspect.cpp)
+    target_link_libraries(tlvdemux-inspect PRIVATE tlvdemux::tlvdemux)
+    if(MSVC)
+        target_compile_options(tlvdemux-inspect PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(tlvdemux-inspect PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    install(TARGETS tlvdemux-inspect RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
-install(TARGETS tlvdemux-inspect RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 if(BUILD_TESTING)
     add_executable(tlvdemux-tests tests/demuxer_tests.cpp)

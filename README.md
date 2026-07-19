@@ -28,11 +28,46 @@ produces the corresponding `libtlvdemux.0.dylib`. Use
 The exported interface is a C++17 ABI, so dynamically linked consumers should
 use a compatible compiler and C++ standard library.
 
+When embedding the project with `add_subdirectory()`, the diagnostic executable
+can be disabled with `-DTLVDEMUX_BUILD_TOOLS=OFF`. Tests follow CMake's standard
+`BUILD_TESTING` option.
+
 Install the library, public headers and CMake target export with:
 
 ```sh
 cmake --install build --prefix /desired/prefix
 ```
+
+The install includes the shared or static library, public headers, the
+`tlvdemux::tlvdemux` CMake package target, the diagnostic tool when enabled,
+and the MIT license.
+
+## Library usage
+
+Implement `tlvdemux::Sink`, keep it alive for the lifetime of the demuxer, and
+feed arbitrary-sized chunks synchronously:
+
+```cpp
+#include <tlvdemux/demuxer.hpp>
+
+class PlayerSink final : public tlvdemux::Sink {
+public:
+    void onService(const tlvdemux::ServiceInfo& service) override;
+    void onTrack(const tlvdemux::TrackInfo& track) override;
+    void onAccessUnit(tlvdemux::AccessUnit&& unit) override;
+    void onError(const tlvdemux::Error& error) override;
+};
+
+PlayerSink sink;
+tlvdemux::Demuxer demuxer(sink);
+demuxer.push(data, size);
+demuxer.flush();
+```
+
+`push()` does not retain the input pointer. Callback payloads own their data,
+and malformed stream data is reported through `onError()` while parsing
+continues where recovery is possible. Call `reset()` when replacing the input
+stream; service and track selection policies are retained.
 
 ## Inspect a stream
 
@@ -59,3 +94,11 @@ The library assumes any required B61 descrambling has already happened before
 the bytes reach `Demuxer::push()`. In the validation setup, Mirakurun
 `decode=0` preserves the MMT/TLV stream while the tuner/frontend path supplies
 already-usable media payloads.
+
+## Current scope
+
+Version 0.1 supports the ARIB broadcast subset exercised by the validation
+streams: TLV compressed-IP modes `0x60`/`0x61`, MMTP signalling and fragmented
+media, HEVC Annex B, AAC-LATM/LOAS, and ARIB STD-B62 TTML. CAS/descrambling,
+TTML rendering, EPG/application assets, seeking, indexing, and general-purpose
+ISO MMT are outside the library's current scope.
