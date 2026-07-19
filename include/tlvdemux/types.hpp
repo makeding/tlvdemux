@@ -74,6 +74,7 @@ struct AccessUnit {
     Timestamp pts;
     Timestamp dts;
     std::optional<Timestamp> source_ntp;
+    std::uint64_t restart_offset = 0;
     std::uint64_t input_offset = 0;
     bool random_access = false;
     bool discontinuity = false;

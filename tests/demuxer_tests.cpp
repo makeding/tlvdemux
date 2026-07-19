@@ -571,6 +571,19 @@ std::vector<std::uint8_t> tlv_for_mmtp(const std::uint16_t context_id,
     return tlv(0x03, payload);
 }
 
+void append_video_access_unit(std::vector<std::uint8_t>& stream,
+                              const std::uint32_t first_packet_sequence) {
+    const auto add_video = [&](const std::uint32_t sequence, const bool rap,
+                               const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf300, sequence, 100U << 16U, rap, mpu_payload(1, mfu)));
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    };
+    add_video(first_packet_sequence, true, {0, 0, 0, 2, 0x46, 0x01});
+    add_video(first_packet_sequence + 1, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+    add_video(first_packet_sequence + 2, false, {0, 0, 0, 2, 0x46, 0x01});
+}
+
 void test_codec_output_and_timeline() {
     auto stream = discovery_stream();
     auto add_media = [&](const std::uint16_t packet_id, const std::uint32_t packet_sequence,
@@ -715,6 +728,111 @@ void test_track_selection_clears_incomplete_media() {
           "track selection retained stale fragmented media or failed to resume at a fresh RAP");
 }
 
+void test_fragmented_signalling_restart_offset() {
+    const auto pa = discovery_message();
+    const auto first_end = pa.size() / 3;
+    const auto middle_end = first_end * 2;
+    const auto prefix = tlv(0xff, {});
+    auto stream = prefix;
+    const auto first = signalling_tlv(
+        10, 0x40,
+        std::vector<std::uint8_t>(pa.begin(),
+                                  pa.begin() + static_cast<std::ptrdiff_t>(first_end)));
+    const auto middle = signalling_tlv(
+        11, 0x80,
+        std::vector<std::uint8_t>(pa.begin() + static_cast<std::ptrdiff_t>(first_end),
+                                  pa.begin() + static_cast<std::ptrdiff_t>(middle_end)));
+    const auto last = signalling_tlv(
+        12, 0xc0,
+        std::vector<std::uint8_t>(pa.begin() + static_cast<std::ptrdiff_t>(middle_end),
+                                  pa.end()));
+    stream.insert(stream.end(), first.begin(), first.end());
+    stream.insert(stream.end(), middle.begin(), middle.end());
+    stream.insert(stream.end(), last.begin(), last.end());
+
+    auto add_video = [&](const std::uint32_t sequence, const bool rap,
+                         const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf300, sequence, 100U << 16U, rap, mpu_payload(1, mfu)));
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    };
+    add_video(1, true, {0, 0, 0, 2, 0x46, 0x01});
+    add_video(2, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+    add_video(3, false, {0, 0, 0, 2, 0x46, 0x01});
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+    const auto video = std::find_if(sink.access_units.begin(), sink.access_units.end(),
+                                    [](const auto& unit) {
+                                        return unit.codec == tlvdemux::Codec::Hevc;
+                                    });
+    check(video != sink.access_units.end() && video->restart_offset == prefix.size() &&
+              video->input_offset > video->restart_offset,
+          "AU restart offset did not retain the first fragmented signalling packet");
+}
+
+void test_reposition_preserves_timeline_and_absolute_offsets() {
+    auto initial = discovery_stream();
+    append_video_access_unit(initial, 1);
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(initial.data(), initial.size());
+    demuxer.flush();
+    const auto initial_video = std::find_if(
+        sink.access_units.begin(), sink.access_units.end(), [](const auto& unit) {
+            return unit.codec == tlvdemux::Codec::Hevc;
+        });
+    check(initial_video != sink.access_units.end() && initial_video->pts.value == 0,
+          "initial video did not establish the recording timeline");
+    const auto initial_video_index =
+        static_cast<std::size_t>(initial_video - sink.access_units.begin());
+    const auto original_track_callbacks = sink.tracks.size();
+
+    auto shifted_pa = discovery_message();
+    const std::vector<std::uint8_t> timestamp_pattern{0x00, 0x01, 0x0c, 0, 0, 0, 1};
+    const auto video_timestamp = std::search(shifted_pa.begin(), shifted_pa.end(),
+                                             timestamp_pattern.begin(), timestamp_pattern.end());
+    check(video_timestamp != shifted_pa.end(), "shifted fixture has no video timestamp");
+    const auto ntp_index = static_cast<std::size_t>(video_timestamp - shifted_pa.begin()) + 7;
+    shifted_pa[ntp_index + 0] = 0;
+    shifted_pa[ntp_index + 1] = 0;
+    shifted_pa[ntp_index + 2] = 0;
+    shifted_pa[ntp_index + 3] = 101;
+    shifted_pa[ntp_index + 4] = 0;
+    shifted_pa[ntp_index + 5] = 0;
+    shifted_pa[ntp_index + 6] = 0;
+    shifted_pa[ntp_index + 7] = 0;
+
+    auto shifted = signalling_tlv(100, 0, shifted_pa);
+    const auto repeated = signalling_tlv(101, 0, shifted_pa);
+    const auto latest_checkpoint_offset = static_cast<std::uint64_t>(shifted.size());
+    shifted.insert(shifted.end(), repeated.begin(), repeated.end());
+    append_video_access_unit(shifted, 1000);
+
+    constexpr std::uint64_t source_offset = 500000;
+    demuxer.reposition(tlvdemux::RepositionOptions{source_offset, true});
+    demuxer.push(shifted.data(), shifted.size());
+    demuxer.flush();
+
+    const auto second_video = std::find_if(
+        sink.access_units.begin() + static_cast<std::ptrdiff_t>(initial_video_index + 1),
+        sink.access_units.end(), [](const auto& unit) {
+            return unit.codec == tlvdemux::Codec::Hevc;
+        });
+    check(second_video != sink.access_units.end() && second_video->pts.value == 180000,
+          "reposition reset the recording timeline instead of preserving it");
+    check(second_video->restart_offset == source_offset + latest_checkpoint_offset &&
+              second_video->input_offset > second_video->restart_offset,
+          "reposition did not preserve absolute source offsets");
+    check(second_video->discontinuity,
+          "first access unit after reposition was not marked discontinuous");
+    check(sink.tracks.size() == original_track_callbacks,
+          "reposition re-emitted unchanged track metadata");
+}
+
 } // namespace
 
 int main() {
@@ -731,6 +849,8 @@ int main() {
     test_codec_output_and_timeline();
     test_timestamp_overflow_rejection();
     test_track_selection_clears_incomplete_media();
+    test_fragmented_signalling_restart_offset();
+    test_reposition_preserves_timeline_and_absolute_offsets();
     std::cout << "all tests passed\n";
     return 0;
 }

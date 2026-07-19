@@ -50,6 +50,16 @@ public:
         current_tracks_.clear();
         error_counts_.clear();
         origin_.reset();
+        reposition_epoch_ = 0;
+        emitted_reposition_epochs_.clear();
+    }
+
+    void reposition(const RepositionOptions options) {
+        tlv_.reset(options.input_offset);
+        ip_.reset();
+        if (!options.preserve_timeline) origin_.reset();
+        ++reposition_epoch_;
+        if (reposition_epoch_ == 0) ++reposition_epoch_;
     }
 
     void select_service(std::optional<std::uint32_t> context_id) {
@@ -98,6 +108,9 @@ private:
             return;
         }
         const auto found = services_.find(info.context_id);
+        if (found != services_.end() && info.package_id.empty() && !found->second.empty()) {
+            return;
+        }
         if (found != services_.end() && found->second == info.package_id) {
             return;
         }
@@ -234,6 +247,11 @@ private:
         }
         unit.pts.value = normalized_pts;
         unit.dts.value = normalized_dts;
+        if (reposition_epoch_ != 0 &&
+            emitted_reposition_epochs_[unit.track_id] != reposition_epoch_) {
+            unit.discontinuity = true;
+            emitted_reposition_epochs_[unit.track_id] = reposition_epoch_;
+        }
         sink_.onAccessUnit(std::move(unit));
     }
 
@@ -259,6 +277,8 @@ private:
     std::unordered_map<std::uint64_t, TrackInfo> current_tracks_;
     std::uint64_t next_track_id_ = 1;
     std::unordered_map<std::string, std::uint64_t> error_counts_;
+    std::uint64_t reposition_epoch_ = 0;
+    std::unordered_map<std::uint64_t, std::uint64_t> emitted_reposition_epochs_;
     struct TimelineOrigin {
         std::uint64_t ntp = 0;
         std::int64_t pts_offset = 0;
@@ -286,6 +306,10 @@ void Demuxer::flush() {
 
 void Demuxer::reset() {
     impl_->reset();
+}
+
+void Demuxer::reposition(const RepositionOptions options) {
+    impl_->reposition(options);
 }
 
 void Demuxer::selectService(std::optional<std::uint32_t> context_id) {

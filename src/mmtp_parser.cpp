@@ -131,6 +131,7 @@ bool MmtpParser::append(SignallingAssembler& assembler, const std::uint8_t* data
                         const std::size_t size, const std::uint64_t input_offset) {
     if (size > limits_.max_signalling_message - assembler.data.size()) {
         assembler.data.clear();
+        assembler.input_offset = 0;
         assembler.state = FragmentState::Skipping;
         on_error_(ErrorCode::ResourceLimit, input_offset, true,
                   "MMTP signalling message exceeds configured limit");
@@ -548,6 +549,7 @@ void MmtpParser::parse_signalling(const std::uint16_t packet_id,
                       "MMTP signalling sequence jump dropped an incomplete unit");
         }
         assembler.data.clear();
+        assembler.input_offset = 0;
         assembler.state = FragmentState::Skipping;
     }
     assembler.last_sequence = sequence;
@@ -593,11 +595,13 @@ void MmtpParser::parse_signalling(const std::uint16_t packet_id,
                       "complete signalling unit interrupted a fragmented unit");
         }
         assembler.data.clear();
+        assembler.input_offset = 0;
         assembler.state = FragmentState::Idle;
         accept_signalling_unit(body, body_size, input_offset);
         break;
     case 1:
         assembler.data.clear();
+        assembler.input_offset = input_offset;
         assembler.state = FragmentState::Collecting;
         append(assembler, body, body_size, input_offset);
         break;
@@ -617,6 +621,7 @@ void MmtpParser::parse_signalling(const std::uint16_t packet_id,
         if (assembler.state == FragmentState::Skipping) {
             assembler.state = FragmentState::Idle;
             assembler.data.clear();
+            assembler.input_offset = 0;
             return;
         }
         if (assembler.state != FragmentState::Collecting) {
@@ -625,9 +630,11 @@ void MmtpParser::parse_signalling(const std::uint16_t packet_id,
             return;
         }
         if (append(assembler, body, body_size, input_offset)) {
-            accept_signalling_unit(assembler.data.data(), assembler.data.size(), input_offset);
+            accept_signalling_unit(assembler.data.data(), assembler.data.size(),
+                                   assembler.input_offset);
         }
         assembler.data.clear();
+        assembler.input_offset = 0;
         assembler.state = FragmentState::Idle;
         break;
     default:
@@ -652,6 +659,7 @@ void MmtpParser::install_track(TrackInfo info, AssetMetadata metadata,
     state.stable_track_id = on_track_(info);
     info.track_id = state.stable_track_id;
     state.info = std::move(info);
+    state.restart_offset = input_offset;
     for (auto& entry : metadata.timestamps) {
         state.timestamps[entry.first] = entry.second;
         if (!latest_full_ntp_.has_value() || entry.second.ntp > *latest_full_ntp_) {
@@ -1020,6 +1028,7 @@ void MmtpParser::emit_access_unit(TrackState& track, const std::uint32_t mpu_seq
     unit.pts = Timestamp{pts_offset, track.info.timescale};
     unit.dts = Timestamp{dts_offset, track.info.timescale};
     unit.source_ntp = Timestamp{ntp_microseconds, 1000000};
+    unit.restart_offset = track.restart_offset;
     unit.input_offset = input_offset;
     unit.random_access = random_access;
     unit.discontinuity = track.discontinuity;

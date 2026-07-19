@@ -9,6 +9,11 @@
 
 namespace tlvdemux {
 
+struct RepositionOptions {
+    std::uint64_t input_offset = 0;
+    bool preserve_timeline = true;
+};
+
 class Sink {
 public:
     virtual ~Sink() = default;
@@ -32,6 +37,7 @@ public:
     void push(const std::uint8_t* data, std::size_t size);
     void flush();
     void reset();
+    void reposition(RepositionOptions);
     void selectService(std::optional<std::uint32_t> context_id);
     void selectTrack(TrackKind kind, std::optional<std::uint64_t> track_id);
 
@@ -41,4 +47,3 @@ private:
 };
 
 } // namespace tlvdemux
-

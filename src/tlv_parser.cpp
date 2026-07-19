@@ -22,10 +22,10 @@ void TlvParser::flush() {
     synchronized_ = false;
 }
 
-void TlvParser::reset() {
+void TlvParser::reset(const std::uint64_t input_offset) {
     buffer_.clear();
     cursor_ = 0;
-    buffer_offset_ = 0;
+    buffer_offset_ = input_offset;
     synchronized_ = false;
 }
 

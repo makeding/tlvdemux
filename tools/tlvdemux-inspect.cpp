@@ -107,7 +107,9 @@ struct Inspector final : tlvdemux::Sink {
     void onAccessUnit(tlvdemux::AccessUnit&& unit) override {
         const auto track = tracks.find(unit.track_id);
         if (trace) {
-            std::cerr << "au offset=" << unit.input_offset << " track=" << unit.track_id;
+            std::cerr << "au offset=" << unit.input_offset
+                      << " restart-offset=" << unit.restart_offset
+                      << " track=" << unit.track_id;
             if (track != tracks.end()) {
                 std::cerr << " context=" << track->second.context_id
                           << " packet-id=0x" << std::hex << track->second.packet_id << std::dec;

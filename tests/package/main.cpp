@@ -1,4 +1,6 @@
 #include <tlvdemux/demuxer.hpp>
+#include <tlvdemux/playback.hpp>
+#include <tlvdemux/recording.hpp>
 
 namespace {
 
@@ -15,7 +17,10 @@ public:
 int main() {
     NullSink sink;
     tlvdemux::Demuxer demuxer(sink);
+    tlvdemux::PlaybackStateMachine playback;
+    tlvdemux::RecordingIndex index;
+    index.begin(false);
+    (void)playback;
     demuxer.flush();
     return 0;
 }
-

@@ -62,6 +62,7 @@ private:
     struct SignallingAssembler {
         FragmentState state = FragmentState::Initial;
         std::uint32_t last_sequence = 0;
+        std::uint64_t input_offset = 0;
         std::vector<std::uint8_t> data;
     };
 
@@ -101,6 +102,7 @@ private:
         std::map<std::uint32_t, TimestampMapping> timestamps;
         std::map<std::uint32_t, ExtendedTimestampMapping> extended_timestamps;
         std::map<std::uint32_t, std::uint32_t> delivery_timestamps;
+        std::uint64_t restart_offset = 0;
         std::optional<std::uint32_t> current_mpu_sequence;
         std::size_t au_index = 0;
         bool wait_for_rap = false;

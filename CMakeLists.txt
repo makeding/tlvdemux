@@ -13,6 +13,8 @@ add_library(tlvdemux
     src/compressed_ip_parser.cpp
     src/demuxer.cpp
     src/mmtp_parser.cpp
+    src/playback.cpp
+    src/recording.cpp
     src/tlv_parser.cpp
 )
 add_library(tlvdemux::tlvdemux ALIAS tlvdemux)
@@ -88,4 +90,13 @@ if(BUILD_TESTING)
         target_compile_options(tlvdemux-tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME tlvdemux-tests COMMAND tlvdemux-tests)
+
+    add_executable(tlvdemux-recording-tests tests/recording_tests.cpp)
+    target_link_libraries(tlvdemux-recording-tests PRIVATE tlvdemux::tlvdemux)
+    if(MSVC)
+        target_compile_options(tlvdemux-recording-tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(tlvdemux-recording-tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME tlvdemux-recording-tests COMMAND tlvdemux-recording-tests)
 endif()

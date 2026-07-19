@@ -24,7 +24,7 @@ public:
 
     void push(const std::uint8_t* data, std::size_t size);
     void flush();
-    void reset();
+    void reset(std::uint64_t input_offset = 0);
 
 private:
     bool candidate_type(std::uint8_t type) const noexcept;
@@ -45,4 +45,3 @@ private:
 };
 
 } // namespace tlvdemux::detail
-
