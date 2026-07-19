@@ -661,12 +661,14 @@ void MmtpParser::install_track(TrackInfo info, AssetMetadata metadata,
     state.info = std::move(info);
     state.restart_offset = input_offset;
     for (auto& entry : metadata.timestamps) {
+        entry.second.restart_offset = input_offset;
         state.timestamps[entry.first] = entry.second;
         if (!latest_full_ntp_.has_value() || entry.second.ntp > *latest_full_ntp_) {
             latest_full_ntp_ = entry.second.ntp;
         }
     }
     for (auto& entry : metadata.extended_timestamps) {
+        entry.second.restart_offset = input_offset;
         state.extended_timestamps[entry.first] = std::move(entry.second);
     }
     constexpr std::size_t max_timestamp_entries = 32;
@@ -1000,9 +1002,14 @@ void MmtpParser::emit_access_unit(TrackState& track, const std::uint32_t mpu_seq
     std::int64_t dts_offset = 0;
     std::int64_t pts_offset = 0;
     std::uint64_t ntp = 0;
+    auto output_restart_offset = restart_offset;
     if (timestamp != track.timestamps.end() && extended != track.extended_timestamps.end() &&
         track.au_index < extended->second.dts_pts_offsets.size() &&
         track.au_index < extended->second.pts_offsets.size()) {
+        output_restart_offset = std::min(
+            output_restart_offset,
+            std::min(timestamp->second.restart_offset,
+                     extended->second.restart_offset));
         dts_offset = -static_cast<std::int64_t>(extended->second.decoding_time_offset);
         for (std::size_t index = 0; index < track.au_index; ++index) {
             dts_offset += extended->second.pts_offsets[index];
@@ -1044,7 +1051,7 @@ void MmtpParser::emit_access_unit(TrackState& track, const std::uint32_t mpu_seq
     unit.pts = Timestamp{pts_offset, track.info.timescale};
     unit.dts = Timestamp{dts_offset, track.info.timescale};
     unit.source_ntp = Timestamp{ntp_microseconds, 1000000};
-    unit.restart_offset = restart_offset;
+    unit.restart_offset = output_restart_offset;
     unit.input_offset = input_offset;
     unit.random_access = random_access;
     unit.discontinuity = track.discontinuity;

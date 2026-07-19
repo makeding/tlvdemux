@@ -290,13 +290,22 @@ bool run_seek_case(std::ifstream& file, tlvdemux::Demuxer& demuxer,
         demuxer.push(buffer.data(), static_cast<std::size_t>(count));
         bytes_read += static_cast<std::uint64_t>(count);
     }
+    if (!sink.landed() && file.eof()) demuxer.flush();
 
-    bool passed = sink.landed() && sink.firstVideoSeen() &&
-        sink.firstVideoRandomAccess() && sink.firstVideoDiscontinuity() &&
-        sink.firstVideoPtsUs() == point.presentation_time.value &&
-        sink.firstVideoOffset() == point.random_access_offset &&
-        sink.firstVideoRestartOffset() == point.signalling_offset &&
-        sink.landingPtsUs() == expected.pts_us;
+    const bool landed = sink.landed();
+    const bool first_video_seen = sink.firstVideoSeen();
+    const bool first_video_random_access = sink.firstVideoRandomAccess();
+    const bool first_video_discontinuity = sink.firstVideoDiscontinuity();
+    const bool first_pts_matches = first_video_seen &&
+        sink.firstVideoPtsUs() == point.presentation_time.value;
+    const bool first_offset_matches = first_video_seen &&
+        sink.firstVideoOffset() == point.random_access_offset;
+    const bool restart_offset_matches = first_video_seen &&
+        sink.firstVideoRestartOffset() == point.signalling_offset;
+    const bool landing_matches = landed && sink.landingPtsUs() == expected.pts_us;
+    const bool passed = landed && first_video_seen && first_video_random_access &&
+        first_video_discontinuity && first_pts_matches && first_offset_matches &&
+        restart_offset_matches && landing_matches;
 
     const auto estimate = sink.index().estimateOffset(
         tlvdemux::Timestamp{target_us, 1000000}, source_size);
@@ -313,7 +322,31 @@ bool run_seek_case(std::ifstream& file, tlvdemux::Demuxer& demuxer,
               << " frames=" << sink.seekVideoUnits()
               << " read=" << bytes_read
               << " estimate-error=" << (estimate.has_value() ? std::to_string(estimate_error) : "n/a")
-              << " result=" << (passed ? "PASS" : "FAIL") << '\n';
+              << " result=" << (passed ? "PASS" : "FAIL");
+    if (!passed) {
+        std::cerr << " checks="
+                  << "landed:" << landed
+                  << ",first-video:" << first_video_seen
+                  << ",rap:" << first_video_random_access
+                  << ",discontinuity:" << first_video_discontinuity
+                  << ",first-pts:" << first_pts_matches
+                  << ",first-offset:" << first_offset_matches
+                  << ",restart-offset:" << restart_offset_matches
+                  << ",landing:" << landing_matches;
+        if (first_video_seen) {
+            std::cerr << " actual-first-pts=" << seconds(sink.firstVideoPtsUs())
+                      << " expected-first-pts=" << seconds(point.presentation_time.value)
+                      << " actual-first-offset=" << sink.firstVideoOffset()
+                      << " expected-first-offset=" << point.random_access_offset
+                      << " actual-restart-offset=" << sink.firstVideoRestartOffset()
+                      << " expected-restart-offset=" << point.signalling_offset;
+        }
+        if (landed) {
+            std::cerr << " actual-landing=" << seconds(sink.landingPtsUs())
+                      << " expected-landing=" << seconds(expected.pts_us);
+        }
+    }
+    std::cerr << '\n';
 
     if (passed) {
         if (!state.beginLanding(*generation) || !state.completeSeek(*generation)) {
@@ -404,11 +437,18 @@ int main(int argc, char** argv) {
         std::mt19937_64 random(options.seed);
         std::uniform_int_distribution<std::int64_t> targets(first_time, last_time);
         std::vector<std::int64_t> requested;
-        requested.reserve(options.cases + 1);
+        requested.reserve(options.cases + 4);
+        requested.push_back(first_time);
+        requested.push_back(
+            sink.index().seekPoints()[sink.index().seekPoints().size() / 2].presentation_time.value);
+        requested.push_back(sink.frames().back().pts_us);
+        std::optional<std::int64_t> repeated_random_target;
         for (std::size_t index = 0; index < options.cases; ++index) {
-            requested.push_back(targets(random));
+            const auto target = targets(random);
+            if (!repeated_random_target.has_value()) repeated_random_target = target;
+            requested.push_back(target);
         }
-        requested.push_back(requested.front()); // explicit A -> ... -> A regression
+        requested.push_back(*repeated_random_target); // explicit random A -> ... -> A regression
 
         std::size_t failures = 0;
         for (std::size_t index = 0; index < requested.size(); ++index) {

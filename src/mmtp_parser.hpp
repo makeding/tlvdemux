@@ -15,12 +15,14 @@ namespace tlvdemux::detail {
 
 struct TimestampMapping {
     std::uint64_t ntp = 0;
+    std::uint64_t restart_offset = 0;
 };
 
 struct ExtendedTimestampMapping {
     std::uint16_t decoding_time_offset = 0;
     std::vector<std::uint16_t> dts_pts_offsets;
     std::vector<std::uint16_t> pts_offsets;
+    std::uint64_t restart_offset = 0;
 };
 
 struct AssetMetadata {

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -263,6 +264,28 @@ std::vector<std::uint8_t> discovery_message() {
     asset(mpt_body, 0xf300, "hev1", video_descriptors);
     asset(mpt_body, 0xf310, "mp4a", audio_descriptors);
     asset(mpt_body, 0xf330, "stpp", subtitle_descriptors);
+    std::vector<std::uint8_t> mpt{0x20, 8};
+    append_u16(mpt, mpt_body.size());
+    mpt.insert(mpt.end(), mpt_body.begin(), mpt_body.end());
+
+    std::vector<std::uint8_t> pa{0x00, 0x00, 0x00};
+    append_u32(pa, 1 + mpt.size());
+    pa.push_back(0);
+    pa.insert(pa.end(), mpt.begin(), mpt.end());
+    return pa;
+}
+
+std::vector<std::uint8_t> video_discovery_message(
+    const std::optional<std::uint32_t> mpu_sequence) {
+    std::vector<std::uint8_t> descriptors;
+    descriptor(descriptors, 0x8011, {0x00, 0x00});
+    descriptor(descriptors, 0x8010, {0, 0, 0, 0, 0, 'j', 'p', 'n'});
+    if (mpu_sequence.has_value()) {
+        timing_descriptors(descriptors, *mpu_sequence, 180000);
+    }
+
+    std::vector<std::uint8_t> mpt_body{0xfc, 2, 0x00, 0x65, 0x00, 0x00, 1};
+    asset(mpt_body, 0xf300, "hev1", descriptors);
     std::vector<std::uint8_t> mpt{0x20, 8};
     append_u16(mpt, mpt_body.size());
     mpt.insert(mpt.end(), mpt_body.begin(), mpt_body.end());
@@ -888,6 +911,54 @@ void test_access_unit_restart_offset_is_snapshotted() {
           "AU used signalling received after the AU began as its restart checkpoint");
 }
 
+void test_restart_offset_includes_timestamp_mapping_origin() {
+    const auto timing_signalling = signalling_tlv(
+        1, 0, video_discovery_message(1));
+    const auto metadata_only_signalling = signalling_tlv(
+        2, 0, video_discovery_message(std::nullopt));
+    auto stream = timing_signalling;
+    const auto later_signalling_offset = static_cast<std::uint64_t>(stream.size());
+    stream.insert(stream.end(), metadata_only_signalling.begin(),
+                  metadata_only_signalling.end());
+
+    const auto add_video = [&](const std::uint32_t sequence,
+                               const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf300, sequence, 100U << 16U, false,
+                           mpu_payload(1, mfu)));
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    };
+    add_video(1, {0, 0, 0, 2, 0x46, 0x01});
+    add_video(2, {0, 0, 0, 3, 0x26, 0x01, 0x80});
+    add_video(3, {0, 0, 0, 2, 0x46, 0x01});
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+    const auto video = std::find_if(
+        sink.access_units.begin(), sink.access_units.end(), [](const auto& unit) {
+            return unit.codec == tlvdemux::Codec::Hevc;
+        });
+    check(video != sink.access_units.end() && video->random_access &&
+              video->restart_offset == 0 &&
+              video->restart_offset < later_signalling_offset,
+          "AU restart offset omitted the earlier timestamp mapping origin");
+
+    TestSink restarted_sink;
+    tlvdemux::Demuxer restarted(restarted_sink);
+    restarted.reposition(tlvdemux::RepositionOptions{video->restart_offset, true});
+    restarted.push(stream.data() + video->restart_offset,
+                   stream.size() - static_cast<std::size_t>(video->restart_offset));
+    restarted.flush();
+    check(std::any_of(restarted_sink.access_units.begin(),
+                      restarted_sink.access_units.end(), [](const auto& unit) {
+                          return unit.codec == tlvdemux::Codec::Hevc &&
+                              unit.random_access;
+                      }),
+          "timestamp-origin restart checkpoint could not reproduce its RAP");
+}
+
 } // namespace
 
 int main() {
@@ -908,6 +979,7 @@ int main() {
     test_reposition_preserves_timeline_and_absolute_offsets();
     test_hevc_irap_detection_without_mmtp_rap();
     test_access_unit_restart_offset_is_snapshotted();
+    test_restart_offset_includes_timestamp_mapping_origin();
     std::cout << "all tests passed\n";
     return 0;
 }
