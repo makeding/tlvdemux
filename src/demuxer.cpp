@@ -73,7 +73,9 @@ private:
                                    const std::optional<AudioInfo>& second) {
             if (first.has_value() != second.has_value()) return false;
             if (!first.has_value()) return true;
-            return first->component_type == second->component_type &&
+            return first->stream_content == second->stream_content &&
+                   first->component_type == second->component_type &&
+                   first->component_tag == second->component_tag &&
                    first->channel_layout == second->channel_layout &&
                    first->stream_type == second->stream_type &&
                    first->simulcast_group_tag == second->simulcast_group_tag &&

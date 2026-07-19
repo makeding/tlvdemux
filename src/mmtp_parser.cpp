@@ -270,7 +270,9 @@ bool parse_descriptors(ByteReader& reader, AssetMetadata& metadata) {
             }
             metadata.language.assign(reinterpret_cast<const char*>(payload + 7), 3);
             AudioInfo audio;
+            audio.stream_content = stream_content;
             audio.component_type = payload[1];
+            audio.component_tag = read_be16(payload + 2);
             audio.channel_layout = audio_channel_layout(audio.component_type);
             audio.stream_type = stream_type;
             audio.simulcast_group_tag = payload[5];

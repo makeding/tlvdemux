@@ -30,7 +30,9 @@ enum class AudioChannelLayout {
 };
 
 struct AudioInfo {
+    std::uint8_t stream_content = 0;
     std::uint8_t component_type = 0;
+    std::uint16_t component_tag = 0;
     AudioChannelLayout channel_layout = AudioChannelLayout::Unknown;
     std::uint8_t stream_type = 0;
     std::uint8_t simulcast_group_tag = 0;

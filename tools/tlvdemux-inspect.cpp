@@ -36,11 +36,11 @@ const char* audio_layout_name(const tlvdemux::AudioChannelLayout layout) {
     case tlvdemux::AudioChannelLayout::Mono: return "mono";
     case tlvdemux::AudioChannelLayout::DualMono: return "dual-mono";
     case tlvdemux::AudioChannelLayout::Stereo: return "stereo";
-    case tlvdemux::AudioChannelLayout::Channels2_1: return "2.1ch";
-    case tlvdemux::AudioChannelLayout::Channels3_0: return "3.0ch";
-    case tlvdemux::AudioChannelLayout::Channels2_2: return "2.2ch";
-    case tlvdemux::AudioChannelLayout::Channels4_0: return "4.0ch";
-    case tlvdemux::AudioChannelLayout::Channels5_0: return "5.0ch";
+    case tlvdemux::AudioChannelLayout::Channels2_1: return "2/1";
+    case tlvdemux::AudioChannelLayout::Channels3_0: return "3ch";
+    case tlvdemux::AudioChannelLayout::Channels2_2: return "2/2";
+    case tlvdemux::AudioChannelLayout::Channels4_0: return "4ch";
+    case tlvdemux::AudioChannelLayout::Channels5_0: return "5ch";
     case tlvdemux::AudioChannelLayout::Channels5_1: return "5.1ch";
     case tlvdemux::AudioChannelLayout::Channels3_3_1: return "3/3.1ch";
     case tlvdemux::AudioChannelLayout::Channels6_1: return "6.1ch";
@@ -95,6 +95,8 @@ struct Inspector final : tlvdemux::Sink {
                 std::cerr << " audio-layout=" << audio_layout_name(info.audio->channel_layout)
                           << " component-type=0x" << std::hex
                           << static_cast<unsigned>(info.audio->component_type) << std::dec
+                          << " component-tag=0x" << std::hex
+                          << info.audio->component_tag << std::dec
                           << " main=" << info.audio->main_component
                           << " sample-rate=" << info.audio->sample_rate;
             }
