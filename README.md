@@ -25,6 +25,8 @@ Shared-library builds are enabled by default. Linux produces
 `libtlvdemux.so.0` (with the versioned implementation file), while macOS
 produces the corresponding `libtlvdemux.0.dylib`. Use
 `-DBUILD_SHARED_LIBS=OFF` when a static `libtlvdemux.a` is preferred.
+The exported interface is a C++17 ABI, so dynamically linked consumers should
+use a compatible compiler and C++ standard library.
 
 Install the library, public headers and CMake target export with:
 

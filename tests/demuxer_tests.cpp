@@ -389,6 +389,23 @@ void test_signalling_fragmentation_aggregation_and_m2() {
                   return error.code == tlvdemux::ErrorCode::Discontinuity;
               }),
           "signalling sequence gap did not discard the fragment and recover at a complete message");
+
+    auto malformed_pa = pa;
+    malformed_pa[10] = 0xff;
+    malformed_pa[11] = 0xff;
+    auto malformed_stream = signalling_tlv(50, 0, malformed_pa);
+    const auto valid_after_malformed = signalling_tlv(51, 0, pa);
+    malformed_stream.insert(malformed_stream.end(),
+                            valid_after_malformed.begin(), valid_after_malformed.end());
+    TestSink malformed_sink;
+    tlvdemux::Demuxer malformed_demuxer(malformed_sink);
+    malformed_demuxer.push(malformed_stream.data(), malformed_stream.size());
+    malformed_demuxer.flush();
+    check(malformed_sink.tracks.size() == 3 &&
+              std::any_of(malformed_sink.errors.begin(), malformed_sink.errors.end(), [](const auto& error) {
+                  return error.code == tlvdemux::ErrorCode::MalformedInput;
+              }),
+          "malformed nested MPT length damaged later signalling recovery");
 }
 
 void test_track_discovery_and_deduplication() {
@@ -443,6 +460,14 @@ std::vector<std::uint8_t> mpu_payload(const std::uint32_t mpu_sequence,
     result.push_back(0);
     result.push_back(0);
     result.insert(result.end(), mfu.begin(), mfu.end());
+    return result;
+}
+
+std::vector<std::uint8_t> fragmented_mpu_payload(const std::uint32_t mpu_sequence,
+                                                 const std::uint8_t fragmentation,
+                                                 const std::vector<std::uint8_t>& piece) {
+    auto result = mpu_payload(mpu_sequence, piece);
+    result[2] = static_cast<std::uint8_t>(0x28U | (fragmentation << 1U));
     return result;
 }
 
@@ -510,6 +535,96 @@ void test_codec_output_and_timeline() {
           "first selected media timestamp was not normalized to zero");
 }
 
+void test_timestamp_overflow_rejection() {
+    auto pa = discovery_message();
+    const std::vector<std::uint8_t> timestamp_pattern{0x00, 0x01, 0x0c, 0, 0, 0, 1};
+    const auto first_timestamp = std::search(pa.begin(), pa.end(),
+                                             timestamp_pattern.begin(), timestamp_pattern.end());
+    check(first_timestamp != pa.end(), "test fixture has no video timestamp descriptor");
+    const auto second_timestamp = std::search(first_timestamp + 1, pa.end(),
+                                              timestamp_pattern.begin(), timestamp_pattern.end());
+    check(second_timestamp != pa.end(), "test fixture has no audio timestamp descriptor");
+    const auto timestamp_index = static_cast<std::size_t>(second_timestamp - pa.begin());
+    for (std::size_t index = 0; index < 4; ++index) pa[timestamp_index + 7 + index] = 0xff;
+    for (std::size_t index = 4; index < 8; ++index) pa[timestamp_index + 7 + index] = 0x00;
+
+    const std::vector<std::uint8_t> extended_tag{0x80, 0x26};
+    const auto audio_extended = std::search(second_timestamp, pa.end(),
+                                            extended_tag.begin(), extended_tag.end());
+    check(audio_extended != pa.end(), "test fixture has no audio extended timestamp descriptor");
+    const auto extended_index = static_cast<std::size_t>(audio_extended - pa.begin());
+    for (std::size_t index = 0; index < 4; ++index) pa[extended_index + 4 + index] = 0xff;
+
+    auto stream = signalling_tlv(1, 0, pa);
+    const auto repeated_signalling = signalling_tlv(2, 0, pa);
+    stream.insert(stream.end(), repeated_signalling.begin(), repeated_signalling.end());
+    auto add_media = [&](const std::uint16_t packet_id, const std::uint32_t sequence,
+                         const bool rap, const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(packet_id, sequence, 100U << 16U, rap, mpu_payload(1, mfu)));
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    };
+    add_media(0xf300, 1, true, {0, 0, 0, 2, 0x46, 0x01});
+    add_media(0xf300, 2, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+    add_media(0xf300, 3, false, {0, 0, 0, 2, 0x46, 0x01});
+    add_media(0xf310, 1, true, {0x11, 0x22});
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+    check(std::count_if(sink.access_units.begin(), sink.access_units.end(), [](const auto& unit) {
+              return unit.codec == tlvdemux::Codec::AacLatm;
+          }) == 0 &&
+              std::any_of(sink.errors.begin(), sink.errors.end(), [](const auto& error) {
+                  return error.code == tlvdemux::ErrorCode::Discontinuity;
+              }),
+          "timestamp normalization overflow was not rejected recoverably");
+}
+
+void test_track_selection_clears_incomplete_media() {
+    const auto discovery = discovery_stream();
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(discovery.data(), discovery.size());
+    demuxer.flush();
+    const auto video_track = sink.tracks[0].track_id;
+
+    const auto first_fragment = tlv_for_mmtp(
+        1, mmtp_packet(0xf300, 1, 100U << 16U, true,
+                       fragmented_mpu_payload(1, 1, {0, 0, 0, 3, 0x02})));
+    const auto boundary = tlv(0xff, {});
+    auto partial_stream = first_fragment;
+    partial_stream.insert(partial_stream.end(), boundary.begin(), boundary.end());
+    demuxer.push(partial_stream.data(), partial_stream.size());
+
+    demuxer.selectTrack(tlvdemux::TrackKind::Video, video_track);
+
+    const auto stale_last = tlv_for_mmtp(
+        1, mmtp_packet(0xf300, 2, 100U << 16U, false,
+                       fragmented_mpu_payload(1, 3, {0x01, 0x80})));
+    auto stale_stream = stale_last;
+    stale_stream.insert(stale_stream.end(), boundary.begin(), boundary.end());
+    demuxer.push(stale_stream.data(), stale_stream.size());
+
+    demuxer.push(discovery.data(), discovery.size());
+    auto add_video = [&](const std::uint32_t sequence, const bool rap,
+                         const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf300, sequence, 100U << 16U, rap, mpu_payload(1, mfu)));
+        demuxer.push(packet.data(), packet.size());
+    };
+    add_video(10, true, {0, 0, 0, 2, 0x46, 0x01});
+    add_video(11, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+    add_video(12, false, {0, 0, 0, 2, 0x46, 0x01});
+    demuxer.flush();
+
+    check(std::count_if(sink.access_units.begin(), sink.access_units.end(), [](const auto& unit) {
+              return unit.codec == tlvdemux::Codec::Hevc;
+          }) == 1,
+          "track selection retained stale fragmented media or failed to resume at a fresh RAP");
+}
+
 } // namespace
 
 int main() {
@@ -523,6 +638,8 @@ int main() {
     test_global_packet_state_budget();
     test_track_discovery_and_deduplication();
     test_codec_output_and_timeline();
+    test_timestamp_overflow_rejection();
+    test_track_selection_clears_incomplete_media();
     std::cout << "all tests passed\n";
     return 0;
 }
