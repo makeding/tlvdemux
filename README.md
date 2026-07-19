@@ -69,6 +69,11 @@ and malformed stream data is reported through `onError()` while parsing
 continues where recovery is possible. Call `reset()` when replacing the input
 stream; service and track selection policies are retained.
 
+Audio tracks expose their MH audio component metadata through
+`TrackInfo::audio`, including the signalled channel layout, component type,
+main-component flag and sampling rate. Select tracks from this metadata rather
+than assuming packet IDs remain fixed between programmes.
+
 ## Inspect a stream
 
 ```sh

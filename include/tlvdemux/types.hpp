@@ -11,6 +11,37 @@ namespace tlvdemux {
 enum class Codec { Hevc, AacLatm, Ttml };
 enum class TrackKind { Video, Audio, Subtitle };
 
+enum class AudioChannelLayout {
+    Unknown,
+    Mono,
+    DualMono,
+    Stereo,
+    Channels2_1,
+    Channels3_0,
+    Channels2_2,
+    Channels4_0,
+    Channels5_0,
+    Channels5_1,
+    Channels3_3_1,
+    Channels6_1,
+    Channels7_1,
+    Channels10_2,
+    Channels22_2,
+};
+
+struct AudioInfo {
+    std::uint8_t component_type = 0;
+    AudioChannelLayout channel_layout = AudioChannelLayout::Unknown;
+    std::uint8_t stream_type = 0;
+    std::uint8_t simulcast_group_tag = 0;
+    bool es_multi_lingual = false;
+    bool main_component = false;
+    std::uint8_t quality_indicator = 0;
+    std::uint8_t sampling_rate_code = 0;
+    std::uint32_t sample_rate = 0;
+    std::string secondary_language;
+};
+
 struct Timestamp {
     std::int64_t value = 0;
     std::uint32_t timescale = 1;
@@ -31,6 +62,7 @@ struct TrackInfo {
     std::string language;
     std::uint8_t component_tag = 0;
     std::uint32_t timescale = 1;
+    std::optional<AudioInfo> audio;
 };
 
 struct AccessUnit {
@@ -70,4 +102,3 @@ struct Limits {
 };
 
 } // namespace tlvdemux
-

@@ -69,11 +69,26 @@ public:
 
 private:
     static bool same_track(const TrackInfo& left, const TrackInfo& right) {
+        const auto same_audio = [](const std::optional<AudioInfo>& first,
+                                   const std::optional<AudioInfo>& second) {
+            if (first.has_value() != second.has_value()) return false;
+            if (!first.has_value()) return true;
+            return first->component_type == second->component_type &&
+                   first->channel_layout == second->channel_layout &&
+                   first->stream_type == second->stream_type &&
+                   first->simulcast_group_tag == second->simulcast_group_tag &&
+                   first->es_multi_lingual == second->es_multi_lingual &&
+                   first->main_component == second->main_component &&
+                   first->quality_indicator == second->quality_indicator &&
+                   first->sampling_rate_code == second->sampling_rate_code &&
+                   first->sample_rate == second->sample_rate &&
+                   first->secondary_language == second->secondary_language;
+        };
         return left.track_id == right.track_id && left.context_id == right.context_id &&
                left.packet_id == right.packet_id && left.asset_id == right.asset_id &&
                left.kind == right.kind && left.codec == right.codec &&
                left.language == right.language && left.component_tag == right.component_tag &&
-               left.timescale == right.timescale;
+               left.timescale == right.timescale && same_audio(left.audio, right.audio);
     }
 
     void service(ServiceInfo info) {

@@ -201,6 +201,41 @@ bool descriptor_length(ByteReader& reader, const std::uint16_t tag, std::uint32_
     return reader.read_u32(length);
 }
 
+AudioChannelLayout audio_channel_layout(const std::uint8_t component_type) {
+    switch (component_type & 0x1fU) {
+    case 0x01: return AudioChannelLayout::Mono;
+    case 0x02: return AudioChannelLayout::DualMono;
+    case 0x03: return AudioChannelLayout::Stereo;
+    case 0x04: return AudioChannelLayout::Channels2_1;
+    case 0x05: return AudioChannelLayout::Channels3_0;
+    case 0x06: return AudioChannelLayout::Channels2_2;
+    case 0x07: return AudioChannelLayout::Channels4_0;
+    case 0x08: return AudioChannelLayout::Channels5_0;
+    case 0x09: return AudioChannelLayout::Channels5_1;
+    case 0x0a: return AudioChannelLayout::Channels3_3_1;
+    case 0x0b: return AudioChannelLayout::Channels6_1;
+    case 0x0c:
+    case 0x0d:
+    case 0x0e:
+    case 0x0f: return AudioChannelLayout::Channels7_1;
+    case 0x10: return AudioChannelLayout::Channels10_2;
+    case 0x11: return AudioChannelLayout::Channels22_2;
+    default: return AudioChannelLayout::Unknown;
+    }
+}
+
+std::uint32_t audio_sample_rate(const std::uint8_t code) {
+    switch (code) {
+    case 0x01: return 16000;
+    case 0x02: return 22050;
+    case 0x03: return 24000;
+    case 0x05: return 32000;
+    case 0x06: return 44100;
+    case 0x07: return 48000;
+    default: return 0;
+    }
+}
+
 bool parse_descriptors(ByteReader& reader, AssetMetadata& metadata) {
     while (reader.remaining() != 0) {
         std::uint16_t tag = 0;
@@ -229,8 +264,26 @@ bool parse_descriptors(ByteReader& reader, AssetMetadata& metadata) {
         } else if (tag == 0x8014 && length >= 10) {
             const auto stream_content = static_cast<std::uint8_t>(payload[0] & 0x0fU);
             const auto stream_type = payload[4];
-            if (metadata.component_tag == 0) metadata.component_tag = payload[3];
+            const auto flags = payload[6];
+            if (metadata.component_tag == 0) {
+                metadata.component_tag = static_cast<std::uint8_t>(read_be16(payload + 2));
+            }
             metadata.language.assign(reinterpret_cast<const char*>(payload + 7), 3);
+            AudioInfo audio;
+            audio.component_type = payload[1];
+            audio.channel_layout = audio_channel_layout(audio.component_type);
+            audio.stream_type = stream_type;
+            audio.simulcast_group_tag = payload[5];
+            audio.es_multi_lingual = (flags & 0x80U) != 0;
+            audio.main_component = (flags & 0x40U) != 0;
+            audio.quality_indicator = static_cast<std::uint8_t>((flags >> 4U) & 0x03U);
+            audio.sampling_rate_code = static_cast<std::uint8_t>((flags >> 1U) & 0x07U);
+            audio.sample_rate = audio_sample_rate(audio.sampling_rate_code);
+            if (audio.es_multi_lingual) {
+                if (length < 13) return false;
+                audio.secondary_language.assign(reinterpret_cast<const char*>(payload + 10), 3);
+            }
+            metadata.audio = std::move(audio);
             metadata.aac_latm = stream_content == 0x03 && stream_type == 0x11;
         } else if (tag == 0x8020 && length >= 8 && read_be16(payload) == 0x0020) {
             const auto* additional = payload + 2;
@@ -409,6 +462,7 @@ bool MmtpParser::parse_mpt(const std::uint8_t* data, const std::size_t size,
         track.language = metadata.language;
         track.component_tag = metadata.component_tag;
         track.timescale = metadata.timescale;
+        track.audio = metadata.audio;
 
         bool supported = true;
         if (asset_type == "hev1") {

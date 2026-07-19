@@ -30,6 +30,27 @@ const char* error_name(const tlvdemux::ErrorCode code) {
     return "unknown";
 }
 
+const char* audio_layout_name(const tlvdemux::AudioChannelLayout layout) {
+    switch (layout) {
+    case tlvdemux::AudioChannelLayout::Unknown: return "unknown";
+    case tlvdemux::AudioChannelLayout::Mono: return "mono";
+    case tlvdemux::AudioChannelLayout::DualMono: return "dual-mono";
+    case tlvdemux::AudioChannelLayout::Stereo: return "stereo";
+    case tlvdemux::AudioChannelLayout::Channels2_1: return "2.1ch";
+    case tlvdemux::AudioChannelLayout::Channels3_0: return "3.0ch";
+    case tlvdemux::AudioChannelLayout::Channels2_2: return "2.2ch";
+    case tlvdemux::AudioChannelLayout::Channels4_0: return "4.0ch";
+    case tlvdemux::AudioChannelLayout::Channels5_0: return "5.0ch";
+    case tlvdemux::AudioChannelLayout::Channels5_1: return "5.1ch";
+    case tlvdemux::AudioChannelLayout::Channels3_3_1: return "3/3.1ch";
+    case tlvdemux::AudioChannelLayout::Channels6_1: return "6.1ch";
+    case tlvdemux::AudioChannelLayout::Channels7_1: return "7.1ch";
+    case tlvdemux::AudioChannelLayout::Channels10_2: return "10.2ch";
+    case tlvdemux::AudioChannelLayout::Channels22_2: return "22.2ch";
+    }
+    return "unknown";
+}
+
 struct Inspector final : tlvdemux::Sink {
     bool list = false;
     bool trace = false;
@@ -69,7 +90,15 @@ struct Inspector final : tlvdemux::Sink {
             std::cerr << "track id=" << info.track_id << " context=" << info.context_id
                       << " packet-id=0x" << std::hex << info.packet_id << std::dec
                       << " codec=" << codec_name(info.codec)
-                      << " language=" << info.language << " timescale=" << info.timescale << '\n';
+                      << " language=" << info.language << " timescale=" << info.timescale;
+            if (info.audio.has_value()) {
+                std::cerr << " audio-layout=" << audio_layout_name(info.audio->channel_layout)
+                          << " component-type=0x" << std::hex
+                          << static_cast<unsigned>(info.audio->component_type) << std::dec
+                          << " main=" << info.audio->main_component
+                          << " sample-rate=" << info.audio->sample_rate;
+            }
+            std::cerr << '\n';
         }
     }
 
