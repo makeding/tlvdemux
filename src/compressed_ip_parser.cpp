@@ -12,6 +12,13 @@ CompressedIpParser::CompressedIpParser(const Limits& limits, ServiceCallback on_
 
 void CompressedIpParser::reset() {
     contexts_.clear();
+    active_packet_states_ = 0;
+}
+
+void CompressedIpParser::select_service(std::optional<std::uint32_t> context_id) {
+    if (selected_service_ == context_id) return;
+    selected_service_ = context_id;
+    reset();
 }
 
 void CompressedIpParser::flush() {
@@ -36,7 +43,16 @@ MmtpParser* CompressedIpParser::context(const std::uint32_t context_id,
         [this](const std::uint32_t id, std::vector<std::uint8_t> package_id) {
             on_service_(ServiceInfo{id, std::move(package_id)});
         },
-        on_track_, on_access_unit_, on_error_);
+        on_track_, on_access_unit_,
+        [this]() {
+            if (active_packet_states_ >= limits_.max_packet_states) return false;
+            ++active_packet_states_;
+            return true;
+        },
+        [this]() {
+            if (active_packet_states_ != 0) --active_packet_states_;
+        },
+        on_error_);
     auto* result = parser.get();
     contexts_.emplace(context_id, std::move(parser));
     on_service_(ServiceInfo{context_id, {}});
@@ -99,6 +115,7 @@ void CompressedIpParser::parse_compressed(const TlvPacketView& packet) {
         return;
     }
     const auto context_id = static_cast<std::uint32_t>(read_be16(packet.payload) >> 4U);
+    if (selected_service_.has_value() && *selected_service_ != context_id) return;
     const auto mode = packet.payload[2];
     std::size_t cursor = 3;
     if (mode == 0x60) {

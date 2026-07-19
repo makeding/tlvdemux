@@ -11,12 +11,25 @@ namespace tlvdemux::detail {
 
 MmtpParser::MmtpParser(const std::uint32_t context_id, const Limits& limits,
                        PackageCallback on_package, TrackCallback on_track,
-                       AccessUnitCallback on_access_unit, ErrorCallback on_error)
+                       AccessUnitCallback on_access_unit,
+                       StateAcquireCallback acquire_state,
+                       StateReleaseCallback release_state, ErrorCallback on_error)
     : context_id_(context_id), limits_(limits), on_package_(std::move(on_package)),
       on_track_(std::move(on_track)), on_access_unit_(std::move(on_access_unit)),
+      acquire_state_(std::move(acquire_state)), release_state_(std::move(release_state)),
       on_error_(std::move(on_error)) {}
 
+MmtpParser::~MmtpParser() {
+    release_all_states();
+}
+
+void MmtpParser::release_all_states() {
+    const auto count = signalling_.size() + tracks_.size();
+    for (std::size_t index = 0; index < count; ++index) release_state_();
+}
+
 void MmtpParser::reset() {
+    release_all_states();
     signalling_.clear();
     tracks_.clear();
     latest_full_ntp_.reset();
@@ -49,6 +62,7 @@ void MmtpParser::flush() {
         track.discontinuity = true;
         if (track.info.kind == TrackKind::Video) track.wait_for_rap = true;
     }
+    for (std::size_t index = 0; index < signalling_.size(); ++index) release_state_();
     signalling_.clear();
 }
 
@@ -410,7 +424,7 @@ bool MmtpParser::parse_mpt(const std::uint8_t* data, const std::size_t size,
         } else {
             supported = false;
         }
-        if (supported) install_track(std::move(track), std::move(metadata));
+        if (supported) install_track(std::move(track), std::move(metadata), input_offset);
     }
     return body.remaining() == 0;
 }
@@ -452,14 +466,16 @@ void MmtpParser::parse_signalling(const std::uint16_t packet_id,
                   "truncated MMTP signalling payload header");
         return;
     }
-    if (signalling_.size() >= limits_.max_packet_states &&
-        signalling_.find(packet_id) == signalling_.end()) {
-        on_error_(ErrorCode::ResourceLimit, input_offset, true,
-                  "MMTP packet-state limit exceeded");
-        return;
+    auto assembler_entry = signalling_.find(packet_id);
+    if (assembler_entry == signalling_.end()) {
+        if (!acquire_state_()) {
+            on_error_(ErrorCode::ResourceLimit, input_offset, true,
+                      "global MMTP packet/track-state limit exceeded");
+            return;
+        }
+        assembler_entry = signalling_.emplace(packet_id, SignallingAssembler{}).first;
     }
-
-    auto& assembler = signalling_[packet_id];
+    auto& assembler = assembler_entry->second;
     const auto flags = data[0];
     const auto fragmentation = static_cast<std::uint8_t>(flags >> 6U);
     const bool length_extension = ((flags >> 1U) & 1U) != 0;
@@ -563,8 +579,18 @@ void MmtpParser::parse_signalling(const std::uint16_t packet_id,
     }
 }
 
-void MmtpParser::install_track(TrackInfo info, AssetMetadata metadata) {
-    auto& state = tracks_[info.packet_id];
+void MmtpParser::install_track(TrackInfo info, AssetMetadata metadata,
+                               const std::uint64_t input_offset) {
+    auto state_entry = tracks_.find(info.packet_id);
+    if (state_entry == tracks_.end()) {
+        if (!acquire_state_()) {
+            on_error_(ErrorCode::ResourceLimit, input_offset, true,
+                      "global MMTP packet/track-state limit exceeded");
+            return;
+        }
+        state_entry = tracks_.emplace(info.packet_id, TrackState{}).first;
+    }
+    auto& state = state_entry->second;
     const bool first_install = state.stable_track_id == 0;
     const bool codec_changed = !first_install && state.info.codec != info.codec;
     state.stable_track_id = on_track_(info);

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 
 #include "mmtp_parser.hpp"
@@ -23,6 +24,7 @@ public:
     void consume(const TlvPacketView&);
     void flush();
     void reset();
+    void select_service(std::optional<std::uint32_t> context_id);
 
 private:
     MmtpParser* context(std::uint32_t context_id, std::uint64_t input_offset);
@@ -34,6 +36,8 @@ private:
     TrackCallback on_track_;
     AccessUnitCallback on_access_unit_;
     ErrorCallback on_error_;
+    std::optional<std::uint32_t> selected_service_;
+    std::size_t active_packet_states_ = 0;
     std::unordered_map<std::uint32_t, std::unique_ptr<MmtpParser>> contexts_;
 };
 

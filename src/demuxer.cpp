@@ -54,7 +54,7 @@ public:
 
     void select_service(std::optional<std::uint32_t> context_id) {
         selected_service_ = context_id;
-        ip_.reset();
+        ip_.select_service(context_id);
         services_.clear();
         current_tracks_.clear();
         origin_.reset();

@@ -43,9 +43,13 @@ public:
     using PackageCallback = std::function<void(std::uint32_t, std::vector<std::uint8_t>)>;
     using TrackCallback = std::function<std::uint64_t(TrackInfo)>;
     using AccessUnitCallback = std::function<void(TimedAccessUnit)>;
+    using StateAcquireCallback = std::function<bool()>;
+    using StateReleaseCallback = std::function<void()>;
 
     MmtpParser(std::uint32_t context_id, const Limits&, PackageCallback,
-               TrackCallback, AccessUnitCallback, ErrorCallback);
+               TrackCallback, AccessUnitCallback, StateAcquireCallback,
+               StateReleaseCallback, ErrorCallback);
+    ~MmtpParser();
 
     void push(const std::uint8_t* data, std::size_t size, std::uint64_t input_offset);
     void flush();
@@ -128,7 +132,8 @@ private:
                           std::vector<std::uint8_t>, bool random_access,
                           std::uint64_t input_offset);
     void finalize_hevc(TrackState&);
-    void install_track(TrackInfo, AssetMetadata);
+    void install_track(TrackInfo, AssetMetadata, std::uint64_t input_offset);
+    void release_all_states();
     void accept_signalling_unit(const std::uint8_t* data, std::size_t size,
                                 std::uint64_t input_offset);
     bool parse_pa_message(const std::uint8_t* data, std::size_t size,
@@ -149,6 +154,8 @@ private:
     PackageCallback on_package_;
     TrackCallback on_track_;
     AccessUnitCallback on_access_unit_;
+    StateAcquireCallback acquire_state_;
+    StateReleaseCallback release_state_;
     ErrorCallback on_error_;
     std::unordered_map<std::uint16_t, SignallingAssembler> signalling_;
     std::unordered_map<std::uint16_t, TrackState> tracks_;
