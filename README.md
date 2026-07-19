@@ -13,12 +13,24 @@ timelines, and HEVC/AAC-LATM/TTML access-unit output.
 ## Build and test
 
 ```sh
-nix-shell -p cmake --run 'cmake -S . -B build -DCMAKE_BUILD_TYPE=Release'
-nix-shell -p cmake --run 'cmake --build build -j8'
-nix-shell -p cmake --run 'ctest --test-dir build --output-on-failure'
+nix-shell
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+ctest --test-dir build --output-on-failure
 ```
 
 No runtime dependency other than the C++ standard library is required.
+
+Shared-library builds are enabled by default. Linux produces
+`libtlvdemux.so.0` (with the versioned implementation file), while macOS
+produces the corresponding `libtlvdemux.0.dylib`. Use
+`-DBUILD_SHARED_LIBS=OFF` when a static `libtlvdemux.a` is preferred.
+
+Install the library, public headers and CMake target export with:
+
+```sh
+cmake --install build --prefix /desired/prefix
+```
 
 ## Inspect a stream
 
@@ -27,6 +39,8 @@ No runtime dependency other than the C++ standard library is required.
 ./build/tlvdemux-inspect --trace-au test.tlv
 ./build/tlvdemux-inspect --video video.hevc --audio audio.loas \
   --subtitle subtitle.ttml test.tlv
+./build/tlvdemux-inspect --audio secondary.loas \
+  --audio-packet-id 0xf311 test.tlv
 ```
 
 Use Mirakurun's raw 4K path with `decode=0` when capturing validation input:

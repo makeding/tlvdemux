@@ -37,6 +37,9 @@ struct Inspector final : tlvdemux::Sink {
     std::optional<std::uint64_t> video_track;
     std::optional<std::uint64_t> audio_track;
     std::optional<std::uint64_t> subtitle_track;
+    std::optional<std::uint16_t> wanted_video_packet_id;
+    std::optional<std::uint16_t> wanted_audio_packet_id;
+    std::optional<std::uint16_t> wanted_subtitle_packet_id;
     std::ofstream video;
     std::ofstream audio;
     std::ofstream subtitle;
@@ -50,9 +53,18 @@ struct Inspector final : tlvdemux::Sink {
 
     void onTrack(const tlvdemux::TrackInfo& info) override {
         tracks[info.track_id] = info;
-        if (info.kind == tlvdemux::TrackKind::Video && !video_track.has_value()) video_track = info.track_id;
-        if (info.kind == tlvdemux::TrackKind::Audio && !audio_track.has_value()) audio_track = info.track_id;
-        if (info.kind == tlvdemux::TrackKind::Subtitle && !subtitle_track.has_value()) subtitle_track = info.track_id;
+        if (info.kind == tlvdemux::TrackKind::Video && !video_track.has_value() &&
+            (!wanted_video_packet_id.has_value() || *wanted_video_packet_id == info.packet_id)) {
+            video_track = info.track_id;
+        }
+        if (info.kind == tlvdemux::TrackKind::Audio && !audio_track.has_value() &&
+            (!wanted_audio_packet_id.has_value() || *wanted_audio_packet_id == info.packet_id)) {
+            audio_track = info.track_id;
+        }
+        if (info.kind == tlvdemux::TrackKind::Subtitle && !subtitle_track.has_value() &&
+            (!wanted_subtitle_packet_id.has_value() || *wanted_subtitle_packet_id == info.packet_id)) {
+            subtitle_track = info.track_id;
+        }
         if (list) {
             std::cerr << "track id=" << info.track_id << " context=" << info.context_id
                       << " packet-id=0x" << std::hex << info.packet_id << std::dec
@@ -93,7 +105,15 @@ struct Inspector final : tlvdemux::Sink {
 
 void usage() {
     std::cerr << "usage: tlvdemux-inspect [--list] [--trace-au] [--service ID]"
-                 " [--video FILE] [--audio FILE] [--subtitle FILE] INPUT\n";
+                 " [--video FILE] [--video-packet-id ID]"
+                 " [--audio FILE] [--audio-packet-id ID]"
+                 " [--subtitle FILE] [--subtitle-packet-id ID] INPUT\n";
+}
+
+std::uint16_t parse_packet_id(const std::string& value) {
+    const auto parsed = std::stoul(value, nullptr, 0);
+    if (parsed > 0xffffU) throw std::runtime_error("packet ID is outside the 16-bit range");
+    return static_cast<std::uint16_t>(parsed);
 }
 
 } // namespace
@@ -113,6 +133,9 @@ int main(int argc, char** argv) {
             if (argument == "--list") inspector.list = true;
             else if (argument == "--trace-au") inspector.trace = true;
             else if (argument == "--service") service = static_cast<std::uint32_t>(std::stoul(value("--service"), nullptr, 0));
+            else if (argument == "--video-packet-id") inspector.wanted_video_packet_id = parse_packet_id(value("--video-packet-id"));
+            else if (argument == "--audio-packet-id") inspector.wanted_audio_packet_id = parse_packet_id(value("--audio-packet-id"));
+            else if (argument == "--subtitle-packet-id") inspector.wanted_subtitle_packet_id = parse_packet_id(value("--subtitle-packet-id"));
             else if (argument == "--video") {
                 const auto path = value("--video");
                 inspector.video.open(path, std::ios::binary);
@@ -158,6 +181,15 @@ int main(int argc, char** argv) {
             if (count > 0) demuxer.push(buffer.data(), static_cast<std::size_t>(count));
         }
         demuxer.flush();
+        if (inspector.video.is_open() && !inspector.video_track.has_value()) {
+            throw std::runtime_error("requested video packet ID was not discovered");
+        }
+        if (inspector.audio.is_open() && !inspector.audio_track.has_value()) {
+            throw std::runtime_error("requested audio packet ID was not discovered");
+        }
+        if (inspector.subtitle.is_open() && !inspector.subtitle_track.has_value()) {
+            throw std::runtime_error("requested subtitle packet ID was not discovered");
+        }
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "tlvdemux-inspect: " << error.what() << '\n';
