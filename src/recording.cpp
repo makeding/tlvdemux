@@ -255,6 +255,22 @@ std::optional<SeekPoint> RecordingIndex::previousSync(const Timestamp target) co
     return *std::prev(found);
 }
 
+std::optional<SeekPoints> RecordingIndex::seekPointsFor(const Timestamp target) const {
+    std::int64_t target_us = 0;
+    if (seek_points_.empty() || !timestamp_microseconds(target, target_us)) return std::nullopt;
+    const auto upper = std::upper_bound(
+        seek_points_.begin(), seek_points_.end(), target_us,
+        [](const std::int64_t value, const SeekPoint& point) {
+            return value < point.presentation_time.value;
+        });
+    if (upper == seek_points_.begin()) return SeekPoints{*upper, std::nullopt};
+    const auto previous = std::prev(upper);
+    if (upper == seek_points_.end() || previous->presentation_time.value == target_us) {
+        return SeekPoints{*previous, std::nullopt};
+    }
+    return SeekPoints{*previous, *upper};
+}
+
 std::optional<std::uint64_t> RecordingIndex::estimateOffset(
     const Timestamp target, const std::uint64_t source_size) const {
     std::int64_t target_us = 0;

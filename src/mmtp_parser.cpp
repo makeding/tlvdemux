@@ -799,6 +799,11 @@ void MmtpParser::finalize_hevc(TrackState& track) {
     auto& pending = track.pending_hevc;
     if (!pending.active) return;
     if (pending.has_vcl) {
+        if (track.wait_for_rap && !pending.random_access) {
+            pending = {};
+            return;
+        }
+        if (pending.random_access) track.wait_for_rap = false;
         emit_access_unit(track, pending.mpu_sequence, std::move(pending.data),
                          pending.random_access, pending.input_offset);
     } else {
@@ -831,6 +836,7 @@ void MmtpParser::consume_complete_mfu(TrackState& track,
         }
         const auto nal_type = static_cast<std::uint8_t>((data[4] >> 1U) & 0x3fU);
         const bool is_vcl = nal_type <= 31;
+        const bool is_irap = nal_type >= 16 && nal_type <= 23;
         const bool first_slice = is_vcl && nal_size >= 3 && (data[6] & 0x80U) != 0;
         auto& pending = track.pending_hevc;
         const bool begins_access_unit = nal_type == 35 ||
@@ -854,7 +860,7 @@ void MmtpParser::consume_complete_mfu(TrackState& track,
                       "HEVC decoded access unit exceeds configured limit");
             return;
         }
-        pending.random_access = pending.random_access || random_access;
+        pending.random_access = pending.random_access || random_access || is_irap;
         pending.has_vcl = pending.has_vcl || is_vcl;
         pending.data.insert(pending.data.end(), {0x00, 0x00, 0x01});
         pending.data.insert(pending.data.end(), data + 4, data + size);
@@ -1075,10 +1081,6 @@ void MmtpParser::parse_mpu(const std::uint16_t packet_id,
         on_error_(ErrorCode::MalformedInput, input_offset, true,
                   "aggregated MPU payload is also fragmented");
         return;
-    }
-    if (track.wait_for_rap) {
-        if (!random_access) return;
-        track.wait_for_rap = false;
     }
     if (!track.current_mpu_sequence.has_value() || *track.current_mpu_sequence != mpu_sequence) {
         if (track.current_mpu_sequence.has_value()) {

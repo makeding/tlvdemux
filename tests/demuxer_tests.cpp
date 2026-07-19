@@ -833,6 +833,30 @@ void test_reposition_preserves_timeline_and_absolute_offsets() {
           "reposition re-emitted unchanged track metadata");
 }
 
+void test_hevc_irap_detection_without_mmtp_rap() {
+    auto stream = discovery_stream();
+    const auto add_video = [&](const std::uint32_t sequence,
+                               const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf300, sequence, 100U << 16U, false, mpu_payload(1, mfu)));
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    };
+    add_video(1, {0, 0, 0, 2, 0x46, 0x01});
+    add_video(2, {0, 0, 0, 3, 0x26, 0x01, 0x80});
+    add_video(3, {0, 0, 0, 2, 0x46, 0x01});
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+    const auto video = std::find_if(
+        sink.access_units.begin(), sink.access_units.end(), [](const auto& unit) {
+            return unit.codec == tlvdemux::Codec::Hevc;
+        });
+    check(video != sink.access_units.end() && video->random_access,
+          "HEVC IRAP NAL was not exposed as a random-access AU without MMTP RAP");
+}
+
 } // namespace
 
 int main() {
@@ -851,6 +875,7 @@ int main() {
     test_track_selection_clears_incomplete_media();
     test_fragmented_signalling_restart_offset();
     test_reposition_preserves_timeline_and_absolute_offsets();
+    test_hevc_irap_detection_without_mmtp_rap();
     std::cout << "all tests passed\n";
     return 0;
 }

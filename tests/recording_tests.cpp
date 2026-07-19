@@ -142,6 +142,12 @@ void test_recording_index() {
               previous->signalling_offset == 60 &&
               previous->random_access_offset == 2100,
           "previous-sync lookup selected the wrong RAP");
+    const auto surrounding = index.seekPointsFor(tlvdemux::Timestamp{1, 1});
+    check(surrounding.has_value() &&
+              surrounding->first.presentation_time.value == 0 &&
+              surrounding->second.has_value() &&
+              surrounding->second->presentation_time.value == 2000000,
+          "two-sided seek map lookup did not return surrounding RAPs");
 
     const auto middle_estimate = index.estimateOffset(tlvdemux::Timestamp{1, 1}, 4100);
     check(middle_estimate.has_value() && *middle_estimate == 1100,

@@ -25,6 +25,11 @@ struct SeekPoint {
     std::uint64_t bootstrap_id = 0;
 };
 
+struct SeekPoints {
+    SeekPoint first;
+    std::optional<SeekPoint> second;
+};
+
 class RecordingIndex {
 public:
     void reset();
@@ -41,6 +46,7 @@ public:
     void fail();
 
     std::optional<SeekPoint> previousSync(Timestamp target) const;
+    std::optional<SeekPoints> seekPointsFor(Timestamp target) const;
     std::optional<std::uint64_t> estimateOffset(Timestamp target,
                                                 std::uint64_t source_size) const;
 
