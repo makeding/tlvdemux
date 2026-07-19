@@ -62,7 +62,7 @@ struct TrackInfo {
     TrackKind kind = TrackKind::Video;
     Codec codec = Codec::Hevc;
     std::string language;
-    std::uint8_t component_tag = 0;
+    std::uint16_t component_tag = 0;
     std::uint32_t timescale = 1;
     std::optional<AudioInfo> audio;
 };

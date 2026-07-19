@@ -98,12 +98,15 @@ emitted track.
 The library assumes any required B61 descrambling has already happened before
 the bytes reach `Demuxer::push()`. In the validation setup, Mirakurun
 `decode=0` preserves the MMT/TLV stream while the tuner/frontend path supplies
-already-usable media payloads.
+already-usable media payloads. B61 message-authentication metadata is parsed so
+an appended authentication code is not exposed as part of the media payload;
+cryptographic verification itself remains the caller's responsibility.
 
 ## Current scope
 
 Version 0.1 supports the ARIB broadcast subset exercised by the validation
-streams: TLV compressed-IP modes `0x60`/`0x61`, MMTP signalling and fragmented
-media, HEVC Annex B, AAC-LATM/LOAS, and ARIB STD-B62 TTML. CAS/descrambling,
+streams: all four HCfB compressed-IP modes (`0x20`, `0x21`, `0x60`, `0x61`),
+MMTP signalling and fragmented media, HEVC Annex B, AAC-LATM/LOAS, and ARIB
+STD-B62 TTML. CAS/descrambling,
 TTML rendering, EPG/application assets, seeking, indexing, and general-purpose
 ISO MMT are outside the library's current scope.

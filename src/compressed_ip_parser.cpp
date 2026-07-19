@@ -118,22 +118,26 @@ void CompressedIpParser::parse_compressed(const TlvPacketView& packet) {
     if (selected_service_.has_value() && *selected_service_ != context_id) return;
     const auto mode = packet.payload[2];
     std::size_t cursor = 3;
-    if (mode == 0x60) {
-        constexpr std::size_t partial_ipv6_and_udp_size = 38 + 4;
-        if (packet.size - cursor < partial_ipv6_and_udp_size) {
-            on_error_(ErrorCode::MalformedInput, packet.input_offset, true,
-                      "truncated partial IPv6/UDP compressed header");
-            return;
-        }
-        cursor += partial_ipv6_and_udp_size;
+    std::size_t compressed_header_size = 0;
+    if (mode == 0x20) {
+        // ARIB STD-B32 Part 3 3.7: partial IPv4 (16 bytes) and
+        // partial UDP (4 bytes).
+        compressed_header_size = 16 + 4;
+    } else if (mode == 0x21) {
+        compressed_header_size = 2; // IPv4 identifier
+    } else if (mode == 0x60) {
+        compressed_header_size = 38 + 4; // partial IPv6 and partial UDP
     } else if (mode != 0x61) {
-        on_error_(mode == 0x20 || mode == 0x21
-                      ? ErrorCode::UnsupportedFeature
-                      : ErrorCode::MalformedInput,
-                  packet.input_offset, true,
+        on_error_(ErrorCode::MalformedInput, packet.input_offset, true,
                   "unsupported compressed-IP context identification mode");
         return;
     }
+    if (packet.size - cursor < compressed_header_size) {
+        on_error_(ErrorCode::MalformedInput, packet.input_offset, true,
+                  "truncated compressed-IP context header");
+        return;
+    }
+    cursor += compressed_header_size;
 
     auto* parser = context(context_id, packet.input_offset);
     if (parser == nullptr) {

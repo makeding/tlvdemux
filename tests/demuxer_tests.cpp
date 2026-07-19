@@ -141,19 +141,22 @@ void test_incomplete_flush() {
 
 void test_mode_60_and_resource_limit() {
     auto mmtp = mmtp_signalling(0x8000, 1);
-    std::vector<std::uint8_t> payload{0x12, 0x30, 0x60};
-    payload.insert(payload.end(), 42, 0);
-    payload.insert(payload.end(), mmtp.begin(), mmtp.end());
-    const auto packet = tlv(0x03, payload);
-    auto stream = packet;
-    stream.insert(stream.end(), packet.begin(), packet.end());
+    std::vector<std::uint8_t> stream;
+    for (const auto mode_and_size : std::vector<std::pair<std::uint8_t, std::size_t>>{
+             {0x20, 20}, {0x21, 2}, {0x60, 42}, {0x61, 0}}) {
+        std::vector<std::uint8_t> payload{0x12, 0x30, mode_and_size.first};
+        payload.insert(payload.end(), mode_and_size.second, 0);
+        payload.insert(payload.end(), mmtp.begin(), mmtp.end());
+        const auto packet = tlv(0x03, payload);
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    }
 
     TestSink sink;
     tlvdemux::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
     check(sink.services.size() == 1 && sink.services[0].context_id == 0x123,
-          "compressed-IP mode 0x60 did not preserve its context ID");
+          "compressed-IP modes did not preserve their shared context ID");
 
     tlvdemux::Limits limits;
     limits.max_resync_buffer = 16;
@@ -166,7 +169,7 @@ void test_mode_60_and_resource_limit() {
         return error.code == tlvdemux::ErrorCode::ResourceLimit;
     }), "TLV resynchronization buffer limit was not enforced");
 
-    const auto unsupported_packet = tlv(0x03, {0x00, 0x10, 0x20});
+    const auto unsupported_packet = tlv(0x03, {0x00, 0x10, 0x22});
     std::vector<std::uint8_t> noisy_stream;
     for (int index = 0; index < 100; ++index) {
         noisy_stream.insert(noisy_stream.end(), unsupported_packet.begin(), unsupported_packet.end());
@@ -177,7 +180,7 @@ void test_mode_60_and_resource_limit() {
     noisy.flush();
     const auto unsupported_callbacks = std::count_if(
         noisy_sink.errors.begin(), noisy_sink.errors.end(), [](const auto& error) {
-            return error.code == tlvdemux::ErrorCode::UnsupportedFeature;
+            return error.code == tlvdemux::ErrorCode::MalformedInput;
         });
     check(unsupported_callbacks > 0 && unsupported_callbacks < 10,
           "identical recoverable errors were not rate-limited");
@@ -250,15 +253,15 @@ std::vector<std::uint8_t> discovery_message() {
     timing_descriptors(video_descriptors, 1, 180000);
 
     std::vector<std::uint8_t> audio_descriptors;
-    descriptor(audio_descriptors, 0x8011, {0x00, 0x10});
+    descriptor(audio_descriptors, 0x8011, {0x01, 0x10});
     descriptor(audio_descriptors, 0x8014,
-               {0xf3, 0x03, 0x00, 0x10, 0x11, 0xff, 0x5f, 'j', 'p', 'n'});
+               {0xf3, 0x03, 0x01, 0x10, 0x11, 0xff, 0x5f, 'j', 'p', 'n'});
     timing_descriptors(audio_descriptors, 1, 180000, 2);
 
     std::vector<std::uint8_t> subtitle_descriptors;
-    descriptor(subtitle_descriptors, 0x8011, {0x00, 0x30});
+    descriptor(subtitle_descriptors, 0x8011, {0x12, 0x30});
     descriptor(subtitle_descriptors, 0x8020,
-               {0x00, 0x20, 0x30, 0x07, 'j', 'p', 'n', 0x01});
+               {0x00, 0x20, 0x30, 0x07, 'j', 'p', 'n', 0x01, 0xff, 0x00});
 
     std::vector<std::uint8_t> mpt_body{0xfc, 2, 0x00, 0x65, 0x00, 0x00, 3};
     asset(mpt_body, 0xf300, "hev1", video_descriptors);
@@ -483,11 +486,13 @@ void test_track_discovery_and_deduplication() {
           "AAC-LATM metadata was not parsed from MPT descriptors");
     check(sink.tracks[1].audio.has_value() &&
               sink.tracks[1].audio->channel_layout == tlvdemux::AudioChannelLayout::Stereo &&
-              sink.tracks[1].audio->component_tag == 0x0010 &&
+              sink.tracks[1].component_tag == 0x0110 &&
+              sink.tracks[1].audio->component_tag == 0x0110 &&
               sink.tracks[1].audio->main_component &&
               sink.tracks[1].audio->sample_rate == 48000,
           "MH audio component metadata was not exposed on the audio track");
-    check(sink.tracks[2].codec == tlvdemux::Codec::Ttml && sink.tracks[2].component_tag == 0x30,
+    check(sink.tracks[2].codec == tlvdemux::Codec::Ttml &&
+              sink.tracks[2].component_tag == 0x1230,
           "TTML metadata was not parsed from MPT descriptors");
     check(sink.tracks[2].timescale == 65536,
           "TTML without a timestamp descriptor did not use short-NTP timescale");
@@ -560,6 +565,26 @@ std::vector<std::uint8_t> mmtp_packet(const std::uint16_t packet_id,
     return result;
 }
 
+std::vector<std::uint8_t> authenticated_mmtp_packet(
+    const std::uint16_t packet_id, const std::uint32_t packet_sequence,
+    const std::uint32_t delivery_timestamp, const bool random_access,
+    const std::vector<std::uint8_t>& payload, const std::uint16_t declared_payload_size) {
+    auto plain = mmtp_packet(packet_id, packet_sequence, delivery_timestamp,
+                             random_access, payload);
+    std::vector<std::uint8_t> result(plain.begin(), plain.begin() + 12);
+    result[0] = static_cast<std::uint8_t>(result[0] | 0x02U);
+    result.insert(result.end(), {
+        0x00, 0x00, 0x00, 0x07, // multi-type extension
+        0x80, 0x01, 0x00, 0x03, // final B61 extension, three-byte field
+        0x02,                    // message authentication present
+        static_cast<std::uint8_t>(declared_payload_size >> 8U),
+        static_cast<std::uint8_t>(declared_payload_size),
+    });
+    result.insert(result.end(), payload.begin(), payload.end());
+    result.insert(result.end(), {0xaa, 0xbb, 0xcc, 0xdd});
+    return result;
+}
+
 std::vector<std::uint8_t> mpu_payload(const std::uint32_t mpu_sequence,
                                       const std::vector<std::uint8_t>& mfu) {
     std::vector<std::uint8_t> result;
@@ -592,6 +617,40 @@ std::vector<std::uint8_t> tlv_for_mmtp(const std::uint16_t context_id,
     };
     payload.insert(payload.end(), mmtp.begin(), mmtp.end());
     return tlv(0x03, payload);
+}
+
+void test_authenticated_mmtp_payload_bounds() {
+    const auto media = mpu_payload(1, {0x11, 0x22});
+    auto valid_stream = discovery_stream();
+    const auto valid_packet = tlv_for_mmtp(
+        1, authenticated_mmtp_packet(0xf310, 1, 100U << 16U, true,
+                                     media, static_cast<std::uint16_t>(media.size())));
+    valid_stream.insert(valid_stream.end(), valid_packet.begin(), valid_packet.end());
+
+    TestSink valid_sink;
+    tlvdemux::Demuxer valid_demuxer(valid_sink);
+    valid_demuxer.push(valid_stream.data(), valid_stream.size());
+    valid_demuxer.flush();
+    check(std::any_of(valid_sink.access_units.begin(), valid_sink.access_units.end(),
+                      [](const auto& unit) {
+                          return unit.codec == tlvdemux::Codec::AacLatm;
+                      }),
+          "B61 message-authentication code was treated as MMTP media payload");
+
+    auto invalid_stream = discovery_stream();
+    const auto invalid_packet = tlv_for_mmtp(
+        1, authenticated_mmtp_packet(0xf310, 1, 100U << 16U, true,
+                                     media, static_cast<std::uint16_t>(media.size() + 32)));
+    invalid_stream.insert(invalid_stream.end(), invalid_packet.begin(), invalid_packet.end());
+    TestSink invalid_sink;
+    tlvdemux::Demuxer invalid_demuxer(invalid_sink);
+    invalid_demuxer.push(invalid_stream.data(), invalid_stream.size());
+    invalid_demuxer.flush();
+    check(std::any_of(invalid_sink.errors.begin(), invalid_sink.errors.end(),
+                      [](const auto& error) {
+                          return error.code == tlvdemux::ErrorCode::MalformedInput;
+                      }),
+          "out-of-bounds authenticated MMTP payload length was accepted");
 }
 
 void append_video_access_unit(std::vector<std::uint8_t>& stream,
@@ -1031,6 +1090,7 @@ int main() {
     test_global_packet_state_budget();
     test_track_discovery_and_deduplication();
     test_dynamic_audio_layout_metadata();
+    test_authenticated_mmtp_payload_bounds();
     test_codec_output_and_timeline();
     test_timestamp_overflow_rejection();
     test_track_selection_clears_incomplete_media();

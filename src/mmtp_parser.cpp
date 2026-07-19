@@ -9,6 +9,48 @@
 
 namespace tlvdemux::detail {
 
+namespace {
+
+bool parse_authenticated_payload_size(const std::uint16_t extension_type,
+                                      const std::uint8_t* extension,
+                                      const std::size_t extension_size,
+                                      std::optional<std::size_t>& payload_size) {
+    if (extension_type != 0x0000) return true;
+
+    std::size_t cursor = 0;
+    while (cursor < extension_size) {
+        if (extension_size - cursor < 4) return false;
+        const auto header = read_be16(extension + cursor);
+        const auto type = static_cast<std::uint16_t>(header & 0x7fffU);
+        const bool end = (header & 0x8000U) != 0;
+        const auto size = static_cast<std::size_t>(read_be16(extension + cursor + 2));
+        cursor += 4;
+        if (size > extension_size - cursor) return false;
+
+        if (type == 0x0001) {
+            if (size < 1) return false;
+            const auto flags = extension[cursor];
+            const bool scramble_system_present = (flags & 0x04U) != 0;
+            const bool authentication_present = (flags & 0x02U) != 0;
+            std::size_t field_cursor = 1;
+            if (scramble_system_present) {
+                if (field_cursor >= size) return false;
+                ++field_cursor;
+            }
+            if (authentication_present) {
+                if (size - field_cursor < 2) return false;
+                payload_size = read_be16(extension + cursor + field_cursor);
+            }
+        }
+
+        cursor += size;
+        if (end) return cursor == extension_size;
+    }
+    return true;
+}
+
+} // namespace
+
 MmtpParser::MmtpParser(const std::uint32_t context_id, const Limits& limits,
                        PackageCallback on_package, TrackCallback on_track,
                        AccessUnitCallback on_access_unit,
@@ -98,12 +140,14 @@ void MmtpParser::push(const std::uint8_t* data, const std::size_t size,
         }
         cursor += 4;
     }
+    std::optional<std::size_t> authenticated_payload_size;
     if (extension_header_flag) {
         if (size - cursor < 4) {
             on_error_(ErrorCode::MalformedInput, input_offset, true,
                       "truncated MMTP extension header");
             return;
         }
+        const auto extension_type = read_be16(data + cursor);
         const auto extension_size = static_cast<std::size_t>(read_be16(data + cursor + 2));
         cursor += 4;
         if (extension_size > size - cursor) {
@@ -111,11 +155,25 @@ void MmtpParser::push(const std::uint8_t* data, const std::size_t size,
                       "MMTP extension length exceeds packet bounds");
             return;
         }
+        if (!parse_authenticated_payload_size(extension_type, data + cursor, extension_size,
+                                              authenticated_payload_size)) {
+            on_error_(ErrorCode::MalformedInput, input_offset, true,
+                      "malformed MMTP multi-type extension header");
+            return;
+        }
         cursor += extension_size;
     }
 
     const auto* payload = data + cursor;
-    const auto payload_size = size - cursor;
+    auto payload_size = size - cursor;
+    if (authenticated_payload_size.has_value()) {
+        if (*authenticated_payload_size > payload_size) {
+            on_error_(ErrorCode::MalformedInput, input_offset, true,
+                      "authenticated MMTP payload length exceeds packet bounds");
+            return;
+        }
+        payload_size = *authenticated_payload_size;
+    }
     if (payload_type == 0x02) {
         parse_signalling(packet_id, sequence, payload, payload_size, input_offset);
     } else if (payload_type == 0x00) {
@@ -258,9 +316,9 @@ bool parse_descriptors(ByteReader& reader, AssetMetadata& metadata) {
                 metadata.timestamps[sequence] = TimestampMapping{read_be64(ntp)};
             }
         } else if (tag == 0x8011 && length >= 2) {
-            metadata.component_tag = payload[1];
+            metadata.component_tag = read_be16(payload);
         } else if (tag == 0x8010 && length >= 8) {
-            if (metadata.component_tag == 0) metadata.component_tag = payload[3];
+            if (metadata.component_tag == 0) metadata.component_tag = read_be16(payload + 2);
             metadata.language.assign(reinterpret_cast<const char*>(payload + 5), 3);
         } else if (tag == 0x8014 && length >= 10) {
             const auto stream_content = static_cast<std::uint8_t>(payload[0] & 0x0fU);
@@ -288,10 +346,10 @@ bool parse_descriptors(ByteReader& reader, AssetMetadata& metadata) {
             }
             metadata.audio = std::move(audio);
             metadata.aac_latm = stream_content == 0x03 && stream_type == 0x11;
-        } else if (tag == 0x8020 && length >= 8 && read_be16(payload) == 0x0020) {
+        } else if (tag == 0x8020 && length >= 10 && read_be16(payload) == 0x0020) {
             const auto* additional = payload + 2;
             const auto additional_size = length - 2;
-            if (additional_size < 6) return false;
+            if (additional_size < 8) return false;
             metadata.language.assign(reinterpret_cast<const char*>(additional + 2), 3);
             const auto subtitle_format = static_cast<std::uint8_t>((additional[5] >> 2U) & 0x0fU);
             metadata.ttml = subtitle_format == 0;

@@ -27,7 +27,7 @@ struct ExtendedTimestampMapping {
 
 struct AssetMetadata {
     std::string language;
-    std::uint8_t component_tag = 0;
+    std::uint16_t component_tag = 0;
     std::uint32_t timescale = 1;
     std::optional<AudioInfo> audio;
     bool aac_latm = false;
