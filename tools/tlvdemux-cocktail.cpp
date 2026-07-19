@@ -66,8 +66,10 @@ public:
     void onAccessUnit(tlvdemux::AccessUnit&& unit) override {
         ++access_unit_count_;
         if (phase_ == Phase::Indexing) {
-            index_.observe(unit);
             if (video_track_ == unit.track_id) {
+                if (unit.random_access) ++random_access_video_units_;
+                if (!index_.observe(unit)) ++rejected_video_index_units_;
+                countVideoNalTypes(unit.data);
                 const auto pts = timestamp_us(unit.pts);
                 if (pts.has_value()) {
                     frames_.push_back(FrameStamp{*pts, unit.input_offset, unit.random_access});
@@ -144,8 +146,17 @@ public:
     const std::vector<FrameStamp>& frames() const noexcept { return frames_; }
     std::optional<std::uint64_t> videoTrack() const noexcept { return video_track_; }
     std::uint64_t accessUnitCount() const noexcept { return access_unit_count_; }
+    std::uint64_t randomAccessVideoUnits() const noexcept {
+        return random_access_video_units_;
+    }
+    std::uint64_t rejectedVideoIndexUnits() const noexcept {
+        return rejected_video_index_units_;
+    }
     const std::unordered_map<unsigned, std::uint64_t>& errorCounts() const noexcept {
         return error_counts_;
+    }
+    const std::array<std::uint64_t, 64>& videoNalTypeCounts() const noexcept {
+        return video_nal_type_counts_;
     }
 
     bool landed() const noexcept { return landed_; }
@@ -162,13 +173,25 @@ public:
     std::uint64_t seekVideoUnits() const noexcept { return seek_video_units_; }
 
 private:
+    void countVideoNalTypes(const std::vector<std::uint8_t>& data) {
+        for (std::size_t index = 0; index + 4 <= data.size(); ++index) {
+            if (data[index] != 0 || data[index + 1] != 0 || data[index + 2] != 1) continue;
+            const auto type = static_cast<std::size_t>((data[index + 3] >> 1U) & 0x3fU);
+            ++video_nal_type_counts_[type];
+            index += 2;
+        }
+    }
+
     Phase phase_ = Phase::Indexing;
     tlvdemux::RecordingIndex index_;
     std::unordered_map<std::uint64_t, tlvdemux::TrackInfo> tracks_;
     std::optional<std::uint64_t> video_track_;
     std::vector<FrameStamp> frames_;
     std::unordered_map<unsigned, std::uint64_t> error_counts_;
+    std::array<std::uint64_t, 64> video_nal_type_counts_{};
     std::uint64_t access_unit_count_ = 0;
+    std::uint64_t random_access_video_units_ = 0;
+    std::uint64_t rejected_video_index_units_ = 0;
     std::int64_t target_pts_us_ = 0;
     std::int64_t expected_landing_pts_us_ = 0;
     bool landed_ = false;
@@ -348,8 +371,20 @@ int main(int argc, char** argv) {
                   << " duration=" << seconds(duration.value.value)
                   << " frames=" << sink.frames().size()
                   << " seek-points=" << sink.index().seekPoints().size()
+                  << " random-video-aus=" << sink.randomAccessVideoUnits()
+                  << " rejected-video-index=" << sink.rejectedVideoIndexUnits()
                   << " access-units=" << sink.accessUnitCount()
                   << " elapsed-ms=" << elapsed.count() << '\n';
+        std::cerr << "video-nal-types=";
+        bool first_nal_type = true;
+        for (std::size_t type = 0; type < sink.videoNalTypeCounts().size(); ++type) {
+            const auto count = sink.videoNalTypeCounts()[type];
+            if (count == 0) continue;
+            if (!first_nal_type) std::cerr << ',';
+            std::cerr << type << ':' << count;
+            first_nal_type = false;
+        }
+        std::cerr << '\n';
 
         tlvdemux::SourceCapabilities capabilities;
         capabilities.random_access = true;

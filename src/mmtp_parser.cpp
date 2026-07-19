@@ -741,7 +741,7 @@ void MmtpParser::consume_mfu_piece(TrackState& track,
         }
         assembler.state = FragmentState::Idle;
         consume_complete_mfu(track, mpu_sequence, sample_number, random_access,
-                             payload, payload_size, input_offset);
+                             payload, payload_size, input_offset, track.restart_offset);
         break;
     case 1:
         assembler.data.clear();
@@ -749,6 +749,7 @@ void MmtpParser::consume_mfu_piece(TrackState& track,
         assembler.mpu_sequence = mpu_sequence;
         assembler.sample_number = sample_number;
         assembler.input_offset = input_offset;
+        assembler.restart_offset = track.restart_offset;
         assembler.random_access = random_access;
         append_media(track, payload, payload_size, input_offset);
         break;
@@ -785,7 +786,8 @@ void MmtpParser::consume_mfu_piece(TrackState& track,
         if (append_media(track, payload, payload_size, input_offset)) {
             consume_complete_mfu(track, assembler.mpu_sequence, assembler.sample_number,
                                  assembler.random_access, assembler.data.data(),
-                                 assembler.data.size(), assembler.input_offset);
+                                 assembler.data.size(), assembler.input_offset,
+                                 assembler.restart_offset);
         }
         assembler.data.clear();
         assembler.state = FragmentState::Idle;
@@ -805,7 +807,8 @@ void MmtpParser::finalize_hevc(TrackState& track) {
         }
         if (pending.random_access) track.wait_for_rap = false;
         emit_access_unit(track, pending.mpu_sequence, std::move(pending.data),
-                         pending.random_access, pending.input_offset);
+                         pending.random_access, pending.input_offset,
+                         pending.restart_offset);
     } else {
         track.discontinuity = true;
         on_error_(ErrorCode::MalformedInput, pending.input_offset, true,
@@ -819,7 +822,8 @@ void MmtpParser::consume_complete_mfu(TrackState& track,
                                       const std::uint32_t sample_number,
                                       const bool random_access,
                                       const std::uint8_t* data, const std::size_t size,
-                                      const std::uint64_t input_offset) {
+                                      const std::uint64_t input_offset,
+                                      const std::uint64_t restart_offset) {
     if (track.info.codec == Codec::Hevc) {
         if (size < 4 || static_cast<std::size_t>(read_be32(data)) != size - 4) {
             track.discontinuity = true;
@@ -851,6 +855,7 @@ void MmtpParser::consume_complete_mfu(TrackState& track,
             pending.mpu_sequence = mpu_sequence;
             pending.sample_number = sample_number;
             pending.input_offset = input_offset;
+            pending.restart_offset = restart_offset;
         }
         if (pending.data.size() > limits_.max_access_unit ||
             limits_.max_access_unit - pending.data.size() < nal_size + 3) {
@@ -880,7 +885,8 @@ void MmtpParser::consume_complete_mfu(TrackState& track,
         loas.push_back(static_cast<std::uint8_t>(0xe0U | (size >> 8U)));
         loas.push_back(static_cast<std::uint8_t>(size));
         loas.insert(loas.end(), data, data + size);
-        emit_access_unit(track, mpu_sequence, std::move(loas), random_access, input_offset);
+        emit_access_unit(track, mpu_sequence, std::move(loas), random_access, input_offset,
+                         restart_offset);
         return;
     }
 
@@ -949,6 +955,7 @@ void MmtpParser::consume_complete_mfu(TrackState& track,
         subtitle.last_subsample = last_subsample;
         subtitle.mpu_sequence = mpu_sequence;
         subtitle.input_offset = input_offset;
+        subtitle.restart_offset = restart_offset;
         subtitle.random_access = random_access;
         subtitle.subsamples.resize(static_cast<std::size_t>(last_subsample) + 1);
     }
@@ -976,15 +983,18 @@ void MmtpParser::consume_complete_mfu(TrackState& track,
         ttml.insert(ttml.end(), value->begin(), value->end());
     }
     const auto output_offset = subtitle.input_offset;
+    const auto output_restart_offset = subtitle.restart_offset;
     const auto output_rap = subtitle.random_access;
     subtitle = {};
-    emit_access_unit(track, mpu_sequence, std::move(ttml), output_rap, output_offset);
+    emit_access_unit(track, mpu_sequence, std::move(ttml), output_rap, output_offset,
+                     output_restart_offset);
 }
 
 void MmtpParser::emit_access_unit(TrackState& track, const std::uint32_t mpu_sequence,
                                   std::vector<std::uint8_t> data,
                                   const bool random_access,
-                                  const std::uint64_t input_offset) {
+                                  const std::uint64_t input_offset,
+                                  const std::uint64_t restart_offset) {
     const auto timestamp = track.timestamps.find(mpu_sequence);
     const auto extended = track.extended_timestamps.find(mpu_sequence);
     std::int64_t dts_offset = 0;
@@ -1034,7 +1044,7 @@ void MmtpParser::emit_access_unit(TrackState& track, const std::uint32_t mpu_seq
     unit.pts = Timestamp{pts_offset, track.info.timescale};
     unit.dts = Timestamp{dts_offset, track.info.timescale};
     unit.source_ntp = Timestamp{ntp_microseconds, 1000000};
-    unit.restart_offset = track.restart_offset;
+    unit.restart_offset = restart_offset;
     unit.input_offset = input_offset;
     unit.random_access = random_access;
     unit.discontinuity = track.discontinuity;

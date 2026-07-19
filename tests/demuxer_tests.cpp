@@ -857,6 +857,37 @@ void test_hevc_irap_detection_without_mmtp_rap() {
           "HEVC IRAP NAL was not exposed as a random-access AU without MMTP RAP");
 }
 
+void test_access_unit_restart_offset_is_snapshotted() {
+    const auto pa = discovery_message();
+    auto stream = signalling_tlv(1, 0, pa);
+    const auto first_checkpoint = static_cast<std::uint64_t>(0);
+    const auto add_video = [&](const std::uint32_t sequence,
+                               const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf300, sequence, 100U << 16U, false, mpu_payload(1, mfu)));
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    };
+    add_video(1, {0, 0, 0, 2, 0x46, 0x01});
+    add_video(2, {0, 0, 0, 3, 0x26, 0x01, 0x80});
+    const auto later_signalling_offset = static_cast<std::uint64_t>(stream.size());
+    const auto later_signalling = signalling_tlv(2, 0, pa);
+    stream.insert(stream.end(), later_signalling.begin(), later_signalling.end());
+    add_video(3, {0, 0, 0, 2, 0x46, 0x01});
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+    const auto video = std::find_if(
+        sink.access_units.begin(), sink.access_units.end(), [](const auto& unit) {
+            return unit.codec == tlvdemux::Codec::Hevc;
+        });
+    check(video != sink.access_units.end() &&
+              video->restart_offset == first_checkpoint &&
+              video->input_offset < later_signalling_offset,
+          "AU used signalling received after the AU began as its restart checkpoint");
+}
+
 } // namespace
 
 int main() {
@@ -876,6 +907,7 @@ int main() {
     test_fragmented_signalling_restart_offset();
     test_reposition_preserves_timeline_and_absolute_offsets();
     test_hevc_irap_detection_without_mmtp_rap();
+    test_access_unit_restart_offset_is_snapshotted();
     std::cout << "all tests passed\n";
     return 0;
 }

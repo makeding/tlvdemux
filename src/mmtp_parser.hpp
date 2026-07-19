@@ -72,6 +72,7 @@ private:
         std::uint32_t mpu_sequence = 0;
         std::uint32_t sample_number = 0;
         std::uint64_t input_offset = 0;
+        std::uint64_t restart_offset = 0;
         bool random_access = false;
         std::vector<std::uint8_t> data;
     };
@@ -81,6 +82,7 @@ private:
         std::uint32_t mpu_sequence = 0;
         std::uint32_t sample_number = 0;
         std::uint64_t input_offset = 0;
+        std::uint64_t restart_offset = 0;
         bool random_access = false;
         bool has_vcl = false;
         std::vector<std::uint8_t> data;
@@ -92,6 +94,7 @@ private:
         std::uint8_t last_subsample = 0;
         std::uint32_t mpu_sequence = 0;
         std::uint64_t input_offset = 0;
+        std::uint64_t restart_offset = 0;
         bool random_access = false;
         std::vector<std::optional<std::vector<std::uint8_t>>> subsamples;
     };
@@ -128,12 +131,12 @@ private:
     void consume_complete_mfu(TrackState&, std::uint32_t mpu_sequence,
                               std::uint32_t sample_number, bool random_access,
                               const std::uint8_t* data, std::size_t size,
-                              std::uint64_t input_offset);
+                              std::uint64_t input_offset, std::uint64_t restart_offset);
     bool append_media(TrackState&, const std::uint8_t*, std::size_t,
                       std::uint64_t input_offset);
     void emit_access_unit(TrackState&, std::uint32_t mpu_sequence,
                           std::vector<std::uint8_t>, bool random_access,
-                          std::uint64_t input_offset);
+                          std::uint64_t input_offset, std::uint64_t restart_offset);
     void finalize_hevc(TrackState&);
     void install_track(TrackInfo, AssetMetadata, std::uint64_t input_offset);
     void release_all_states();
