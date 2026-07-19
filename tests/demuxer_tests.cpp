@@ -480,14 +480,22 @@ void test_track_discovery_and_deduplication() {
 void test_dynamic_audio_layout_metadata() {
     const auto pa = audio_discovery_message();
     auto data = signalling_tlv(1, 0, pa);
-    const auto repeated = signalling_tlv(2, 0, pa);
-    data.insert(data.end(), repeated.begin(), repeated.end());
+    auto updated_pa = pa;
+    const std::vector<std::uint8_t> first_audio_descriptor{0x80, 0x14, 0x0a, 0xf3, 0x11};
+    const auto updated_component = std::search(updated_pa.begin(), updated_pa.end(),
+                                               first_audio_descriptor.begin(),
+                                               first_audio_descriptor.end());
+    check(updated_component != updated_pa.end(), "audio update fixture has no 22.2ch descriptor");
+    updated_component[4] = 0x09;
+    const auto update = signalling_tlv(2, 0, updated_pa);
+    data.insert(data.end(), update.begin(), update.end());
 
     TestSink sink;
     tlvdemux::Demuxer demuxer(sink);
     demuxer.push(data.data(), data.size());
     demuxer.flush();
-    check(sink.tracks.size() == 3, "three signalled audio tracks were not discovered");
+    check(sink.tracks.size() == 4,
+          "three signalled audio tracks plus one metadata update were not reported");
 
     const auto find_layout = [&](const tlvdemux::AudioChannelLayout layout) {
         return std::find_if(sink.tracks.begin(), sink.tracks.end(), [&](const auto& track) {
@@ -507,6 +515,11 @@ void test_dynamic_audio_layout_metadata() {
               stereo->audio->es_multi_lingual &&
               stereo->audio->secondary_language == "eng",
           "stereo/multilingual track metadata was not parsed completely");
+    check(sink.tracks.back().packet_id == 0xe210 &&
+              sink.tracks.back().track_id == surround22->track_id &&
+              sink.tracks.back().audio->channel_layout ==
+                  tlvdemux::AudioChannelLayout::Channels5_1,
+          "audio descriptor update did not preserve track identity and emit replacement metadata");
 }
 
 std::vector<std::uint8_t> mmtp_packet(const std::uint16_t packet_id,
