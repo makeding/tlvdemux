@@ -138,6 +138,34 @@ void test_incomplete_flush() {
     check(!sink.errors.empty(), "flush did not report incomplete trailing data");
 }
 
+void test_mode_60_and_resource_limit() {
+    auto mmtp = mmtp_signalling(0x8000, 1);
+    std::vector<std::uint8_t> payload{0x12, 0x30, 0x60};
+    payload.insert(payload.end(), 42, 0);
+    payload.insert(payload.end(), mmtp.begin(), mmtp.end());
+    const auto packet = tlv(0x03, payload);
+    auto stream = packet;
+    stream.insert(stream.end(), packet.begin(), packet.end());
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+    check(sink.services.size() == 1 && sink.services[0].context_id == 0x123,
+          "compressed-IP mode 0x60 did not preserve its context ID");
+
+    tlvdemux::Limits limits;
+    limits.max_resync_buffer = 16;
+    TestSink limited_sink;
+    tlvdemux::Demuxer limited(limited_sink, limits);
+    std::vector<std::uint8_t> garbage(128, 0x55);
+    limited.push(garbage.data(), garbage.size());
+    limited.flush();
+    check(std::any_of(limited_sink.errors.begin(), limited_sink.errors.end(), [](const auto& error) {
+        return error.code == tlvdemux::ErrorCode::ResourceLimit;
+    }), "TLV resynchronization buffer limit was not enforced");
+}
+
 void append_u16(std::vector<std::uint8_t>& value, const std::size_t number) {
     value.push_back(static_cast<std::uint8_t>(number >> 8U));
     value.push_back(static_cast<std::uint8_t>(number));
@@ -254,6 +282,13 @@ void test_track_discovery_and_deduplication() {
           "TTML metadata was not parsed from MPT descriptors");
     check(sink.tracks[2].timescale == 65536,
           "TTML without a timestamp descriptor did not use short-NTP timescale");
+
+    const auto stable_id = sink.tracks[0].track_id;
+    demuxer.reset();
+    demuxer.push(data.data(), data.size());
+    demuxer.flush();
+    check(sink.tracks.size() == 6 && sink.tracks[3].track_id == stable_id,
+          "reset changed a track's Demuxer-lifetime stable identity");
 }
 
 std::vector<std::uint8_t> mmtp_packet(const std::uint16_t packet_id,
@@ -351,6 +386,7 @@ int main() {
     test_garbage_recovery();
     test_service_selection_and_reset();
     test_incomplete_flush();
+    test_mode_60_and_resource_limit();
     test_track_discovery_and_deduplication();
     test_codec_output_and_timeline();
     std::cout << "all tests passed\n";

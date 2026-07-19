@@ -467,6 +467,9 @@ void MmtpParser::parse_signalling(const std::uint16_t packet_id,
     const auto* body = data + 2;
     auto body_size = size - 2;
 
+    if (assembler.state != FragmentState::Initial && sequence == assembler.last_sequence) {
+        return; // duplicate signalling packet
+    }
     if (assembler.state != FragmentState::Initial && sequence != assembler.last_sequence + 1U) {
         if (!assembler.data.empty()) {
             on_error_(ErrorCode::Discontinuity, input_offset, true,
@@ -705,8 +708,14 @@ void MmtpParser::consume_mfu_piece(TrackState& track,
 void MmtpParser::finalize_hevc(TrackState& track) {
     auto& pending = track.pending_hevc;
     if (!pending.active) return;
-    emit_access_unit(track, pending.mpu_sequence, std::move(pending.data),
-                     pending.random_access, pending.input_offset);
+    if (pending.has_vcl) {
+        emit_access_unit(track, pending.mpu_sequence, std::move(pending.data),
+                         pending.random_access, pending.input_offset);
+    } else {
+        track.discontinuity = true;
+        on_error_(ErrorCode::MalformedInput, pending.input_offset, true,
+                  "dropped HEVC access-unit prefix without a VCL NAL unit");
+    }
     pending = {};
 }
 

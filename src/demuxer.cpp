@@ -1,7 +1,6 @@
 #include <tlvdemux/demuxer.hpp>
 
 #include <array>
-#include <cmath>
 #include <limits>
 #include <string>
 #include <unordered_map>
@@ -116,25 +115,67 @@ private:
         return info.track_id;
     }
 
-    static bool rounded_value(const long double value, std::int64_t& output) {
-        if (value < static_cast<long double>(std::numeric_limits<std::int64_t>::min()) ||
-            value > static_cast<long double>(std::numeric_limits<std::int64_t>::max())) {
-            return false;
-        }
-        output = static_cast<std::int64_t>(std::llround(value));
-        return true;
-    }
-
     static bool ntp_delta_ticks(const std::uint64_t current, const std::uint64_t origin,
                                 const std::uint32_t timescale, std::int64_t& output) {
         const bool negative = current < origin;
         const auto difference = negative ? origin - current : current - origin;
         const auto seconds = difference >> 32U;
         const auto fraction = static_cast<std::uint32_t>(difference);
-        long double ticks = (static_cast<long double>(seconds) +
-            static_cast<long double>(fraction) / 4294967296.0L) * timescale;
-        if (negative) ticks = -ticks;
-        return rounded_value(ticks, output);
+        if (timescale != 0 && seconds >
+            static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) / timescale) {
+            return false;
+        }
+        const auto whole_ticks = seconds * timescale;
+        const auto fractional_ticks =
+            (static_cast<std::uint64_t>(fraction) * timescale) >> 32U;
+        if (whole_ticks > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) -
+                              fractional_ticks) {
+            return false;
+        }
+        const auto magnitude = static_cast<std::int64_t>(whole_ticks + fractional_ticks);
+        output = negative ? -magnitude : magnitude;
+        return true;
+    }
+
+    static bool rescale_offset(const std::int64_t value, const std::uint32_t source_scale,
+                               const std::uint32_t target_scale, std::int64_t& output) {
+        if (source_scale == 0) return false;
+        const bool negative = value < 0;
+        const auto magnitude = negative
+            ? static_cast<std::uint64_t>(-(value + 1)) + 1U
+            : static_cast<std::uint64_t>(value);
+        const auto whole = magnitude / source_scale;
+        const auto remainder = magnitude % source_scale;
+        if (target_scale != 0 && whole >
+            static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) / target_scale) {
+            return false;
+        }
+        const auto scaled = whole * target_scale + remainder * target_scale / source_scale;
+        if (scaled > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+            return false;
+        }
+        output = negative ? -static_cast<std::int64_t>(scaled) : static_cast<std::int64_t>(scaled);
+        return true;
+    }
+
+    static bool add_checked(const std::int64_t left, const std::int64_t right,
+                            std::int64_t& output) {
+        if ((right > 0 && left > std::numeric_limits<std::int64_t>::max() - right) ||
+            (right < 0 && left < std::numeric_limits<std::int64_t>::min() - right)) {
+            return false;
+        }
+        output = left + right;
+        return true;
+    }
+
+    static bool subtract_checked(const std::int64_t left, const std::int64_t right,
+                                 std::int64_t& output) {
+        if ((right > 0 && left < std::numeric_limits<std::int64_t>::min() + right) ||
+            (right < 0 && left > std::numeric_limits<std::int64_t>::max() + right)) {
+            return false;
+        }
+        output = left - right;
+        return true;
     }
 
     void access_unit(detail::TimedAccessUnit timed) {
@@ -158,23 +199,24 @@ private:
         std::int64_t ntp_ticks = 0;
         std::int64_t origin_offset = 0;
         if (!ntp_delta_ticks(timed.source_ntp_raw, origin_->ntp, unit.pts.timescale, ntp_ticks) ||
-            !rounded_value(static_cast<long double>(origin_->pts_offset) * unit.pts.timescale /
-                               origin_->timescale,
-                           origin_offset)) {
+            !rescale_offset(origin_->pts_offset, origin_->timescale,
+                            unit.pts.timescale, origin_offset)) {
             error(ErrorCode::Discontinuity, unit.input_offset, true,
                   "timestamp normalization overflowed");
             return;
         }
-        const long double normalized_pts = static_cast<long double>(ntp_ticks) +
-            static_cast<long double>(unit.pts.value) - static_cast<long double>(origin_offset);
-        const long double normalized_dts = static_cast<long double>(ntp_ticks) +
-            static_cast<long double>(unit.dts.value) - static_cast<long double>(origin_offset);
-        if (!rounded_value(normalized_pts, unit.pts.value) ||
-            !rounded_value(normalized_dts, unit.dts.value)) {
+        std::int64_t normalized_pts = 0;
+        std::int64_t normalized_dts = 0;
+        std::int64_t base = 0;
+        if (!subtract_checked(ntp_ticks, origin_offset, base) ||
+            !add_checked(base, unit.pts.value, normalized_pts) ||
+            !add_checked(base, unit.dts.value, normalized_dts)) {
             error(ErrorCode::Discontinuity, unit.input_offset, true,
                   "normalized access-unit timestamp is out of range");
             return;
         }
+        unit.pts.value = normalized_pts;
+        unit.dts.value = normalized_dts;
         sink_.onAccessUnit(std::move(unit));
     }
 

@@ -34,6 +34,9 @@ struct Inspector final : tlvdemux::Sink {
     bool list = false;
     bool trace = false;
     std::unordered_map<std::uint64_t, tlvdemux::TrackInfo> tracks;
+    std::optional<std::uint64_t> video_track;
+    std::optional<std::uint64_t> audio_track;
+    std::optional<std::uint64_t> subtitle_track;
     std::ofstream video;
     std::ofstream audio;
     std::ofstream subtitle;
@@ -47,6 +50,9 @@ struct Inspector final : tlvdemux::Sink {
 
     void onTrack(const tlvdemux::TrackInfo& info) override {
         tracks[info.track_id] = info;
+        if (info.kind == tlvdemux::TrackKind::Video && !video_track.has_value()) video_track = info.track_id;
+        if (info.kind == tlvdemux::TrackKind::Audio && !audio_track.has_value()) audio_track = info.track_id;
+        if (info.kind == tlvdemux::TrackKind::Subtitle && !subtitle_track.has_value()) subtitle_track = info.track_id;
         if (list) {
             std::cerr << "track id=" << info.track_id << " context=" << info.context_id
                       << " packet-id=0x" << std::hex << info.packet_id << std::dec
@@ -70,9 +76,9 @@ struct Inspector final : tlvdemux::Sink {
                       << " discontinuity=" << unit.discontinuity << '\n';
         }
         std::ofstream* output = nullptr;
-        if (unit.codec == tlvdemux::Codec::Hevc) output = &video;
-        if (unit.codec == tlvdemux::Codec::AacLatm) output = &audio;
-        if (unit.codec == tlvdemux::Codec::Ttml) output = &subtitle;
+        if (unit.codec == tlvdemux::Codec::Hevc && video_track == unit.track_id) output = &video;
+        if (unit.codec == tlvdemux::Codec::AacLatm && audio_track == unit.track_id) output = &audio;
+        if (unit.codec == tlvdemux::Codec::Ttml && subtitle_track == unit.track_id) output = &subtitle;
         if (output != nullptr && output->is_open()) {
             output->write(reinterpret_cast<const char*>(unit.data.data()),
                           static_cast<std::streamsize>(unit.data.size()));
@@ -107,9 +113,19 @@ int main(int argc, char** argv) {
             if (argument == "--list") inspector.list = true;
             else if (argument == "--trace-au") inspector.trace = true;
             else if (argument == "--service") service = static_cast<std::uint32_t>(std::stoul(value("--service"), nullptr, 0));
-            else if (argument == "--video") inspector.video.open(value("--video"), std::ios::binary);
-            else if (argument == "--audio") inspector.audio.open(value("--audio"), std::ios::binary);
-            else if (argument == "--subtitle") inspector.subtitle.open(value("--subtitle"), std::ios::binary);
+            else if (argument == "--video") {
+                const auto path = value("--video");
+                inspector.video.open(path, std::ios::binary);
+                if (!inspector.video) throw std::runtime_error("cannot open video output: " + path);
+            } else if (argument == "--audio") {
+                const auto path = value("--audio");
+                inspector.audio.open(path, std::ios::binary);
+                if (!inspector.audio) throw std::runtime_error("cannot open audio output: " + path);
+            } else if (argument == "--subtitle") {
+                const auto path = value("--subtitle");
+                inspector.subtitle.open(path, std::ios::binary);
+                if (!inspector.subtitle) throw std::runtime_error("cannot open subtitle output: " + path);
+            }
             else if (argument == "-h" || argument == "--help") { usage(); return 0; }
             else if (!argument.empty() && argument[0] == '-' && argument != "-") throw std::runtime_error("unknown option: " + argument);
             else if (input_path.empty()) input_path = argument;
@@ -148,4 +164,3 @@ int main(int argc, char** argv) {
         return 2;
     }
 }
-
