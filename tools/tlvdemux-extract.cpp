@@ -1,4 +1,4 @@
-#include <tlvdemux/demuxer.hpp>
+#include <aribtlv/demuxer.hpp>
 
 #include <array>
 #include <cstdint>
@@ -10,17 +10,17 @@
 
 namespace {
 
-struct Extractor final : tlvdemux::Sink {
+struct Extractor final : aribtlv::Sink {
     explicit Extractor(std::filesystem::path root) : root(std::move(root)) {}
 
     std::filesystem::path root;
     std::size_t written = 0;
 
-    void onService(const tlvdemux::ServiceInfo&) override {}
-    void onTrack(const tlvdemux::TrackInfo&) override {}
-    void onAccessUnit(tlvdemux::AccessUnit&&) override {}
+    void onService(const aribtlv::ServiceInfo&) override {}
+    void onTrack(const aribtlv::TrackInfo&) override {}
+    void onAccessUnit(aribtlv::AccessUnit&&) override {}
 
-    void onApplicationResource(tlvdemux::ApplicationResource&& resource) override {
+    void onApplicationResource(aribtlv::ApplicationResource&& resource) override {
         const auto relative = safe_relative(resource.path);
         const auto output = root / relative;
         std::filesystem::create_directories(output.parent_path());
@@ -32,7 +32,7 @@ struct Extractor final : tlvdemux::Sink {
         ++written;
     }
 
-    void onError(const tlvdemux::Error& error) override {
+    void onError(const aribtlv::Error& error) override {
         if (!error.recoverable) throw std::runtime_error(error.message);
         std::cerr << "recoverable error at " << error.input_offset << ": "
                   << error.message << '\n';
@@ -67,7 +67,7 @@ int main(int argc, char** argv) {
         Extractor extractor(argv[1]);
         std::ifstream input(argv[2], std::ios::binary);
         if (!input) throw std::runtime_error("cannot open input");
-        tlvdemux::Demuxer demuxer(extractor);
+        aribtlv::Demuxer demuxer(extractor);
         std::array<std::uint8_t, 64 * 1024> buffer{};
         while (input) {
             input.read(reinterpret_cast<char*>(buffer.data()),

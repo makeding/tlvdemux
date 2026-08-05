@@ -1,6 +1,7 @@
 #pragma once
 
-#include <tlvdemux/types.hpp>
+#include <aribtlv/recording.hpp>
+#include <aribtlv/types.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -10,18 +11,14 @@
 
 namespace tlvdemux {
 
-enum class SessionState { Closed, Opening, Ready, WaitingForData, Ended, Failed };
+using aribtlv::BroadcastClock;
+using aribtlv::StreamEvent;
+using aribtlv::Timestamp;
+// Index ownership belongs to the recording core.  Keep this spelling for the
+// playback state machine API without introducing a reverse core dependency.
+using IndexState = aribtlv::IndexState;
 
-enum class IndexState {
-    Absent,
-    Loading,
-    Building,
-    Partial,
-    Following,
-    Complete,
-    Stale,
-    Failed,
-};
+enum class SessionState { Closed, Opening, Ready, WaitingForData, Ended, Failed };
 
 enum class SeekState {
     Idle,

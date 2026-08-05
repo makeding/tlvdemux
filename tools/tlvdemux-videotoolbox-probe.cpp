@@ -1,4 +1,4 @@
-#include <tlvdemux/demuxer.hpp>
+#include <aribtlv/demuxer.hpp>
 #include <tlvdemux/mse_remuxer.hpp>
 
 #include <CoreMedia/CoreMedia.h>
@@ -158,7 +158,7 @@ std::string nal_types(const std::vector<NalUnit>& nals) {
     return result;
 }
 
-class Probe final : public tlvdemux::Sink, public tlvdemux::MseSink {
+class Probe final : public aribtlv::Sink, public tlvdemux::MseSink {
 public:
     Probe(const std::size_t maximum_access_units, const bool skip_leading_rasl,
           const double playback_rate, const std::size_t inflight_frames,
@@ -181,37 +181,37 @@ public:
         if (format_ != nullptr) CFRelease(format_);
     }
 
-    void onService(const tlvdemux::ServiceInfo&) override {}
+    void onService(const aribtlv::ServiceInfo&) override {}
 
-    void onTrack(const tlvdemux::TrackInfo& track) override {
-        if (!video_track_.has_value() && track.kind == tlvdemux::TrackKind::Video &&
-            track.codec == tlvdemux::Codec::Hevc) {
+    void onTrack(const aribtlv::TrackInfo& track) override {
+        if (!video_track_.has_value() && track.kind == aribtlv::TrackKind::Video &&
+            track.codec == aribtlv::Codec::Hevc) {
             video_track_ = track.track_id;
-            if (mse_pipeline_) mse_remuxer_.selectTrack(tlvdemux::TrackKind::Video,
+            if (mse_pipeline_) mse_remuxer_.selectTrack(aribtlv::TrackKind::Video,
                                                         track.track_id);
             std::cerr << "video track packet_id=0x" << std::hex << track.packet_id << std::dec
                       << " timescale=" << track.timescale << '\n';
         } else if (mse_pipeline_ && !audio_track_.has_value() &&
-                   track.kind == tlvdemux::TrackKind::Audio && track.audio.has_value() &&
-                   tlvdemux::audio_channel_count(track.audio->channel_layout) <= 6 &&
+                   track.kind == aribtlv::TrackKind::Audio && track.audio.has_value() &&
+                   aribtlv::audio_channel_count(track.audio->channel_layout) <= 6 &&
                    (!wanted_audio_packet_id_.has_value() ||
                     track.packet_id == *wanted_audio_packet_id_)) {
             audio_track_ = track.track_id;
-            mse_remuxer_.selectTrack(tlvdemux::TrackKind::Audio, track.track_id);
+            mse_remuxer_.selectTrack(aribtlv::TrackKind::Audio, track.track_id);
             std::cerr << "audio track packet_id=0x" << std::hex << track.packet_id << std::dec
                       << " timescale=" << track.timescale << '\n';
         }
     }
 
-    void onAccessUnit(tlvdemux::AccessUnit&& unit) override {
+    void onAccessUnit(aribtlv::AccessUnit&& unit) override {
         if (done_) return;
         if (mse_pipeline_ && audio_track_.has_value() && unit.track_id == *audio_track_ &&
-            unit.codec == tlvdemux::Codec::AacLatm) {
+            unit.codec == aribtlv::Codec::AacLatm) {
             mse_remuxer_.push(unit);
             return;
         }
         if (!video_track_.has_value() || unit.track_id != *video_track_ ||
-            unit.codec != tlvdemux::Codec::Hevc) return;
+            unit.codec != aribtlv::Codec::Hevc) return;
 
         if (unit.discontinuity) {
             std::cerr << "video discontinuity pts=" << seconds(unit.pts)
@@ -266,8 +266,8 @@ public:
         if (access_unit_count_ == 1 && has_irap) waiting_for_first_trailing_picture_ = true;
     }
 
-    void onError(const tlvdemux::Error& error) override {
-        if (error.code == tlvdemux::ErrorCode::Discontinuity) {
+    void onError(const aribtlv::Error& error) override {
+        if (error.code == aribtlv::ErrorCode::Discontinuity) {
             std::cerr << "demux discontinuity @" << error.input_offset
                       << ": " << error.message << '\n';
         }
@@ -377,7 +377,7 @@ public:
     }
 
 private:
-    static double seconds(const tlvdemux::Timestamp timestamp) {
+    static double seconds(const aribtlv::Timestamp timestamp) {
         if (timestamp.timescale == 0) return 0.0;
         return static_cast<double>(timestamp.value) / static_cast<double>(timestamp.timescale);
     }
@@ -390,7 +390,7 @@ private:
         }
     }
 
-    void pace(const tlvdemux::Timestamp dts) {
+    void pace(const aribtlv::Timestamp dts) {
         if (playback_rate_ <= 0.0 || dts.timescale == 0) return;
         pace_seconds(seconds(dts));
     }
@@ -540,7 +540,7 @@ private:
         return status;
     }
 
-    OSStatus decode(const tlvdemux::AccessUnit& unit, const std::vector<NalUnit>& nals) {
+    OSStatus decode(const aribtlv::AccessUnit& unit, const std::vector<NalUnit>& nals) {
         std::vector<std::uint8_t> sample;
         const bool has_irap = std::any_of(nals.begin(), nals.end(), [](const auto& nal) {
             return nal.type >= 16 && nal.type <= 23;
@@ -971,11 +971,11 @@ bool run_probe(const Options& options, const std::uint64_t offset,
                 options.prepend_parameter_sets_on_irap, options.mse_pipeline,
                 options.timeline_only, options.audio_packet_id,
                 options.require_hardware);
-    auto limits = tlvdemux::Limits{};
+    auto limits = aribtlv::Limits{};
     limits.collect_application_resources = false;
-    tlvdemux::Demuxer demuxer(probe, limits);
+    aribtlv::Demuxer demuxer(probe, limits);
     if (offset != 0) {
-        demuxer.reposition(tlvdemux::RepositionOptions{offset, false});
+        demuxer.reposition(aribtlv::RepositionOptions{offset, false});
         input.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
         if (!input) {
             std::cerr << "cannot seek to " << offset << '\n';

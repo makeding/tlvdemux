@@ -1,4 +1,4 @@
-#include <tlvdemux/duration_probe.hpp>
+#include <aribtlv/duration_probe.hpp>
 
 #include <algorithm>
 #include <array>
@@ -12,16 +12,16 @@
 
 namespace {
 
-const char* failure_name(const tlvdemux::DurationProbeFailure failure) noexcept {
+const char* failure_name(const aribtlv::DurationProbeFailure failure) noexcept {
     switch (failure) {
-    case tlvdemux::DurationProbeFailure::None: return "none";
-    case tlvdemux::DurationProbeFailure::InvalidSource: return "invalid-source";
-    case tlvdemux::DurationProbeFailure::InvalidResponse: return "invalid-response";
-    case tlvdemux::DurationProbeFailure::SourceError: return "source-error";
-    case tlvdemux::DurationProbeFailure::NoVideo: return "no-video";
-    case tlvdemux::DurationProbeFailure::NoTailTimestamp: return "no-tail-timestamp";
-    case tlvdemux::DurationProbeFailure::RangeLimit: return "range-limit";
-    case tlvdemux::DurationProbeFailure::ParseError: return "parse-error";
+    case aribtlv::DurationProbeFailure::None: return "none";
+    case aribtlv::DurationProbeFailure::InvalidSource: return "invalid-source";
+    case aribtlv::DurationProbeFailure::InvalidResponse: return "invalid-response";
+    case aribtlv::DurationProbeFailure::SourceError: return "source-error";
+    case aribtlv::DurationProbeFailure::NoVideo: return "no-video";
+    case aribtlv::DurationProbeFailure::NoTailTimestamp: return "no-tail-timestamp";
+    case aribtlv::DurationProbeFailure::RangeLimit: return "range-limit";
+    case aribtlv::DurationProbeFailure::ParseError: return "parse-error";
     }
     return "unknown";
 }
@@ -44,7 +44,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("input is too large for this file adapter");
         }
 
-        tlvdemux::DurationProbe probe;
+        aribtlv::DurationProbe probe;
         if (!probe.begin(unsigned_end)) throw std::runtime_error("cannot start duration probe");
         std::array<std::uint8_t, 512 * 1024> buffer{};
         while (const auto request = probe.nextRange()) {
@@ -75,7 +75,7 @@ int main(int argc, char** argv) {
             }
         }
 
-        if (probe.state() != tlvdemux::DurationProbeState::Complete) {
+        if (probe.state() != aribtlv::DurationProbeState::Complete) {
             std::cerr << "duration=unknown failure=" << failure_name(probe.failure())
                       << " bytes-read=" << probe.transferredBytes() << '\n';
             return 1;

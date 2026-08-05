@@ -1,6 +1,6 @@
-#include <tlvdemux/demuxer.hpp>
+#include <aribtlv/demuxer.hpp>
+#include <aribtlv/recording.hpp>
 #include <tlvdemux/playback.hpp>
-#include <tlvdemux/recording.hpp>
 
 #include <algorithm>
 #include <array>
@@ -23,7 +23,7 @@ namespace {
 constexpr std::size_t read_size = 1024 * 1024;
 constexpr std::uint64_t progress_interval = 512ULL * 1024ULL * 1024ULL;
 
-std::optional<std::int64_t> timestamp_us(const tlvdemux::Timestamp timestamp) {
+std::optional<std::int64_t> timestamp_us(const aribtlv::Timestamp timestamp) {
     if (timestamp.timescale == 0) return std::nullopt;
     const auto scale = static_cast<std::int64_t>(timestamp.timescale);
     const auto whole = timestamp.value / scale;
@@ -49,30 +49,30 @@ struct FrameStamp {
     bool random_access = false;
 };
 
-class CocktailSink final : public tlvdemux::Sink {
+class CocktailSink final : public aribtlv::Sink {
 public:
     enum class Phase { Indexing, Seeking };
 
     explicit CocktailSink(const std::optional<std::uint16_t> video_packet_id)
         : requested_video_packet_id_(video_packet_id) {}
 
-    void onService(const tlvdemux::ServiceInfo&) override {}
+    void onService(const aribtlv::ServiceInfo&) override {}
 
-    void onLayoutConfiguration(const tlvdemux::LayoutConfiguration&) override {
+    void onLayoutConfiguration(const aribtlv::LayoutConfiguration&) override {
         ++layout_callbacks_[static_cast<std::size_t>(phase_)];
     }
 
-    void onApplication(const tlvdemux::ApplicationInfo&) override {
+    void onApplication(const aribtlv::ApplicationInfo&) override {
         ++application_callbacks_[static_cast<std::size_t>(phase_)];
     }
 
-    void onStreamEvent(const tlvdemux::StreamEvent&) override {
+    void onStreamEvent(const aribtlv::StreamEvent&) override {
         ++stream_event_callbacks_[static_cast<std::size_t>(phase_)];
     }
 
-    void onTrack(const tlvdemux::TrackInfo& track) override {
+    void onTrack(const aribtlv::TrackInfo& track) override {
         tracks_[track.track_id] = track;
-        if (!video_track_.has_value() && track.kind == tlvdemux::TrackKind::Video &&
+        if (!video_track_.has_value() && track.kind == aribtlv::TrackKind::Video &&
             (!requested_video_packet_id_.has_value() ||
              track.packet_id == *requested_video_packet_id_)) {
             video_track_ = track.track_id;
@@ -81,7 +81,7 @@ public:
         }
     }
 
-    void onAccessUnit(tlvdemux::AccessUnit&& unit) override {
+    void onAccessUnit(aribtlv::AccessUnit&& unit) override {
         ++access_unit_count_;
         if (phase_ == Phase::Indexing) {
             if (video_track_ == unit.track_id) {
@@ -115,7 +115,7 @@ public:
         }
     }
 
-    void onError(const tlvdemux::Error& error) override {
+    void onError(const aribtlv::Error& error) override {
         ++error_counts_[static_cast<unsigned>(error.code)];
         if (!error.recoverable) ++fatal_errors_;
     }
@@ -164,8 +164,8 @@ public:
         return *found;
     }
 
-    tlvdemux::RecordingIndex& index() noexcept { return index_; }
-    const tlvdemux::RecordingIndex& index() const noexcept { return index_; }
+    aribtlv::RecordingIndex& index() noexcept { return index_; }
+    const aribtlv::RecordingIndex& index() const noexcept { return index_; }
     const std::vector<FrameStamp>& frames() const noexcept { return frames_; }
     std::optional<std::uint64_t> videoTrack() const noexcept { return video_track_; }
     std::optional<std::uint16_t> videoPacketId() const noexcept { return video_packet_id_; }
@@ -218,8 +218,8 @@ private:
 
     Phase phase_ = Phase::Indexing;
     std::optional<std::uint16_t> requested_video_packet_id_;
-    tlvdemux::RecordingIndex index_;
-    std::unordered_map<std::uint64_t, tlvdemux::TrackInfo> tracks_;
+    aribtlv::RecordingIndex index_;
+    std::unordered_map<std::uint64_t, aribtlv::TrackInfo> tracks_;
     std::optional<std::uint64_t> video_track_;
     std::optional<std::uint16_t> video_packet_id_;
     std::vector<FrameStamp> frames_;
@@ -315,16 +315,16 @@ std::uint64_t file_size(std::ifstream& file) {
     return static_cast<std::uint64_t>(end);
 }
 
-bool run_seek_case(std::ifstream& file, tlvdemux::Demuxer& demuxer,
+bool run_seek_case(std::ifstream& file, aribtlv::Demuxer& demuxer,
                    CocktailSink& sink, tlvdemux::PlaybackStateMachine& state,
-                   const tlvdemux::SeekPoint& point, const FrameStamp expected,
+                   const aribtlv::SeekPoint& point, const FrameStamp expected,
                    const std::int64_t target_us, const std::uint64_t source_size,
                    const std::uint64_t max_seek_bytes, const std::size_t case_number) {
     const auto generation = state.requestSeek();
     if (!generation.has_value() || !state.beginReposition(*generation)) {
         throw std::runtime_error("state machine rejected seek request");
     }
-    demuxer.reposition(tlvdemux::RepositionOptions{point.signalling_offset, true});
+    demuxer.reposition(aribtlv::RepositionOptions{point.signalling_offset, true});
     if (!state.beginPriming(*generation) || !state.beginPreroll(*generation)) {
         throw std::runtime_error("state machine rejected seek priming");
     }
@@ -364,7 +364,7 @@ bool run_seek_case(std::ifstream& file, tlvdemux::Demuxer& demuxer,
         restart_offset_matches && landing_matches;
 
     const auto estimate = sink.index().estimateOffset(
-        tlvdemux::Timestamp{target_us, 1000000}, source_size);
+        aribtlv::Timestamp{target_us, 1000000}, source_size);
     const auto estimate_error = estimate.has_value()
         ? (*estimate > point.random_access_offset
                ? *estimate - point.random_access_offset
@@ -416,23 +416,23 @@ bool run_seek_case(std::ifstream& file, tlvdemux::Demuxer& demuxer,
     return passed;
 }
 
-class TrackSwitchSink final : public tlvdemux::Sink {
+class TrackSwitchSink final : public aribtlv::Sink {
 public:
     TrackSwitchSink(const std::uint16_t primary_packet_id,
                     const std::uint16_t secondary_packet_id)
         : primary_packet_id_(primary_packet_id),
           secondary_packet_id_(secondary_packet_id) {}
 
-    void onService(const tlvdemux::ServiceInfo&) override {}
+    void onService(const aribtlv::ServiceInfo&) override {}
 
-    void onTrack(const tlvdemux::TrackInfo& track) override {
-        if (track.kind != tlvdemux::TrackKind::Video) return;
+    void onTrack(const aribtlv::TrackInfo& track) override {
+        if (track.kind != aribtlv::TrackKind::Video) return;
         if (track.packet_id == primary_packet_id_) primary_track_id_ = track.track_id;
         if (track.packet_id == secondary_packet_id_) secondary_track_id_ = track.track_id;
     }
 
-    void onAccessUnit(tlvdemux::AccessUnit&& unit) override {
-        if (!expected_track_id_.has_value() || unit.codec != tlvdemux::Codec::Hevc) return;
+    void onAccessUnit(aribtlv::AccessUnit&& unit) override {
+        if (!expected_track_id_.has_value() || unit.codec != aribtlv::Codec::Hevc) return;
         if (unit.track_id != *expected_track_id_) {
             wrong_track_seen_ = true;
             return;
@@ -449,7 +449,7 @@ public:
         ++video_units_;
     }
 
-    void onError(const tlvdemux::Error&) override {}
+    void onError(const aribtlv::Error&) override {}
 
     void begin(const std::uint64_t track_id) {
         expected_track_id_ = track_id;
@@ -508,7 +508,7 @@ bool run_track_switch_case(const std::string& path,
     if (!file) throw std::runtime_error("cannot reopen input for track switching");
 
     TrackSwitchSink sink(primary_packet_id, secondary_packet_id);
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     constexpr std::size_t switch_read_size = 64 * 1024;
     std::array<std::uint8_t, switch_read_size> buffer{};
     enum class Stage { Discovering, Primary, Secondary, Returned };
@@ -528,21 +528,21 @@ bool run_track_switch_case(const std::string& path,
         if (sink.wrongTrackSeen()) break;
         if (stage == Stage::Discovering && sink.primaryTrackId().has_value() &&
             sink.secondaryTrackId().has_value()) {
-            demuxer.selectTrack(tlvdemux::TrackKind::Video, sink.primaryTrackId());
+            demuxer.selectTrack(aribtlv::TrackKind::Video, sink.primaryTrackId());
             sink.begin(*sink.primaryTrackId());
             stage = Stage::Primary;
         } else if (stage == Stage::Primary && sink.readyToSwitch()) {
             if (!sink.validFirstOutput()) break;
             primary_first_us = sink.firstPtsUs();
             primary_last_us = sink.latestPtsUs();
-            demuxer.selectTrack(tlvdemux::TrackKind::Video, sink.secondaryTrackId());
+            demuxer.selectTrack(aribtlv::TrackKind::Video, sink.secondaryTrackId());
             sink.begin(*sink.secondaryTrackId());
             stage = Stage::Secondary;
         } else if (stage == Stage::Secondary && sink.readyToSwitch()) {
             if (!sink.validFirstOutput()) break;
             secondary_first_us = sink.firstPtsUs();
             secondary_last_us = sink.latestPtsUs();
-            demuxer.selectTrack(tlvdemux::TrackKind::Video, sink.primaryTrackId());
+            demuxer.selectTrack(aribtlv::TrackKind::Video, sink.primaryTrackId());
             sink.begin(*sink.primaryTrackId());
             stage = Stage::Returned;
         } else if (stage == Stage::Returned && sink.firstSeen()) {
@@ -583,7 +583,7 @@ int main(int argc, char** argv) {
 
         CocktailSink sink(options.video_packet_id);
         sink.index().begin(false);
-        tlvdemux::Demuxer demuxer(sink);
+        aribtlv::Demuxer demuxer(sink);
         std::array<std::uint8_t, read_size> buffer{};
         std::uint64_t consumed = 0;
         std::uint64_t next_progress = progress_interval;
@@ -609,7 +609,7 @@ int main(int argc, char** argv) {
             std::chrono::steady_clock::now() - started);
         const auto duration = sink.index().duration();
         if (!sink.videoTrack().has_value() || sink.index().seekPoints().empty() ||
-            sink.frames().empty() || duration.status != tlvdemux::DurationStatus::Complete) {
+            sink.frames().empty() || duration.status != aribtlv::DurationStatus::Complete) {
             throw std::runtime_error("baseline scan did not produce a complete video index");
         }
 
@@ -670,7 +670,7 @@ int main(int argc, char** argv) {
         for (std::size_t index = 0; index < requested.size(); ++index) {
             const auto target = requested[index];
             const auto point = sink.index().previousSync(
-                tlvdemux::Timestamp{target, 1000000});
+                aribtlv::Timestamp{target, 1000000});
             const auto expected = sink.frameAtOrAfter(target, duration.value.value);
             if (!point.has_value() || !expected.has_value()) {
                 std::cerr << "case=" << index << " target=" << seconds(target)

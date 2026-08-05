@@ -1,4 +1,4 @@
-#include <tlvdemux/demuxer.hpp>
+#include <aribtlv/demuxer.hpp>
 
 #include <array>
 #include <cstdint>
@@ -12,50 +12,50 @@
 
 namespace {
 
-const char* codec_name(const tlvdemux::Codec codec) {
+const char* codec_name(const aribtlv::Codec codec) {
     switch (codec) {
-    case tlvdemux::Codec::Hevc: return "hevc";
-    case tlvdemux::Codec::AacLatm: return "aac-latm";
-    case tlvdemux::Codec::Ttml: return "ttml";
+    case aribtlv::Codec::Hevc: return "hevc";
+    case aribtlv::Codec::AacLatm: return "aac-latm";
+    case aribtlv::Codec::Ttml: return "ttml";
     }
     return "unknown";
 }
 
-const char* error_name(const tlvdemux::ErrorCode code) {
+const char* error_name(const aribtlv::ErrorCode code) {
     switch (code) {
-    case tlvdemux::ErrorCode::MalformedInput: return "malformed-input";
-    case tlvdemux::ErrorCode::UnsupportedFeature: return "unsupported-feature";
-    case tlvdemux::ErrorCode::Discontinuity: return "discontinuity";
-    case tlvdemux::ErrorCode::ResourceLimit: return "resource-limit";
+    case aribtlv::ErrorCode::MalformedInput: return "malformed-input";
+    case aribtlv::ErrorCode::UnsupportedFeature: return "unsupported-feature";
+    case aribtlv::ErrorCode::Discontinuity: return "discontinuity";
+    case aribtlv::ErrorCode::ResourceLimit: return "resource-limit";
     }
     return "unknown";
 }
 
-const char* audio_layout_name(const tlvdemux::AudioChannelLayout layout) {
+const char* audio_layout_name(const aribtlv::AudioChannelLayout layout) {
     switch (layout) {
-    case tlvdemux::AudioChannelLayout::Unknown: return "unknown";
-    case tlvdemux::AudioChannelLayout::Mono: return "mono";
-    case tlvdemux::AudioChannelLayout::DualMono: return "dual-mono";
-    case tlvdemux::AudioChannelLayout::Stereo: return "stereo";
-    case tlvdemux::AudioChannelLayout::Channels2_1: return "2/1";
-    case tlvdemux::AudioChannelLayout::Channels3_0: return "3ch";
-    case tlvdemux::AudioChannelLayout::Channels2_2: return "2/2";
-    case tlvdemux::AudioChannelLayout::Channels4_0: return "4ch";
-    case tlvdemux::AudioChannelLayout::Channels5_0: return "5ch";
-    case tlvdemux::AudioChannelLayout::Channels5_1: return "5.1ch";
-    case tlvdemux::AudioChannelLayout::Channels3_3_1: return "3/3.1ch";
-    case tlvdemux::AudioChannelLayout::Channels6_1: return "6.1ch";
-    case tlvdemux::AudioChannelLayout::Channels7_1: return "7.1ch";
-    case tlvdemux::AudioChannelLayout::Channels10_2: return "10.2ch";
-    case tlvdemux::AudioChannelLayout::Channels22_2: return "22.2ch";
+    case aribtlv::AudioChannelLayout::Unknown: return "unknown";
+    case aribtlv::AudioChannelLayout::Mono: return "mono";
+    case aribtlv::AudioChannelLayout::DualMono: return "dual-mono";
+    case aribtlv::AudioChannelLayout::Stereo: return "stereo";
+    case aribtlv::AudioChannelLayout::Channels2_1: return "2/1";
+    case aribtlv::AudioChannelLayout::Channels3_0: return "3ch";
+    case aribtlv::AudioChannelLayout::Channels2_2: return "2/2";
+    case aribtlv::AudioChannelLayout::Channels4_0: return "4ch";
+    case aribtlv::AudioChannelLayout::Channels5_0: return "5ch";
+    case aribtlv::AudioChannelLayout::Channels5_1: return "5.1ch";
+    case aribtlv::AudioChannelLayout::Channels3_3_1: return "3/3.1ch";
+    case aribtlv::AudioChannelLayout::Channels6_1: return "6.1ch";
+    case aribtlv::AudioChannelLayout::Channels7_1: return "7.1ch";
+    case aribtlv::AudioChannelLayout::Channels10_2: return "10.2ch";
+    case aribtlv::AudioChannelLayout::Channels22_2: return "22.2ch";
     }
     return "unknown";
 }
 
-struct Inspector final : tlvdemux::Sink {
+struct Inspector final : aribtlv::Sink {
     bool list = false;
     bool trace = false;
-    std::unordered_map<std::uint64_t, tlvdemux::TrackInfo> tracks;
+    std::unordered_map<std::uint64_t, aribtlv::TrackInfo> tracks;
     std::unordered_set<std::string> signalling;
     std::optional<std::uint64_t> video_track;
     std::optional<std::uint64_t> audio_track;
@@ -67,24 +67,24 @@ struct Inspector final : tlvdemux::Sink {
     std::ofstream audio;
     std::ofstream subtitle;
 
-    void onService(const tlvdemux::ServiceInfo& info) override {
+    void onService(const aribtlv::ServiceInfo& info) override {
         if (list) {
             std::cerr << "service context=" << info.context_id
                       << " package-id-bytes=" << info.package_id.size() << '\n';
         }
     }
 
-    void onTrack(const tlvdemux::TrackInfo& info) override {
+    void onTrack(const aribtlv::TrackInfo& info) override {
         tracks[info.track_id] = info;
-        if (info.kind == tlvdemux::TrackKind::Video && !video_track.has_value() &&
+        if (info.kind == aribtlv::TrackKind::Video && !video_track.has_value() &&
             (!wanted_video_packet_id.has_value() || *wanted_video_packet_id == info.packet_id)) {
             video_track = info.track_id;
         }
-        if (info.kind == tlvdemux::TrackKind::Audio && !audio_track.has_value() &&
+        if (info.kind == aribtlv::TrackKind::Audio && !audio_track.has_value() &&
             (!wanted_audio_packet_id.has_value() || *wanted_audio_packet_id == info.packet_id)) {
             audio_track = info.track_id;
         }
-        if (info.kind == tlvdemux::TrackKind::Subtitle && !subtitle_track.has_value() &&
+        if (info.kind == aribtlv::TrackKind::Subtitle && !subtitle_track.has_value() &&
             (!wanted_subtitle_packet_id.has_value() || *wanted_subtitle_packet_id == info.packet_id)) {
             subtitle_track = info.track_id;
         }
@@ -111,7 +111,7 @@ struct Inspector final : tlvdemux::Sink {
         }
     }
 
-    void onLayoutConfiguration(const tlvdemux::LayoutConfiguration& info) override {
+    void onLayoutConfiguration(const aribtlv::LayoutConfiguration& info) override {
         if (!list) return;
         std::cerr << "layout context=" << info.context_id
                   << " packet-id=0x" << std::hex << info.source_packet_id << std::dec
@@ -135,7 +135,7 @@ struct Inspector final : tlvdemux::Sink {
         std::cerr << '\n';
     }
 
-    void onApplicationService(const tlvdemux::ApplicationServiceInfo& info) override {
+    void onApplicationService(const aribtlv::ApplicationServiceInfo& info) override {
         if (!list) return;
         std::cerr << "application-service context=" << info.context_id
                   << " format=0x" << std::hex
@@ -159,7 +159,7 @@ struct Inspector final : tlvdemux::Sink {
         std::cerr << '\n';
     }
 
-    void onDataAsset(const tlvdemux::DataAssetInfo& info) override {
+    void onDataAsset(const aribtlv::DataAssetInfo& info) override {
         if (!list) return;
         std::cerr << "data-asset context=" << info.context_id
                   << " packet-id=0x" << std::hex << info.packet_id << std::dec
@@ -168,7 +168,7 @@ struct Inspector final : tlvdemux::Sink {
                   << " asset-id-bytes=" << info.asset_id.size() << '\n';
     }
 
-    void onDataUnit(tlvdemux::DataUnit&& unit) override {
+    void onDataUnit(aribtlv::DataUnit&& unit) override {
         if (!list) return;
         std::cerr << "data-unit context=" << unit.context_id
                   << " packet-id=0x" << std::hex << unit.packet_id << std::dec
@@ -187,7 +187,7 @@ struct Inspector final : tlvdemux::Sink {
         std::cerr << " discontinuity=" << unit.discontinuity << '\n';
     }
 
-    void onSignallingMessage(tlvdemux::SignallingMessage&& message) override {
+    void onSignallingMessage(aribtlv::SignallingMessage&& message) override {
         if (!list) return;
         const auto key = std::to_string(message.context_id) + ':' +
             std::to_string(message.packet_id) + ':' + std::to_string(message.message_id);
@@ -198,7 +198,7 @@ struct Inspector final : tlvdemux::Sink {
                   << " size=" << message.data.size() << '\n';
     }
 
-    void onEventInfo(const tlvdemux::EventInfo& info) override {
+    void onEventInfo(const aribtlv::EventInfo& info) override {
         if (!list) return;
         std::cerr << "event context=" << info.context_id
                   << " service-id=" << info.service_id
@@ -215,7 +215,7 @@ struct Inspector final : tlvdemux::Sink {
         std::cerr << '\n';
     }
 
-    void onStreamEvent(const tlvdemux::StreamEvent& event) override {
+    void onStreamEvent(const aribtlv::StreamEvent& event) override {
         if (!list) return;
         std::cerr << "stream-event context=" << event.context_id
                   << " packet-id=0x" << std::hex << event.source_packet_id << std::dec
@@ -231,7 +231,7 @@ struct Inspector final : tlvdemux::Sink {
                   << " private-bytes=" << event.private_data.size() << '\n';
     }
 
-    void onApplication(const tlvdemux::ApplicationInfo& info) override {
+    void onApplication(const aribtlv::ApplicationInfo& info) override {
         if (!list) return;
         std::cerr << "application context=" << info.context_id
                   << " source-packet-id=0x" << std::hex << info.source_packet_id
@@ -245,7 +245,7 @@ struct Inspector final : tlvdemux::Sink {
         std::cerr << '\n';
     }
 
-    void onDataTransmissionTable(tlvdemux::DataTransmissionTable&& table) override {
+    void onDataTransmissionTable(aribtlv::DataTransmissionTable&& table) override {
         if (!list) return;
         std::cerr << "data-table context=" << table.context_id
                   << " source-packet-id=0x" << std::hex << table.source_packet_id
@@ -257,7 +257,7 @@ struct Inspector final : tlvdemux::Sink {
                   << " size=" << table.data.size() << '\n';
     }
 
-    void onDataDirectoryTable(const tlvdemux::DataDirectoryTable& table) override {
+    void onDataDirectoryTable(const aribtlv::DataDirectoryTable& table) override {
         if (!list) return;
         std::size_t file_count = 0;
         for (const auto& directory : table.directories) file_count += directory.files.size();
@@ -281,7 +281,7 @@ struct Inspector final : tlvdemux::Sink {
         }
     }
 
-    void onDataAssetManagementTable(const tlvdemux::DataAssetManagementTable& table) override {
+    void onDataAssetManagementTable(const aribtlv::DataAssetManagementTable& table) override {
         if (!list) return;
         std::size_t item_count = 0;
         for (const auto& mpu : table.mpus) item_count += mpu.items.size();
@@ -310,7 +310,7 @@ struct Inspector final : tlvdemux::Sink {
         }
     }
 
-    void onAccessUnit(tlvdemux::AccessUnit&& unit) override {
+    void onAccessUnit(aribtlv::AccessUnit&& unit) override {
         const auto track = tracks.find(unit.track_id);
         if (trace) {
             std::cerr << "au offset=" << unit.input_offset
@@ -327,16 +327,16 @@ struct Inspector final : tlvdemux::Sink {
                       << " discontinuity=" << unit.discontinuity << '\n';
         }
         std::ofstream* output = nullptr;
-        if (unit.codec == tlvdemux::Codec::Hevc && video_track == unit.track_id) output = &video;
-        if (unit.codec == tlvdemux::Codec::AacLatm && audio_track == unit.track_id) output = &audio;
-        if (unit.codec == tlvdemux::Codec::Ttml && subtitle_track == unit.track_id) output = &subtitle;
+        if (unit.codec == aribtlv::Codec::Hevc && video_track == unit.track_id) output = &video;
+        if (unit.codec == aribtlv::Codec::AacLatm && audio_track == unit.track_id) output = &audio;
+        if (unit.codec == aribtlv::Codec::Ttml && subtitle_track == unit.track_id) output = &subtitle;
         if (output != nullptr && output->is_open()) {
             output->write(reinterpret_cast<const char*>(unit.data.data()),
                           static_cast<std::streamsize>(unit.data.size()));
         }
     }
 
-    void onError(const tlvdemux::Error& error) override {
+    void onError(const aribtlv::Error& error) override {
         std::cerr << error_name(error.code) << " offset=" << error.input_offset
                   << " recoverable=" << error.recoverable << ": " << error.message << '\n';
     }
@@ -410,7 +410,7 @@ int main(int argc, char** argv) {
             input = &file;
         }
 
-        tlvdemux::Demuxer demuxer(inspector);
+        aribtlv::Demuxer demuxer(inspector);
         demuxer.selectService(service);
         std::array<std::uint8_t, 64 * 1024> buffer{};
         while (*input) {

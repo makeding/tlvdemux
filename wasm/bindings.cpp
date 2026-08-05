@@ -1,6 +1,7 @@
-#include <tlvdemux/demuxer.hpp>
-#include <tlvdemux/duration_probe.hpp>
-#include <tlvdemux/application_resources.hpp>
+#include <aribtlv/application_resources.hpp>
+#include <aribtlv/demuxer.hpp>
+#include <aribtlv/duration_probe.hpp>
+#include <aribtlv/recording.hpp>
 
 #include "mse_remuxer.hpp"
 
@@ -35,119 +36,119 @@ val view_bytes(const std::vector<std::uint8_t>& source) {
     return val(emscripten::typed_memory_view(source.size(), source.data()));
 }
 
-const char* codec_name(const tlvdemux::Codec codec) noexcept {
+const char* codec_name(const aribtlv::Codec codec) noexcept {
     switch (codec) {
-    case tlvdemux::Codec::Hevc: return "hevc";
-    case tlvdemux::Codec::AacLatm: return "aac-latm";
-    case tlvdemux::Codec::Ttml: return "ttml";
+    case aribtlv::Codec::Hevc: return "hevc";
+    case aribtlv::Codec::AacLatm: return "aac-latm";
+    case aribtlv::Codec::Ttml: return "ttml";
     }
     return "unknown";
 }
 
-const char* track_kind_name(const tlvdemux::TrackKind kind) noexcept {
+const char* track_kind_name(const aribtlv::TrackKind kind) noexcept {
     switch (kind) {
-    case tlvdemux::TrackKind::Video: return "video";
-    case tlvdemux::TrackKind::Audio: return "audio";
-    case tlvdemux::TrackKind::Subtitle: return "subtitle";
+    case aribtlv::TrackKind::Video: return "video";
+    case aribtlv::TrackKind::Audio: return "audio";
+    case aribtlv::TrackKind::Subtitle: return "subtitle";
     }
     return "unknown";
 }
 
-const char* error_code_name(const tlvdemux::ErrorCode code) noexcept {
+const char* error_code_name(const aribtlv::ErrorCode code) noexcept {
     switch (code) {
-    case tlvdemux::ErrorCode::MalformedInput: return "malformed-input";
-    case tlvdemux::ErrorCode::UnsupportedFeature: return "unsupported-feature";
-    case tlvdemux::ErrorCode::Discontinuity: return "discontinuity";
-    case tlvdemux::ErrorCode::ResourceLimit: return "resource-limit";
+    case aribtlv::ErrorCode::MalformedInput: return "malformed-input";
+    case aribtlv::ErrorCode::UnsupportedFeature: return "unsupported-feature";
+    case aribtlv::ErrorCode::Discontinuity: return "discontinuity";
+    case aribtlv::ErrorCode::ResourceLimit: return "resource-limit";
     }
     return "unknown";
 }
 
-const char* duration_probe_state_name(const tlvdemux::DurationProbeState state) noexcept {
+const char* duration_probe_state_name(const aribtlv::DurationProbeState state) noexcept {
     switch (state) {
-    case tlvdemux::DurationProbeState::Idle: return "idle";
-    case tlvdemux::DurationProbeState::NeedRange: return "need-range";
-    case tlvdemux::DurationProbeState::Complete: return "complete";
-    case tlvdemux::DurationProbeState::Unknown: return "unknown";
-    case tlvdemux::DurationProbeState::Failed: return "failed";
-    case tlvdemux::DurationProbeState::Cancelled: return "cancelled";
+    case aribtlv::DurationProbeState::Idle: return "idle";
+    case aribtlv::DurationProbeState::NeedRange: return "need-range";
+    case aribtlv::DurationProbeState::Complete: return "complete";
+    case aribtlv::DurationProbeState::Unknown: return "unknown";
+    case aribtlv::DurationProbeState::Failed: return "failed";
+    case aribtlv::DurationProbeState::Cancelled: return "cancelled";
     }
     return "unknown";
 }
 
-const char* duration_probe_failure_name(const tlvdemux::DurationProbeFailure failure) noexcept {
+const char* duration_probe_failure_name(const aribtlv::DurationProbeFailure failure) noexcept {
     switch (failure) {
-    case tlvdemux::DurationProbeFailure::None: return "none";
-    case tlvdemux::DurationProbeFailure::InvalidSource: return "invalid-source";
-    case tlvdemux::DurationProbeFailure::InvalidResponse: return "invalid-response";
-    case tlvdemux::DurationProbeFailure::SourceError: return "source-error";
-    case tlvdemux::DurationProbeFailure::NoVideo: return "no-video";
-    case tlvdemux::DurationProbeFailure::NoTailTimestamp: return "no-tail-timestamp";
-    case tlvdemux::DurationProbeFailure::RangeLimit: return "range-limit";
-    case tlvdemux::DurationProbeFailure::ParseError: return "parse-error";
+    case aribtlv::DurationProbeFailure::None: return "none";
+    case aribtlv::DurationProbeFailure::InvalidSource: return "invalid-source";
+    case aribtlv::DurationProbeFailure::InvalidResponse: return "invalid-response";
+    case aribtlv::DurationProbeFailure::SourceError: return "source-error";
+    case aribtlv::DurationProbeFailure::NoVideo: return "no-video";
+    case aribtlv::DurationProbeFailure::NoTailTimestamp: return "no-tail-timestamp";
+    case aribtlv::DurationProbeFailure::RangeLimit: return "range-limit";
+    case aribtlv::DurationProbeFailure::ParseError: return "parse-error";
     }
     return "unknown";
 }
 
-const char* index_state_name(const tlvdemux::IndexState state) noexcept {
+const char* index_state_name(const aribtlv::IndexState state) noexcept {
     switch (state) {
-    case tlvdemux::IndexState::Absent: return "absent";
-    case tlvdemux::IndexState::Loading: return "loading";
-    case tlvdemux::IndexState::Building: return "building";
-    case tlvdemux::IndexState::Partial: return "partial";
-    case tlvdemux::IndexState::Following: return "following";
-    case tlvdemux::IndexState::Complete: return "complete";
-    case tlvdemux::IndexState::Stale: return "stale";
-    case tlvdemux::IndexState::Failed: return "failed";
+    case aribtlv::IndexState::Absent: return "absent";
+    case aribtlv::IndexState::Loading: return "loading";
+    case aribtlv::IndexState::Building: return "building";
+    case aribtlv::IndexState::Partial: return "partial";
+    case aribtlv::IndexState::Following: return "following";
+    case aribtlv::IndexState::Complete: return "complete";
+    case aribtlv::IndexState::Stale: return "stale";
+    case aribtlv::IndexState::Failed: return "failed";
     }
     return "unknown";
 }
 
 const char* application_collection_state_name(
-    const tlvdemux::ApplicationCollectionState state) noexcept {
+    const aribtlv::ApplicationCollectionState state) noexcept {
     switch (state) {
-    case tlvdemux::ApplicationCollectionState::Discovered: return "discovered";
-    case tlvdemux::ApplicationCollectionState::Collecting: return "collecting";
-    case tlvdemux::ApplicationCollectionState::Ready: return "ready";
+    case aribtlv::ApplicationCollectionState::Discovered: return "discovered";
+    case aribtlv::ApplicationCollectionState::Collecting: return "collecting";
+    case aribtlv::ApplicationCollectionState::Ready: return "ready";
     }
     return "discovered";
 }
 
 const char* application_lifecycle_state_name(
-    const tlvdemux::ApplicationLifecycleState state) noexcept {
+    const aribtlv::ApplicationLifecycleState state) noexcept {
     switch (state) {
-    case tlvdemux::ApplicationLifecycleState::Unsupported: return "unsupported";
-    case tlvdemux::ApplicationLifecycleState::AutostartPending: return "autostart-pending";
-    case tlvdemux::ApplicationLifecycleState::AutostartReady: return "autostart-ready";
-    case tlvdemux::ApplicationLifecycleState::Present: return "present";
-    case tlvdemux::ApplicationLifecycleState::Prefetching: return "prefetching";
-    case tlvdemux::ApplicationLifecycleState::Prefetched: return "prefetched";
-    case tlvdemux::ApplicationLifecycleState::Killed: return "killed";
+    case aribtlv::ApplicationLifecycleState::Unsupported: return "unsupported";
+    case aribtlv::ApplicationLifecycleState::AutostartPending: return "autostart-pending";
+    case aribtlv::ApplicationLifecycleState::AutostartReady: return "autostart-ready";
+    case aribtlv::ApplicationLifecycleState::Present: return "present";
+    case aribtlv::ApplicationLifecycleState::Prefetching: return "prefetching";
+    case aribtlv::ApplicationLifecycleState::Prefetched: return "prefetched";
+    case aribtlv::ApplicationLifecycleState::Killed: return "killed";
     }
     return "unsupported";
 }
 
 const char* service_reset_reason_name(
-    const tlvdemux::ServiceStateResetReason reason) noexcept {
+    const aribtlv::ServiceStateResetReason reason) noexcept {
     switch (reason) {
-    case tlvdemux::ServiceStateResetReason::FullReset: return "full-reset";
-    case tlvdemux::ServiceStateResetReason::ServiceSelection: return "service-selection";
+    case aribtlv::ServiceStateResetReason::FullReset: return "full-reset";
+    case aribtlv::ServiceStateResetReason::ServiceSelection: return "service-selection";
     }
     return "full-reset";
 }
 
-val duration_value(const tlvdemux::DurationInfo duration) {
-    if (duration.status == tlvdemux::DurationStatus::Unknown) return val::null();
+val duration_value(const aribtlv::DurationInfo duration) {
+    if (duration.status == aribtlv::DurationStatus::Unknown) return val::null();
     auto result = val::object();
     result.set("value", duration.value.value);
     result.set("timescale", duration.value.timescale);
-    result.set("status", duration.status == tlvdemux::DurationStatus::Complete
+    result.set("status", duration.status == aribtlv::DurationStatus::Complete
                              ? std::string("complete")
                              : std::string("provisional"));
     return result;
 }
 
-val seek_point_value(const tlvdemux::SeekPoint& point) {
+val seek_point_value(const aribtlv::SeekPoint& point) {
     auto result = val::object();
     result.set("presentationTimeUs", point.presentation_time.value);
     result.set("signallingOffset", point.signalling_offset);
@@ -157,7 +158,7 @@ val seek_point_value(const tlvdemux::SeekPoint& point) {
     return result;
 }
 
-val broadcast_clock_value(const tlvdemux::BroadcastClock& clock) {
+val broadcast_clock_value(const aribtlv::BroadcastClock& clock) {
     auto result = val::object();
     result.set("mediaTimeValue", clock.media_time.value);
     result.set("mediaTimeTimescale", clock.media_time.timescale);
@@ -169,7 +170,7 @@ val broadcast_clock_value(const tlvdemux::BroadcastClock& clock) {
 }
 
 val presentation_regions_value(
-    const std::vector<tlvdemux::MpuPresentationRegion>& regions) {
+    const std::vector<aribtlv::MpuPresentationRegion>& regions) {
     auto result = val::array();
     for (std::size_t index = 0; index < regions.size(); ++index) {
         auto region = val::object();
@@ -181,7 +182,7 @@ val presentation_regions_value(
     return result;
 }
 
-val track_info_value(const tlvdemux::TrackInfo& info) {
+val track_info_value(const aribtlv::TrackInfo& info) {
     auto event = val::object();
     event.set("trackId", info.track_id);
     event.set("contextId", info.context_id);
@@ -195,7 +196,7 @@ val track_info_value(const tlvdemux::TrackInfo& info) {
     return event;
 }
 
-val application_info_value(const tlvdemux::ApplicationInfo& info) {
+val application_info_value(const aribtlv::ApplicationInfo& info) {
     auto event = val::object();
     event.set("contextId", info.context_id);
     event.set("sourcePacketId", info.source_packet_id);
@@ -214,7 +215,7 @@ val application_info_value(const tlvdemux::ApplicationInfo& info) {
     return event;
 }
 
-val layout_configuration_value(const tlvdemux::LayoutConfiguration& info) {
+val layout_configuration_value(const aribtlv::LayoutConfiguration& info) {
     auto result = val::object();
     result.set("contextId", info.context_id);
     result.set("sourcePacketId", info.source_packet_id);
@@ -250,7 +251,7 @@ val layout_configuration_value(const tlvdemux::LayoutConfiguration& info) {
     return result;
 }
 
-val event_info_value(const tlvdemux::EventInfo& info) {
+val event_info_value(const aribtlv::EventInfo& info) {
     auto result = val::object();
     result.set("contextId", info.context_id);
     result.set("sourcePacketId", info.source_packet_id);
@@ -313,7 +314,7 @@ val event_info_value(const tlvdemux::EventInfo& info) {
         component.set("componentType", source.audio.component_type);
         component.set("componentTag", source.audio.component_tag);
         component.set("channelLayout", static_cast<unsigned>(source.audio.channel_layout));
-        component.set("channels", tlvdemux::audio_channel_count(source.audio.channel_layout));
+        component.set("channels", aribtlv::audio_channel_count(source.audio.channel_layout));
         component.set("streamType", source.audio.stream_type);
         component.set("multilingual", source.audio.es_multi_lingual);
         component.set("mainComponent", source.audio.main_component);
@@ -342,7 +343,7 @@ val event_info_value(const tlvdemux::EventInfo& info) {
     return result;
 }
 
-val mh_sdt_value(const tlvdemux::MhSdtSnapshot& snapshot) {
+val mh_sdt_value(const aribtlv::MhSdtSnapshot& snapshot) {
     auto result = val::object();
     result.set("contextId", snapshot.context_id);
     result.set("sourcePacketId", snapshot.source_packet_id);
@@ -371,7 +372,7 @@ val mh_sdt_value(const tlvdemux::MhSdtSnapshot& snapshot) {
     return result;
 }
 
-val mh_tot_value(const tlvdemux::MhTotInfo& info) {
+val mh_tot_value(const aribtlv::MhTotInfo& info) {
     auto result = val::object();
     result.set("contextId", info.context_id);
     result.set("sourcePacketId", info.source_packet_id);
@@ -396,7 +397,7 @@ val mh_tot_value(const tlvdemux::MhTotInfo& info) {
     return result;
 }
 
-val stream_event_value(const tlvdemux::StreamEvent& event) {
+val stream_event_value(const aribtlv::StreamEvent& event) {
     auto result = val::object();
     result.set("contextId", event.context_id);
     result.set("sourcePacketId", event.source_packet_id);
@@ -422,7 +423,7 @@ val stream_event_value(const tlvdemux::StreamEvent& event) {
 }
 
 val viewer_participation_value(
-    const tlvdemux::ViewerParticipationNotification& notification) {
+    const aribtlv::ViewerParticipationNotification& notification) {
     auto result = val::object();
     result.set("contextId", notification.context_id);
     result.set("sourcePacketId", notification.source_packet_id);
@@ -440,7 +441,7 @@ val viewer_participation_value(
 class WasmDurationProbe final {
 public:
     bool begin(const std::uint64_t source_size, const val& js_options) {
-        tlvdemux::DurationProbeOptions options;
+        aribtlv::DurationProbeOptions options;
         if (!js_options.isNull() && !js_options.isUndefined()) {
             assign_if_present(js_options, "initialRangeSize", options.initial_range_size);
             assign_if_present(js_options, "maxRangeSize", options.max_range_size);
@@ -509,11 +510,11 @@ private:
         if (!value.isNull() && !value.isUndefined()) destination = value.as<T>();
     }
 
-    tlvdemux::DurationProbe probe_;
+    aribtlv::DurationProbe probe_;
 };
 
-class WasmDemuxer final : public tlvdemux::Sink,
-                          public tlvdemux::ApplicationResourceSink {
+class WasmDemuxer final : public aribtlv::Sink,
+                          public aribtlv::ApplicationResourceSink {
 public:
     explicit WasmDemuxer(val callbacks)
         : callbacks_(std::move(callbacks)), application_assembler_(*this),
@@ -558,7 +559,7 @@ public:
         // therefore open data broadcasting immediately after a seek and keep
         // refreshing it from later carousel cycles.
         restart_application_assembly();
-        demuxer_.reposition(tlvdemux::RepositionOptions{input_offset, preserve_timeline});
+        demuxer_.reposition(aribtlv::RepositionOptions{input_offset, preserve_timeline});
         if (mse_enabled_) mse_remuxer_.reposition();
     }
 
@@ -569,16 +570,16 @@ public:
     }
 
     void selectTrack(const std::string& kind, const val& track_id) {
-        std::optional<tlvdemux::TrackKind> parsed_kind;
-        if (kind == "video") parsed_kind = tlvdemux::TrackKind::Video;
-        if (kind == "audio") parsed_kind = tlvdemux::TrackKind::Audio;
-        if (kind == "subtitle") parsed_kind = tlvdemux::TrackKind::Subtitle;
+        std::optional<aribtlv::TrackKind> parsed_kind;
+        if (kind == "video") parsed_kind = aribtlv::TrackKind::Video;
+        if (kind == "audio") parsed_kind = aribtlv::TrackKind::Audio;
+        if (kind == "subtitle") parsed_kind = aribtlv::TrackKind::Subtitle;
         if (!parsed_kind.has_value()) return;
         const auto selected = optional_number<std::uint64_t>(track_id);
         demuxer_.selectTrack(*parsed_kind, selected);
         if (mse_enabled_) mse_remuxer_.selectTrack(*parsed_kind, selected);
-        if (*parsed_kind == tlvdemux::TrackKind::Video && index_active_ &&
-            recording_index_.state() == tlvdemux::IndexState::Building) {
+        if (*parsed_kind == aribtlv::TrackKind::Video && index_active_ &&
+            recording_index_.state() == aribtlv::IndexState::Building) {
             recording_index_.selectVideoTrack(selected);
         }
     }
@@ -619,9 +620,9 @@ public:
     val indexDuration() const { return duration_value(recording_index_.duration()); }
     bool setIndexDuration(const std::int64_t duration_us) {
         if (!index_active_ || duration_us < 0) return false;
-        return recording_index_.updateDuration(tlvdemux::DurationInfo{
-            tlvdemux::Timestamp{duration_us, 1000000},
-            tlvdemux::DurationStatus::Provisional,
+        return recording_index_.updateDuration(aribtlv::DurationInfo{
+            aribtlv::Timestamp{duration_us, 1000000},
+            aribtlv::DurationStatus::Provisional,
         });
     }
     std::size_t seekPointCount() const { return recording_index_.seekPoints().size(); }
@@ -632,13 +633,13 @@ public:
 
     val previousSync(const std::int64_t target_us) const {
         const auto point = recording_index_.previousSync(
-            tlvdemux::Timestamp{target_us, 1000000});
+            aribtlv::Timestamp{target_us, 1000000});
         return point.has_value() ? seek_point_value(*point) : val::null();
     }
 
     val seekPointsFor(const std::int64_t target_us) const {
         const auto points = recording_index_.seekPointsFor(
-            tlvdemux::Timestamp{target_us, 1000000});
+            aribtlv::Timestamp{target_us, 1000000});
         if (!points.has_value()) return val::null();
         auto result = val::object();
         result.set("first", seek_point_value(points->first));
@@ -651,7 +652,7 @@ public:
     val estimateOffset(const std::int64_t target_us,
                        const std::uint64_t source_size) const {
         const auto offset = recording_index_.estimateOffset(
-            tlvdemux::Timestamp{target_us, 1000000}, source_size);
+            aribtlv::Timestamp{target_us, 1000000}, source_size);
         return offset.has_value() ? val(*offset) : val::null();
     }
 
@@ -695,21 +696,21 @@ public:
         return clock.has_value() ? broadcast_clock_value(*clock) : val::null();
     }
 
-    void onService(const tlvdemux::ServiceInfo& info) override {
+    void onService(const aribtlv::ServiceInfo& info) override {
         auto event = val::object();
         event.set("contextId", info.context_id);
         event.set("packageId", copy_bytes(info.package_id));
         emit("onService", event);
     }
 
-    void onTrack(const tlvdemux::TrackInfo& info) override {
+    void onTrack(const aribtlv::TrackInfo& info) override {
         auto event = track_info_value(info);
         if (info.audio.has_value()) {
             auto audio = val::object();
             audio.set("componentType", info.audio->component_type);
             audio.set("componentTag", info.audio->component_tag);
             audio.set("channelLayout", static_cast<unsigned>(info.audio->channel_layout));
-            audio.set("channels", tlvdemux::audio_channel_count(info.audio->channel_layout));
+            audio.set("channels", aribtlv::audio_channel_count(info.audio->channel_layout));
             audio.set("streamType", info.audio->stream_type);
             audio.set("simulcastGroupTag", info.audio->simulcast_group_tag);
             audio.set("multilingual", info.audio->es_multi_lingual);
@@ -727,12 +728,12 @@ public:
         emit("onTrack", event);
     }
 
-    void onTrackRemoved(const tlvdemux::TrackInfo& info) override {
+    void onTrackRemoved(const aribtlv::TrackInfo& info) override {
         emit("onTrackRemoved", track_info_value(info));
     }
 
     void onApplicationServiceRemoved(
-        const tlvdemux::ApplicationServiceInfo& info) override {
+        const aribtlv::ApplicationServiceInfo& info) override {
         auto event = val::object();
         event.set("contextId", info.context_id);
         event.set("applicationFormat", info.application_format);
@@ -747,7 +748,7 @@ public:
         emit("onApplicationServiceRemoved", event);
     }
 
-    void onDataAssetRemoved(const tlvdemux::DataAssetInfo& info) override {
+    void onDataAssetRemoved(const aribtlv::DataAssetInfo& info) override {
         auto event = val::object();
         event.set("contextId", info.context_id);
         event.set("packetId", info.packet_id);
@@ -758,11 +759,11 @@ public:
         emit("onDataAssetRemoved", event);
     }
 
-    void onApplicationRemoved(const tlvdemux::ApplicationInfo& info) override {
+    void onApplicationRemoved(const aribtlv::ApplicationInfo& info) override {
         emit("onApplicationRemoved", application_info_value(info));
     }
 
-    void onMptSnapshot(const tlvdemux::MptSnapshot& snapshot) override {
+    void onMptSnapshot(const aribtlv::MptSnapshot& snapshot) override {
         auto event = val::object();
         event.set("contextId", snapshot.context_id);
         event.set("sourcePacketId", snapshot.source_packet_id);
@@ -807,7 +808,7 @@ public:
         emit("onMptSnapshot", event);
     }
 
-    void onMhAitSnapshot(const tlvdemux::MhAitSnapshot& snapshot) override {
+    void onMhAitSnapshot(const aribtlv::MhAitSnapshot& snapshot) override {
         auto event = val::object();
         event.set("contextId", snapshot.context_id);
         event.set("sourcePacketId", snapshot.source_packet_id);
@@ -823,7 +824,7 @@ public:
         emit("onMhAitSnapshot", event);
     }
 
-    void onServiceStateReset(const tlvdemux::ServiceStateReset& reset) override {
+    void onServiceStateReset(const aribtlv::ServiceStateReset& reset) override {
         auto event = val::object();
         event.set("contextId", reset.context_id.has_value()
             ? val(*reset.context_id) : val::null());
@@ -831,19 +832,19 @@ public:
         emit("onServiceStateReset", event);
     }
 
-    void onLayoutConfiguration(const tlvdemux::LayoutConfiguration& info) override {
+    void onLayoutConfiguration(const aribtlv::LayoutConfiguration& info) override {
         emit("onLayoutConfiguration", layout_configuration_value(info));
     }
 
-    void onAccessUnit(tlvdemux::AccessUnit&& unit) override {
+    void onAccessUnit(aribtlv::AccessUnit&& unit) override {
         if (index_active_) recording_index_.observe(unit);
         if (mse_enabled_) mse_remuxer_.push(unit);
-        const bool playback_event = unit.codec == tlvdemux::Codec::Ttml ||
-            (unit.codec == tlvdemux::Codec::Hevc &&
+        const bool playback_event = unit.codec == aribtlv::Codec::Ttml ||
+            (unit.codec == aribtlv::Codec::Hevc &&
              (unit.random_access || unit.discontinuity)) ||
-            (unit.codec == tlvdemux::Codec::AacLatm && unit.discontinuity);
+            (unit.codec == aribtlv::Codec::AacLatm && unit.discontinuity);
         if (has_callback("onPlaybackAccessUnitView") && playback_event) {
-            const auto data = unit.codec == tlvdemux::Codec::Ttml
+            const auto data = unit.codec == aribtlv::Codec::Ttml
                 ? view_bytes(unit.data)
                 : val::global("Uint8Array").new_(0);
             auto event = access_unit_event(unit, data);
@@ -861,23 +862,23 @@ public:
         }
     }
 
-    void onApplication(const tlvdemux::ApplicationInfo& info) override {
+    void onApplication(const aribtlv::ApplicationInfo& info) override {
         application_events_.emplace_back(info);
     }
 
-    void onDataDirectoryTable(const tlvdemux::DataDirectoryTable& table) override {
+    void onDataDirectoryTable(const aribtlv::DataDirectoryTable& table) override {
         application_events_.emplace_back(table);
     }
 
-    void onDataAssetManagementTable(const tlvdemux::DataAssetManagementTable& table) override {
+    void onDataAssetManagementTable(const aribtlv::DataAssetManagementTable& table) override {
         application_events_.emplace_back(table);
     }
 
-    void onDataUnit(tlvdemux::DataUnit&& unit) override {
+    void onDataUnit(aribtlv::DataUnit&& unit) override {
         application_events_.emplace_back(std::move(unit));
     }
 
-    void onError(const tlvdemux::Error& error) override {
+    void onError(const aribtlv::Error& error) override {
         auto event = val::object();
         event.set("code", std::string(error_code_name(error.code)));
         event.set("inputOffset", error.input_offset);
@@ -886,38 +887,38 @@ public:
         emit("onError", event);
     }
 
-    void onBroadcastClock(const tlvdemux::BroadcastClock& clock) override {
+    void onBroadcastClock(const aribtlv::BroadcastClock& clock) override {
         emit("onBroadcastClock", broadcast_clock_value(clock));
     }
 
-    void onEventInfo(const tlvdemux::EventInfo& info) override {
+    void onEventInfo(const aribtlv::EventInfo& info) override {
         emit("onEventInfo", event_info_value(info));
     }
 
-    void onMhSdtSnapshot(const tlvdemux::MhSdtSnapshot& snapshot) override {
+    void onMhSdtSnapshot(const aribtlv::MhSdtSnapshot& snapshot) override {
         emit("onMhSdtSnapshot", mh_sdt_value(snapshot));
     }
 
-    void onMhTot(const tlvdemux::MhTotInfo& info) override {
+    void onMhTot(const aribtlv::MhTotInfo& info) override {
         emit("onMhTot", mh_tot_value(info));
     }
 
-    void onStreamEvent(const tlvdemux::StreamEvent& event) override {
+    void onStreamEvent(const aribtlv::StreamEvent& event) override {
         emit("onStreamEvent", stream_event_value(event));
     }
 
     void onViewerParticipationNotification(
-        const tlvdemux::ViewerParticipationNotification& notification) override {
+        const aribtlv::ViewerParticipationNotification& notification) override {
         emit("onViewerParticipationNotification",
              viewer_participation_value(notification));
     }
 
-    void onApplicationState(const tlvdemux::ApplicationState& state) override {
+    void onApplicationState(const aribtlv::ApplicationState& state) override {
         application_resources_.onApplicationState(state);
         emit("onApplicationState", application_state_event(state));
     }
 
-    void onApplicationResource(tlvdemux::ApplicationResource&& resource) override {
+    void onApplicationResource(aribtlv::ApplicationResource&& resource) override {
         const auto context_id = resource.context_id;
         const auto path = resource.path;
         application_resources_.onApplicationResource(std::move(resource));
@@ -936,7 +937,7 @@ public:
     }
 
     void onApplicationResourceRemoved(
-        const tlvdemux::ApplicationResourceRemoval& removal) override {
+        const aribtlv::ApplicationResourceRemoval& removal) override {
         application_resources_.onApplicationResourceRemoved(removal);
         emit("onApplicationResourceRemoved", application_resource_removal_event(removal));
     }
@@ -957,13 +958,13 @@ private:
         return static_cast<std::uint32_t>(channels);
     }
 
-    using ApplicationEvent = std::variant<tlvdemux::ApplicationInfo,
-                                          tlvdemux::DataDirectoryTable,
-                                          tlvdemux::DataAssetManagementTable,
-                                          tlvdemux::DataUnit>;
+    using ApplicationEvent = std::variant<aribtlv::ApplicationInfo,
+                                          aribtlv::DataDirectoryTable,
+                                          aribtlv::DataAssetManagementTable,
+                                          aribtlv::DataUnit>;
 
-    static tlvdemux::Limits media_limits() {
-        auto limits = tlvdemux::Limits{};
+    static aribtlv::Limits media_limits() {
+        auto limits = aribtlv::Limits{};
         limits.collect_application_resources = false;
         return limits;
     }
@@ -978,20 +979,20 @@ private:
         application_assembler_.dropTransientKeepActive();
     }
 
-    void consume_application_event(tlvdemux::ApplicationInfo info) {
+    void consume_application_event(aribtlv::ApplicationInfo info) {
         application_assembler_.onApplication(info);
     }
-    void consume_application_event(tlvdemux::DataDirectoryTable table) {
+    void consume_application_event(aribtlv::DataDirectoryTable table) {
         application_assembler_.onDataDirectoryTable(table);
     }
-    void consume_application_event(tlvdemux::DataAssetManagementTable table) {
+    void consume_application_event(aribtlv::DataAssetManagementTable table) {
         application_assembler_.onDataAssetManagementTable(table);
     }
-    void consume_application_event(tlvdemux::DataUnit unit) {
+    void consume_application_event(aribtlv::DataUnit unit) {
         application_assembler_.onDataUnit(unit);
     }
 
-    static val access_unit_event(const tlvdemux::AccessUnit& unit, const val& data) {
+    static val access_unit_event(const aribtlv::AccessUnit& unit, const val& data) {
         auto event = val::object();
         event.set("trackId", unit.track_id);
         event.set("codec", std::string(codec_name(unit.codec)));
@@ -1035,7 +1036,7 @@ private:
         return event;
     }
 
-    static val application_resource_event(const tlvdemux::ApplicationResource& resource,
+    static val application_resource_event(const aribtlv::ApplicationResource& resource,
                                           const val& data) {
         auto event = val::object();
         event.set("contextId", resource.context_id);
@@ -1052,7 +1053,7 @@ private:
     }
 
     static val application_resource_removal_event(
-        const tlvdemux::ApplicationResourceRemoval& removal) {
+        const aribtlv::ApplicationResourceRemoval& removal) {
         auto event = val::object();
         event.set("contextId", removal.context_id);
         event.set("componentTag", removal.component_tag);
@@ -1065,7 +1066,7 @@ private:
     }
 
     static val application_resource_metadata_event(
-        const tlvdemux::ApplicationResourceMetadata& resource) {
+        const aribtlv::ApplicationResourceMetadata& resource) {
         auto event = val::object();
         event.set("contextId", resource.context_id);
         event.set("componentTag", resource.component_tag);
@@ -1081,7 +1082,7 @@ private:
         return event;
     }
 
-    static val application_state_event(const tlvdemux::ApplicationState& state) {
+    static val application_state_event(const aribtlv::ApplicationState& state) {
         auto event = val::object();
         event.set("contextId", state.application.context_id);
         event.set("sourcePacketId", state.application.source_packet_id);
@@ -1165,12 +1166,12 @@ private:
     }
 
     val callbacks_;
-    tlvdemux::ApplicationResourceAssembler application_assembler_;
+    aribtlv::ApplicationResourceAssembler application_assembler_;
     std::deque<ApplicationEvent> application_events_;
-    tlvdemux::Demuxer demuxer_;
-    tlvdemux::ApplicationResourceStore application_resources_;
+    aribtlv::Demuxer demuxer_;
+    aribtlv::ApplicationResourceStore application_resources_;
     WasmMseRemuxer mse_remuxer_;
-    tlvdemux::RecordingIndex recording_index_;
+    aribtlv::RecordingIndex recording_index_;
     bool index_active_ = false;
     bool index_growing_ = false;
     bool mse_enabled_ = false;

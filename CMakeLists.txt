@@ -9,27 +9,46 @@ include(CMakePackageConfigHelpers)
 option(BUILD_SHARED_LIBS "Build libtlvdemux as a shared library" ON)
 option(TLVDEMUX_BUILD_TOOLS "Build tlvdemux command-line tools" ON)
 option(TLVDEMUX_BUILD_WASM_BINDINGS "Build the Emscripten JavaScript/WASM wrapper" ${EMSCRIPTEN})
+option(TLVDEMUX_USE_SYSTEM_LIBARIBTLV
+    "Use an installed libaribtlv package instead of the pinned Git revision" OFF)
+set(TLVDEMUX_LIBARIBTLV_SOURCE_DIR "" CACHE PATH
+    "Path to a local libaribtlv source checkout (overrides Git/system selection)")
+set(TLVDEMUX_LIBARIBTLV_GIT_REPOSITORY
+    "https://github.com/makeding/libaribtlv.git" CACHE STRING
+    "Git repository used to fetch libaribtlv")
+set(TLVDEMUX_LIBARIBTLV_GIT_TAG
+    "ff1260c0e05b183731f630a0aecd7d06fc112155" CACHE STRING
+    "Pinned libaribtlv Git revision")
+mark_as_advanced(
+    TLVDEMUX_LIBARIBTLV_GIT_REPOSITORY
+    TLVDEMUX_LIBARIBTLV_GIT_TAG)
 
-if(NOT EMSCRIPTEN)
-    find_package(ZLIB REQUIRED)
+if(TLVDEMUX_LIBARIBTLV_SOURCE_DIR)
+    if(NOT EXISTS "${TLVDEMUX_LIBARIBTLV_SOURCE_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR
+            "TLVDEMUX_LIBARIBTLV_SOURCE_DIR does not contain CMakeLists.txt: "
+            "${TLVDEMUX_LIBARIBTLV_SOURCE_DIR}")
+    endif()
+    add_subdirectory("${TLVDEMUX_LIBARIBTLV_SOURCE_DIR}"
+                     "${CMAKE_CURRENT_BINARY_DIR}/libaribtlv")
+elseif(TLVDEMUX_USE_SYSTEM_LIBARIBTLV)
+    find_package(aribtlv CONFIG REQUIRED)
+else()
+    include(FetchContent)
+    FetchContent_Declare(libaribtlv
+        GIT_REPOSITORY "${TLVDEMUX_LIBARIBTLV_GIT_REPOSITORY}"
+        GIT_TAG "${TLVDEMUX_LIBARIBTLV_GIT_TAG}"
+        GIT_PROGRESS TRUE
+    )
+    FetchContent_MakeAvailable(libaribtlv)
 endif()
 
 add_library(tlvdemux
-    src/application_resources.cpp
-    src/compressed_ip_parser.cpp
-    src/demuxer.cpp
-    src/duration_probe.cpp
-    src/mmtp_media_parser.cpp
-    src/mmtp_parser.cpp
-    src/mmtp_signalling_parser.cpp
-    src/mmtp_signalling_tables.cpp
     src/mse/hevc_parser.cpp
     src/mse/latm_parser.cpp
     src/mse/mp4_builder.cpp
     wasm/mse_remuxer.cpp
     src/playback.cpp
-    src/recording.cpp
-    src/tlv_parser.cpp
 )
 add_library(tlvdemux::tlvdemux ALIAS tlvdemux)
 
@@ -41,12 +60,7 @@ set_target_properties(tlvdemux PROPERTIES
 )
 
 target_compile_features(tlvdemux PUBLIC cxx_std_20)
-if(EMSCRIPTEN)
-    target_compile_options(tlvdemux PRIVATE "-sUSE_ZLIB=1")
-    target_link_options(tlvdemux PUBLIC "-sUSE_ZLIB=1")
-else()
-    target_link_libraries(tlvdemux PUBLIC ZLIB::ZLIB)
-endif()
+target_link_libraries(tlvdemux PUBLIC aribtlv::aribtlv)
 target_include_directories(tlvdemux
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -93,15 +107,15 @@ install(FILES
 
 if(TLVDEMUX_BUILD_TOOLS)
     add_executable(tlvdemux-inspect tools/tlvdemux-inspect.cpp)
-    target_link_libraries(tlvdemux-inspect PRIVATE tlvdemux::tlvdemux)
+    target_link_libraries(tlvdemux-inspect PRIVATE aribtlv::aribtlv)
     add_executable(tlvdemux-cocktail tools/tlvdemux-cocktail.cpp)
     target_link_libraries(tlvdemux-cocktail PRIVATE tlvdemux::tlvdemux)
     add_executable(tlvdemux-extract tools/tlvdemux-extract.cpp)
-    target_link_libraries(tlvdemux-extract PRIVATE tlvdemux::tlvdemux)
+    target_link_libraries(tlvdemux-extract PRIVATE aribtlv::aribtlv)
     add_executable(tlvdemux-probe tools/tlvdemux-probe.cpp)
-    target_link_libraries(tlvdemux-probe PRIVATE tlvdemux::tlvdemux)
+    target_link_libraries(tlvdemux-probe PRIVATE aribtlv::aribtlv)
     add_executable(tlvanalyze tools/tlvanalyze.cpp)
-    target_link_libraries(tlvanalyze PRIVATE tlvdemux::tlvdemux)
+    target_link_libraries(tlvanalyze PRIVATE aribtlv::aribtlv)
     if(APPLE)
         add_executable(tlvdemux-videotoolbox-probe tools/tlvdemux-videotoolbox-probe.cpp)
         target_link_libraries(tlvdemux-videotoolbox-probe PRIVATE
@@ -168,34 +182,25 @@ if(TLVDEMUX_BUILD_WASM_BINDINGS)
 endif()
 
 if(BUILD_TESTING)
-    add_executable(tlvdemux-application-resources-tests tests/application_resources_tests.cpp)
-    target_link_libraries(tlvdemux-application-resources-tests PRIVATE tlvdemux::tlvdemux)
+    add_executable(tlvdemux-playback-tests tests/playback_tests.cpp)
+    target_link_libraries(tlvdemux-playback-tests PRIVATE tlvdemux::tlvdemux)
     if(MSVC)
-        target_compile_options(tlvdemux-application-resources-tests PRIVATE /W4 /permissive-)
+        target_compile_options(tlvdemux-playback-tests PRIVATE /W4 /permissive-)
     else()
-        target_compile_options(tlvdemux-application-resources-tests PRIVATE
+        target_compile_options(tlvdemux-playback-tests PRIVATE
             -Wall -Wextra -Wpedantic)
     endif()
-    add_test(NAME tlvdemux-application-resources-tests
-             COMMAND tlvdemux-application-resources-tests)
+    add_test(NAME tlvdemux-playback-tests COMMAND tlvdemux-playback-tests)
 
-    add_executable(tlvdemux-tests tests/demuxer_tests.cpp)
-    target_link_libraries(tlvdemux-tests PRIVATE tlvdemux::tlvdemux)
+    add_executable(tlvdemux-package-api-tests tests/package/main.cpp)
+    target_link_libraries(tlvdemux-package-api-tests PRIVATE tlvdemux::tlvdemux)
     if(MSVC)
-        target_compile_options(tlvdemux-tests PRIVATE /W4 /permissive-)
+        target_compile_options(tlvdemux-package-api-tests PRIVATE /W4 /permissive-)
     else()
-        target_compile_options(tlvdemux-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(tlvdemux-package-api-tests PRIVATE
+            -Wall -Wextra -Wpedantic)
     endif()
-    add_test(NAME tlvdemux-tests COMMAND tlvdemux-tests)
-
-    add_executable(tlvdemux-recording-tests tests/recording_tests.cpp)
-    target_link_libraries(tlvdemux-recording-tests PRIVATE tlvdemux::tlvdemux)
-    if(MSVC)
-        target_compile_options(tlvdemux-recording-tests PRIVATE /W4 /permissive-)
-    else()
-        target_compile_options(tlvdemux-recording-tests PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
-    add_test(NAME tlvdemux-recording-tests COMMAND tlvdemux-recording-tests)
+    add_test(NAME tlvdemux-package-api-tests COMMAND tlvdemux-package-api-tests)
 
     add_executable(tlvdemux-mse-remuxer-tests tests/mse_remuxer_tests.cpp)
     target_link_libraries(tlvdemux-mse-remuxer-tests PRIVATE tlvdemux::tlvdemux)

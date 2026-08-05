@@ -2,10 +2,11 @@
 
 English | [日本語](README.ja.md)
 
-`tlvdemux` is a C++20 incremental demultiplexer for
-already-descrambled ARIB MMT/TLV streams. It is designed to emit player-ready
-HEVC, AAC-LATM/LOAS and ARIB STD-B62 TTML access units without converting the
-stream to MPEG-TS or exposing FFmpeg ABI types.
+`tlvdemux` is the C++20 playback, fMP4/MSE and WASM integration layer for
+already-descrambled ARIB MMT/TLV streams. Its protocol parser and data-broadcast
+resource core is [libaribtlv](https://github.com/makeding/libaribtlv);
+`tlvdemux` keeps player-ready HEVC, AAC-LATM/LOAS and ARIB STD-B62 TTML delivery
+without converting the stream to MPEG-TS or exposing FFmpeg ABI types.
 
 The current implementation provides the stable public callback API, bounded
 incremental TLV resynchronization, compressed-IP context isolation, MMTP
@@ -21,9 +22,12 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-Zlib is the only non-standard runtime dependency. It is used to turn compressed
-data-broadcast items into browser-ready virtual files; Emscripten links its zlib
-port into the single-file WASM build.
+`libaribtlv` owns the protocol and Zlib dependency. By default CMake fetches its
+HTTPS repository at the pinned revision
+`ff1260c0e05b183731f630a0aecd7d06fc112155`. Point
+`TLVDEMUX_LIBARIBTLV_SOURCE_DIR` at a local checkout for offline development, or
+set `TLVDEMUX_USE_SYSTEM_LIBARIBTLV=ON` and add an installed package prefix to
+`CMAKE_PREFIX_PATH`. The local source directory takes precedence over both.
 
 Shared-library builds are enabled by default. Linux produces
 `libtlvdemux.so.0` (with the versioned implementation file), while macOS
@@ -55,28 +59,28 @@ Install the library, public headers and CMake target export with:
 cmake --install build --prefix /desired/prefix
 ```
 
-The install includes the shared or static library, public headers, the
+The install includes the playback/MSE library, public headers, the
 `tlvdemux::tlvdemux` CMake package target, the diagnostic tool when enabled,
-and the MIT license.
+and the MIT license. Its CMake package requires an installed `aribtlv` package.
 
 ## Library usage
 
-Implement `tlvdemux::Sink`, keep it alive for the lifetime of the demuxer, and
+Implement `aribtlv::Sink`, keep it alive for the lifetime of the demuxer, and
 feed arbitrary-sized chunks synchronously:
 
 ```cpp
-#include <tlvdemux/demuxer.hpp>
+#include <aribtlv/demuxer.hpp>
 
-class PlayerSink final : public tlvdemux::Sink {
+class PlayerSink final : public aribtlv::Sink {
 public:
-    void onService(const tlvdemux::ServiceInfo& service) override;
-    void onTrack(const tlvdemux::TrackInfo& track) override;
-    void onAccessUnit(tlvdemux::AccessUnit&& unit) override;
-    void onError(const tlvdemux::Error& error) override;
+    void onService(const aribtlv::ServiceInfo& service) override;
+    void onTrack(const aribtlv::TrackInfo& track) override;
+    void onAccessUnit(aribtlv::AccessUnit&& unit) override;
+    void onError(const aribtlv::Error& error) override;
 };
 
 PlayerSink sink;
-tlvdemux::Demuxer demuxer(sink);
+aribtlv::Demuxer demuxer(sink);
 demuxer.push(data, size);
 demuxer.flush();
 ```
@@ -201,14 +205,14 @@ demuxer. Native hosts can keep them in the thread-safe
 intended for a loopback HTTP/WebView adapter:
 
 ```cpp
-class ReceiverSink final : public tlvdemux::Sink {
+class ReceiverSink final : public aribtlv::Sink {
 public:
-    tlvdemux::ApplicationResourceStore files;
+    aribtlv::ApplicationResourceStore files;
 
-    void onApplicationState(const tlvdemux::ApplicationState& state) override {
+    void onApplicationState(const aribtlv::ApplicationState& state) override {
         files.onApplicationState(state);
     }
-    void onApplicationResource(tlvdemux::ApplicationResource&& resource) override {
+    void onApplicationResource(aribtlv::ApplicationResource&& resource) override {
         files.onApplicationResource(std::move(resource));
     }
     void onApplicationResourcesReset() override {

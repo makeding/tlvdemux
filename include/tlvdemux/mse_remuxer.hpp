@@ -1,6 +1,6 @@
 #pragma once
 
-#include <tlvdemux/types.hpp>
+#include <aribtlv/types.hpp>
 
 #include <cstdint>
 #include <memory>
@@ -9,6 +9,10 @@
 #include <vector>
 
 namespace tlvdemux {
+
+using aribtlv::AccessUnit;
+using aribtlv::Codec;
+using aribtlv::TrackKind;
 
 struct MseTrackInit {
     std::string type;

@@ -2,10 +2,11 @@
 
 [English](README.md) | 日本語
 
-`tlvdemux` は、復号済みの ARIB MMT/TLV ストリームを対象とする C++20 製の
-インクリメンタル・デマルチプレクサーです。ストリームを MPEG-TS に変換したり、
-FFmpeg の ABI 型を公開したりせずに、プレーヤーでそのまま扱える HEVC、
-AAC-LATM/LOAS、ARIB STD-B62 TTML のアクセスユニットを出力します。
+`tlvdemux` は、復号済み ARIB MMT/TLV ストリーム向けの C++20 playback、
+fMP4/MSE、WASM 統合層です。プロトコル解析とデータ放送リソースのコアは
+[libaribtlv](https://github.com/makeding/libaribtlv) に分離し、ここでは MPEG-TS
+への変換や FFmpeg ABI 型の公開なしに、HEVC、AAC-LATM/LOAS、ARIB STD-B62 TTML
+をプレイヤーへ渡します。
 
 現在の実装は、安定した公開コールバック API、上限付きのインクリメンタルな
 TLV 再同期、圧縮 IP コンテキストの分離、MMTP のフラグメント／アグリゲーション、
@@ -21,9 +22,12 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-標準外のランタイム依存関係は Zlib のみです。圧縮されたデータ放送項目を、
-ブラウザーで利用できる仮想ファイルに展開するために使用します。Emscripten では、
-単一ファイルの WASM ビルドに zlib port がリンクされます。
+プロトコル実装と Zlib 依存は `libaribtlv` が所有します。デフォルトでは HTTPS
+リポジトリの固定 revision `ff1260c0e05b183731f630a0aecd7d06fc112155` を CMake が
+取得します。オフライン開発では `TLVDEMUX_LIBARIBTLV_SOURCE_DIR` にローカル
+checkout を指定します。インストール済み package を使う場合は
+`TLVDEMUX_USE_SYSTEM_LIBARIBTLV=ON` と `CMAKE_PREFIX_PATH` を指定してください。
+ローカル source directory の指定が常に優先されます。
 
 共有ライブラリはデフォルトで有効です。Linux では `libtlvdemux.so.0`
 （およびバージョン付きの実体ファイル）、macOS では対応する
@@ -60,22 +64,22 @@ cmake --install build --prefix /desired/prefix
 
 ## ライブラリの使い方
 
-`tlvdemux::Sink` を実装し、demuxer の生存期間中はそのインスタンスを保持して、
+`aribtlv::Sink` を実装し、demuxer の生存期間中はそのインスタンスを保持して、
 任意のサイズに分割したデータを同期的に入力します。
 
 ```cpp
-#include <tlvdemux/demuxer.hpp>
+#include <aribtlv/demuxer.hpp>
 
-class PlayerSink final : public tlvdemux::Sink {
+class PlayerSink final : public aribtlv::Sink {
 public:
-    void onService(const tlvdemux::ServiceInfo& service) override;
-    void onTrack(const tlvdemux::TrackInfo& track) override;
-    void onAccessUnit(tlvdemux::AccessUnit&& unit) override;
-    void onError(const tlvdemux::Error& error) override;
+    void onService(const aribtlv::ServiceInfo& service) override;
+    void onTrack(const aribtlv::TrackInfo& track) override;
+    void onAccessUnit(aribtlv::AccessUnit&& unit) override;
+    void onError(const aribtlv::Error& error) override;
 };
 
 PlayerSink sink;
-tlvdemux::Demuxer demuxer(sink);
+aribtlv::Demuxer demuxer(sink);
 demuxer.push(data, size);
 demuxer.flush();
 ```
@@ -197,14 +201,14 @@ input batch の後に `drainApplicationResources(maxEvents)` を呼び、`true` 
 います。
 
 ```cpp
-class ReceiverSink final : public tlvdemux::Sink {
+class ReceiverSink final : public aribtlv::Sink {
 public:
-    tlvdemux::ApplicationResourceStore files;
+    aribtlv::ApplicationResourceStore files;
 
-    void onApplicationState(const tlvdemux::ApplicationState& state) override {
+    void onApplicationState(const aribtlv::ApplicationState& state) override {
         files.onApplicationState(state);
     }
-    void onApplicationResource(tlvdemux::ApplicationResource&& resource) override {
+    void onApplicationResource(aribtlv::ApplicationResource&& resource) override {
         files.onApplicationResource(std::move(resource));
     }
     void onApplicationResourcesReset() override {

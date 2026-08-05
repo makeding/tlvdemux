@@ -1,5 +1,7 @@
 #pragma once
 
+#include <aribtlv/types.hpp>
+
 #include <tlvdemux/mse_remuxer.hpp>
 
 #include <cstdint>
@@ -16,9 +18,9 @@ public:
     WasmMseRemuxer(const WasmMseRemuxer&) = delete;
     WasmMseRemuxer& operator=(const WasmMseRemuxer&) = delete;
 
-    void selectTrack(tlvdemux::TrackKind kind, std::optional<std::uint64_t> track_id);
+    void selectTrack(aribtlv::TrackKind kind, std::optional<std::uint64_t> track_id);
     void setOutputEnabled(bool enabled) noexcept;
-    void push(const tlvdemux::AccessUnit& unit);
+    void push(const aribtlv::AccessUnit& unit);
     void flush();
     void reset();
     void reposition();

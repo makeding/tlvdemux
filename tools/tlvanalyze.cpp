@@ -1,4 +1,4 @@
-#include <tlvdemux/demuxer.hpp>
+#include <aribtlv/demuxer.hpp>
 
 #include <zlib.h>
 
@@ -31,11 +31,11 @@ struct ResourceRecord {
     std::uint64_t duplicate_payload_bytes = 0;
 };
 
-Identity identity(const tlvdemux::ApplicationResource& value) {
+Identity identity(const aribtlv::ApplicationResource& value) {
     return {value.context_id, value.component_tag, value.mpu_sequence_number, value.item_id};
 }
 
-Identity identity(const tlvdemux::DataUnit& value) {
+Identity identity(const aribtlv::DataUnit& value) {
     return {value.context_id, value.component_tag, value.mpu_sequence_number, value.item_id};
 }
 
@@ -45,7 +45,7 @@ std::uint32_t checksum(const std::vector<std::uint8_t>& data) {
     return static_cast<std::uint32_t>(value);
 }
 
-struct Analyzer final : tlvdemux::Sink {
+struct Analyzer final : aribtlv::Sink {
     std::vector<ResourceRecord> resources;
     std::map<Identity, std::size_t> active;
     std::size_t data_units = 0;
@@ -55,11 +55,11 @@ struct Analyzer final : tlvdemux::Sink {
     std::size_t wire_changes = 0;
     std::size_t recoverable_errors = 0;
 
-    void onService(const tlvdemux::ServiceInfo&) override {}
-    void onTrack(const tlvdemux::TrackInfo&) override {}
-    void onAccessUnit(tlvdemux::AccessUnit&&) override {}
+    void onService(const aribtlv::ServiceInfo&) override {}
+    void onTrack(const aribtlv::TrackInfo&) override {}
+    void onAccessUnit(aribtlv::AccessUnit&&) override {}
 
-    void onApplicationResource(tlvdemux::ApplicationResource&& value) override {
+    void onApplicationResource(aribtlv::ApplicationResource&& value) override {
         ResourceRecord record;
         record.identity = identity(value);
         record.path = std::move(value.path);
@@ -71,14 +71,14 @@ struct Analyzer final : tlvdemux::Sink {
     }
 
     void onApplicationResourceRemoved(
-        const tlvdemux::ApplicationResourceRemoval& value) override {
+        const aribtlv::ApplicationResourceRemoval& value) override {
         active.erase(Identity{value.context_id, value.component_tag,
                               value.mpu_sequence_number, value.item_id});
     }
 
     void onApplicationResourcesReset() override { active.clear(); }
 
-    void onDataUnit(tlvdemux::DataUnit&& value) override {
+    void onDataUnit(aribtlv::DataUnit&& value) override {
         ++data_units;
         if (value.discontinuity) {
             ++discontinuities;
@@ -106,7 +106,7 @@ struct Analyzer final : tlvdemux::Sink {
         record.duplicate_payload_bytes += value.data.size();
     }
 
-    void onError(const tlvdemux::Error& error) override {
+    void onError(const aribtlv::Error& error) override {
         if (!error.recoverable) throw std::runtime_error(error.message);
         ++recoverable_errors;
     }
@@ -125,7 +125,7 @@ int main(const int argc, char** argv) {
         std::ifstream input(argv[1], std::ios::binary);
         if (!input) throw std::runtime_error("cannot open input");
         Analyzer analyzer;
-        tlvdemux::Demuxer demuxer(analyzer);
+        aribtlv::Demuxer demuxer(analyzer);
         std::array<std::uint8_t, 1024U * 1024U> buffer{};
         std::uint64_t input_bytes = 0;
         while (input) {

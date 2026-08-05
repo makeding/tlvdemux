@@ -230,7 +230,7 @@ public:
         timeline_offset_ticks_.reset();
     }
 
-    void push(const tlvdemux::AccessUnit& unit, const bool output_enabled) {
+    void push(const aribtlv::AccessUnit& unit, const bool output_enabled) {
         if (unit.discontinuity) {
             reset_samples();
             started_ = false;
@@ -358,7 +358,7 @@ public:
 
     void discontinuity() { reset_samples(); }
 
-    void push(const tlvdemux::AccessUnit& unit, const bool enabled,
+    void push(const aribtlv::AccessUnit& unit, const bool enabled,
               const std::optional<std::int64_t> timeline_offset_us) {
         if (unit.discontinuity) reset_samples();
         auto frame = parser_.parse(unit.data);
@@ -398,12 +398,12 @@ public:
     explicit Impl(MseSink& sink, const MseOptions options)
         : output(sink), video(output), options(options) {}
 
-    void select(const tlvdemux::TrackKind kind, std::optional<std::uint64_t> id) {
-        if (kind == tlvdemux::TrackKind::Video) {
+    void select(const aribtlv::TrackKind kind, std::optional<std::uint64_t> id) {
+        if (kind == aribtlv::TrackKind::Video) {
             video_id = id;
             return;
         }
-        if (kind != tlvdemux::TrackKind::Audio) return;
+        if (kind != aribtlv::TrackKind::Audio) return;
         if (audio_id == id && active_audio != nullptr) return;
         audio_id = id;
         if (!id) {
@@ -416,7 +416,7 @@ public:
         if (!inserted) active_audio->activate();
     }
 
-    void push(const tlvdemux::AccessUnit& unit) {
+    void push(const aribtlv::AccessUnit& unit) {
         if (video_id && unit.track_id == *video_id) {
             if (unit.discontinuity && active_audio) active_audio->discontinuity();
             video.push(unit, enabled);
@@ -527,7 +527,7 @@ WasmMseRemuxer::WasmMseRemuxer(val callbacks,
     : impl_(std::make_unique<Impl>(std::move(callbacks), max_audio_channels)) {}
 WasmMseRemuxer::~WasmMseRemuxer() = default;
 
-void WasmMseRemuxer::selectTrack(const tlvdemux::TrackKind kind,
+void WasmMseRemuxer::selectTrack(const aribtlv::TrackKind kind,
                                  std::optional<std::uint64_t> id) {
     impl_->remuxer().selectTrack(kind, id);
 }
@@ -536,7 +536,7 @@ void WasmMseRemuxer::setOutputEnabled(const bool enabled) noexcept {
     impl_->remuxer().setOutputEnabled(enabled);
 }
 
-void WasmMseRemuxer::push(const tlvdemux::AccessUnit& unit) {
+void WasmMseRemuxer::push(const aribtlv::AccessUnit& unit) {
     impl_->remuxer().push(unit);
 }
 void WasmMseRemuxer::flush() { impl_->remuxer().flush(); }
