@@ -29,6 +29,7 @@ struct Sample {
 };
 
 Bytes init_segment(const Mp4Track& track);
+Bytes init_segment(const std::vector<Mp4Track>& tracks);
 Bytes media_segment(const Mp4Track& track, const std::vector<Sample>& samples,
                     std::uint32_t sequence);
 

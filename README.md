@@ -232,6 +232,39 @@ Resource collection can be disabled with
 count/bytes, catalogue size, and decompressed file size so a malformed carousel
 cannot grow memory without limit.
 
+## Pipe into FFmpeg
+
+`tlvdemux-pipe` remuxes the first matching HEVC video and AAC-LATM audio tracks
+to a non-seekable fragmented MP4 stream on stdout. Diagnostics are written only
+to stderr, so the output can be connected directly to FFmpeg:
+
+```sh
+./build/tlvdemux-pipe recording.mmts |
+  ffmpeg -f mp4 -i pipe:0 -c copy output.mp4
+
+curl 'http://MIRAKURUN/api/services/SERVICE_ID/stream?decode=0' |
+  ./build/tlvdemux-pipe - |
+  ffmpeg -f mp4 -i pipe:0 -c:v copy -c:a aac output.mkv
+```
+
+Use `--service ID`, `--video-packet-id ID`, or `--audio-packet-id ID` when the
+automatic first-track selection is not the desired programme. Both video and
+audio codec configuration must arrive before output begins. `-f mp4` is
+recommended because a pipe has no filename extension and the broadcast may
+take time to deliver its initialization data.
+
+For video-only consumers such as thumbnail extraction, `--video-only` emits a
+single-track fragmented MP4 without waiting for or remuxing audio:
+
+```sh
+./build/tlvdemux-pipe --video-only recording.mmts |
+  ffmpeg -f mp4 -skip_frame nointra -i pipe:0 -frames:v 10 -f null -
+```
+
+When a finite consumer closes the pipe after receiving all requested frames,
+`tlvdemux-pipe` treats the closed stdout as normal consumer cancellation.
+`--audio-packet-id` cannot be combined with `--video-only`.
+
 ## Inspect a stream
 
 ```sh

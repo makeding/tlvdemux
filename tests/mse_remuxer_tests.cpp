@@ -129,6 +129,8 @@ struct ParsedSample {
 
 struct ParsedSegment {
     std::uint64_t tfdt = 0;
+    std::uint32_t sequence = 0;
+    std::uint32_t track_id = 0;
     std::vector<ParsedSample> samples;
 };
 
@@ -137,6 +139,10 @@ ParsedSegment parse_segment(const std::vector<std::uint8_t>& data) {
     check(moof.has_value(), "segment is missing a moof box");
     const auto traf = find_box(data, moof->payload_start, moof->payload_end, "traf");
     check(traf.has_value(), "moof is missing a traf box");
+    const auto mfhd = find_box(data, moof->payload_start, moof->payload_end, "mfhd");
+    check(mfhd.has_value(), "moof is missing an mfhd box");
+    const auto tfhd = find_box(data, traf->payload_start, traf->payload_end, "tfhd");
+    check(tfhd.has_value(), "traf is missing a tfhd box");
     const auto tfdt = find_box(data, traf->payload_start, traf->payload_end, "tfdt");
     check(tfdt.has_value(), "traf is missing a tfdt box");
     check(data[tfdt->payload_start] == 1, "tfdt must be version 1 (64-bit baseMediaDecodeTime)");
@@ -149,6 +155,8 @@ ParsedSegment parse_segment(const std::vector<std::uint8_t>& data) {
     check(flags == 0x000f01, "trun must carry duration/size/flags/composition-offset for every sample");
 
     ParsedSegment result;
+    result.sequence = read_u32(data, mfhd->payload_start + 4);
+    result.track_id = read_u32(data, tfhd->payload_start + 4);
     result.tfdt = read_u64(data, tfdt->payload_start + 4);
     const auto sample_count = read_u32(data, trun->payload_start + 4);
     const auto entries_start = trun->payload_start + 12;
@@ -160,6 +168,23 @@ ParsedSegment parse_segment(const std::vector<std::uint8_t>& data) {
         result.samples.push_back(sample);
     }
     return result;
+}
+
+std::size_t direct_box_count(const std::vector<std::uint8_t>& data,
+                             const std::size_t start, const std::size_t end,
+                             const char* type) {
+    std::size_t count = 0;
+    std::size_t offset = start;
+    while (offset + 8 <= end) {
+        const auto box_size = read_u32(data, offset);
+        if (box_size < 8 || offset + box_size > end) break;
+        if (std::equal(type, type + 4,
+                       data.begin() + static_cast<std::ptrdiff_t>(offset) + 4)) {
+            ++count;
+        }
+        offset += box_size;
+    }
+    return count;
 }
 
 std::uint32_t mdhd_timescale(const std::vector<std::uint8_t>& init_segment) {
@@ -632,11 +657,61 @@ void test_unlimited_22_2_channel_count() {
           "AAC channel_configuration 13 was not exposed as 24 channels");
 }
 
+void test_multiplexed_output_has_two_tracks_and_global_sequences() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(
+        sink, tlvdemux::MseOptions{0, tlvdemux::MseOutputMode::Multiplexed});
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.push(hevc_unit(2, 0, 0, true, true));
+    remuxer.push(audio_unit(2));
+    remuxer.flush();
+
+    check(sink.inits.size() == 1 && sink.inits.front().type == "muxed",
+          "multiplexed output must emit one shared init segment");
+    const auto& init = sink.inits.front().data;
+    const auto moov = find_box(init, 0, init.size(), "moov");
+    check(moov.has_value(), "multiplexed init is missing moov");
+    check(direct_box_count(init, moov->payload_start, moov->payload_end, "trak") == 2,
+          "multiplexed init must declare video and audio tracks");
+    check(sink.segments.size() == 2, "multiplexed flush must emit both tracks");
+    const auto first = parse_segment(sink.segments[0].data);
+    const auto second = parse_segment(sink.segments[1].data);
+    check(first.sequence == 1 && second.sequence == 2,
+          "multiplexed fragments must share one increasing sequence");
+    check(first.track_id == 1 && second.track_id == 2,
+          "multiplexed fragments must reference distinct video and audio tracks");
+    check(sink.segments[0].type == "muxed" && sink.segments[1].type == "muxed",
+          "multiplexed media callbacks must use the shared stream type");
+}
+
+void test_video_only_output_does_not_wait_for_audio() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.push(hevc_unit(2, 0, 0, true, true));
+    remuxer.flush();
+
+    check(sink.inits.size() == 1 && sink.inits.front().type == "video",
+          "video-only output must emit its init without an audio track");
+    check(sink.segments.size() == 1 && sink.segments.front().type == "video",
+          "video-only output must flush its media without an audio track");
+    const auto& init = sink.inits.front().data;
+    const auto moov = find_box(init, 0, init.size(), "moov");
+    check(moov.has_value(), "video-only init is missing moov");
+    check(direct_box_count(init, moov->payload_start, moov->payload_end, "trak") == 1,
+          "video-only init must declare exactly one track");
+    check(parse_segment(sink.segments.front().data).track_id == 1,
+          "video-only fragment must reference the video track");
+}
+
 } // namespace
 
 int main() {
     test_audio_channel_limit();
     test_unlimited_22_2_channel_count();
+    test_multiplexed_output_has_two_tracks_and_global_sequences();
+    test_video_only_output_does_not_wait_for_audio();
     test_audio_drops_non_advancing_dts();
     test_video_fragments_do_not_overlap_in_composition_time();
     test_video_fragments_do_not_overlap_with_broadcast_timescale();

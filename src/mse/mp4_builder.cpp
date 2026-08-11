@@ -70,10 +70,10 @@ Bytes ftyp() {
                ascii("dash"));
 }
 
-Bytes mvhd(const std::uint32_t timescale) {
+Bytes mvhd(const std::uint32_t timescale, const std::uint32_t next_track_id) {
     return full_box("mvhd", 0, 0, u32(0), u32(0), u32(timescale), u32(0),
                     fixed16(1), u16(0x100), zeros(10), unity_matrix(), zeros(24),
-                    u32(2));
+                    u32(next_track_id));
 }
 
 Bytes tkhd(const Mp4Track& track) {
@@ -137,18 +137,38 @@ Bytes stbl(const Mp4Track& track) {
                full_box("stco", 0, 0, u32(0)));
 }
 
-} // namespace
-
-Bytes init_segment(const Mp4Track& track) {
+Bytes trak(const Mp4Track& track) {
     auto media_header = track.video
         ? full_box("vmhd", 0, 1, u16(0), u16(0), u16(0), u16(0))
         : full_box("smhd", 0, 0, u16(0), u16(0));
     auto minf = box("minf", media_header, dinf(), stbl(track));
-    auto trak = box("trak", tkhd(track),
-                    box("mdia", mdhd(track), hdlr(track.video), minf));
-    auto trex = full_box("trex", 0, 0, u32(track.id), u32(1), u32(0), u32(0),
-                         u32(0));
-    return join(ftyp(), box("moov", mvhd(track.timescale), trak, box("mvex", trex)));
+    return box("trak", tkhd(track),
+               box("mdia", mdhd(track), hdlr(track.video), minf));
+}
+
+Bytes trex(const Mp4Track& track) {
+    return full_box("trex", 0, 0, u32(track.id), u32(1), u32(0), u32(0), u32(0));
+}
+
+} // namespace
+
+Bytes init_segment(const Mp4Track& track) {
+    return init_segment(std::vector<Mp4Track>{track});
+}
+
+Bytes init_segment(const std::vector<Mp4Track>& tracks) {
+    if (tracks.empty()) throw std::runtime_error("MP4 init segment has no tracks");
+    Bytes track_boxes;
+    Bytes trex_boxes;
+    std::uint32_t next_track_id = 1;
+    for (const auto& track : tracks) {
+        append(track_boxes, trak(track));
+        append(trex_boxes, trex(track));
+        next_track_id = std::max(next_track_id, track.id + 1U);
+    }
+    const auto movie_timescale = tracks.size() == 1 ? tracks.front().timescale : 1000000U;
+    return join(ftyp(), box("moov", mvhd(movie_timescale, next_track_id), track_boxes,
+                            box("mvex", trex_boxes)));
 }
 
 Bytes media_segment(const Mp4Track& track, const std::vector<Sample>& samples,

@@ -34,10 +34,18 @@ struct MseVideoStart {
     bool signalled_random_access = false;
 };
 
+enum class MseOutputMode {
+    SeparateTracks,
+    Multiplexed,
+};
+
 struct MseOptions {
     // Zero preserves all audio configurations. A non-zero value prevents the
     // remuxer from emitting an init segment for AAC layouts above this limit.
     std::uint32_t max_audio_channels = 0;
+    // Multiplexed emits one fragmented MP4 stream containing one video and
+    // one audio track. SeparateTracks preserves the browser/MSE callbacks.
+    MseOutputMode output_mode = MseOutputMode::SeparateTracks;
 };
 
 class MseSink {

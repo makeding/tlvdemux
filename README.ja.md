@@ -228,6 +228,38 @@ request に応答できます。WASM の利用側では通常、同じイベン�
 上限を設けるため、不正な carousel によってメモリーが無制限に増加することは
 ありません。
 
+## FFmpeg へ pipe する
+
+`tlvdemux-pipe` は、最初に一致した HEVC 映像と AAC-LATM 音声を、seek 不要の
+fragmented MP4 として stdout へ remux します。診断は stderr のみに出すため、
+そのまま FFmpeg に接続できます。
+
+```sh
+./build/tlvdemux-pipe recording.mmts |
+  ffmpeg -f mp4 -i pipe:0 -c copy output.mp4
+
+curl 'http://MIRAKURUN/api/services/SERVICE_ID/stream?decode=0' |
+  ./build/tlvdemux-pipe - |
+  ffmpeg -f mp4 -i pipe:0 -c:v copy -c:a aac output.mkv
+```
+
+自動選択された最初の track が目的の番組でない場合は、`--service ID`、
+`--video-packet-id ID`、`--audio-packet-id ID` を指定します。映像と音声の codec
+configuration が両方届いてから出力を開始します。pipe には拡張子がなく、放送から
+初期化情報が届くまで時間がかかる場合があるため、`-f mp4` の明示を推奨します。
+
+サムネイル抽出など映像だけを使う場合、`--video-only` は音声を待機・remux せず、
+映像1 track の fragmented MP4 を出力します。
+
+```sh
+./build/tlvdemux-pipe --video-only recording.mmts |
+  ffmpeg -f mp4 -skip_frame nointra -i pipe:0 -frames:v 10 -f null -
+```
+
+有限個の frame を受け取った consumer が pipe を閉じた場合、`tlvdemux-pipe` は stdout
+の切断を正常な consumer cancellation として扱います。`--video-only` と
+`--audio-packet-id` は同時に指定できません。
+
 ## ストリームを調査する
 
 ```sh

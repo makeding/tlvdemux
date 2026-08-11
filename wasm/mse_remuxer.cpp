@@ -66,12 +66,18 @@ val copy_bytes(const Bytes& bytes) {
 
 class Output {
 public:
-    explicit Output(tlvdemux::MseSink& sink) : sink_(sink) {}
+    explicit Output(tlvdemux::MseSink& sink, const tlvdemux::MseOutputMode mode)
+        : sink_(sink), mode_(mode) {}
 
     void set_enabled(const bool enabled) noexcept { enabled_ = enabled; }
 
     void init(const std::string& type, const Mp4Track& track) {
         if (!enabled_) return;
+        if (mode_ == tlvdemux::MseOutputMode::Multiplexed) {
+            tracks_[type] = track;
+            emit_multiplexed_init();
+            return;
+        }
         tlvdemux::MseTrackInit event;
         event.type = type;
         event.mime = std::string(track.video ? "video/mp4; codecs=\"" :
@@ -85,9 +91,20 @@ public:
         sink_.onMseInit(std::move(event));
     }
 
-    void segment(const std::string& type, Bytes&& data) {
+    void segment(const std::string& type, const Mp4Track& track,
+                 const std::vector<Sample>& samples, const std::uint32_t sequence) {
         if (!enabled_) return;
-        sink_.onMseSegment(tlvdemux::MseMediaSegment{type, std::move(data)});
+        auto data = media_segment(track, samples,
+            mode_ == tlvdemux::MseOutputMode::Multiplexed ? sequence_++ : sequence);
+        if (mode_ == tlvdemux::MseOutputMode::SeparateTracks) {
+            sink_.onMseSegment(tlvdemux::MseMediaSegment{type, std::move(data)});
+            return;
+        }
+        if (!multiplexed_init_emitted_) {
+            pending_segments_.push_back(std::move(data));
+            return;
+        }
+        sink_.onMseSegment(tlvdemux::MseMediaSegment{"muxed", std::move(data)});
     }
 
     void video_start(const int nal_type, const bool signalled) {
@@ -96,14 +113,39 @@ public:
     }
 
 private:
+    void emit_multiplexed_init() {
+        if (multiplexed_init_emitted_ || tracks_.count("video") == 0 ||
+            tracks_.count("audio") == 0) return;
+        const std::vector<Mp4Track> tracks{tracks_.at("video"), tracks_.at("audio")};
+        tlvdemux::MseTrackInit event;
+        event.type = "muxed";
+        event.mime = "video/mp4";
+        event.data = init_segment(tracks);
+        event.width = tracks.front().width;
+        event.height = tracks.front().height;
+        event.sample_rate = tracks.back().sample_rate;
+        event.channels = tracks.back().channels;
+        sink_.onMseInit(std::move(event));
+        multiplexed_init_emitted_ = true;
+        for (auto& data : pending_segments_) {
+            sink_.onMseSegment(tlvdemux::MseMediaSegment{"muxed", std::move(data)});
+        }
+        pending_segments_.clear();
+    }
+
     tlvdemux::MseSink& sink_;
+    tlvdemux::MseOutputMode mode_;
+    std::map<std::string, Mp4Track> tracks_;
+    std::vector<Bytes> pending_segments_;
+    std::uint32_t sequence_ = 1;
+    bool multiplexed_init_emitted_ = false;
     bool enabled_ = true;
 };
 
 class BaseMuxer {
 public:
-    BaseMuxer(std::string type, Output& output)
-        : type_(std::move(type)), output_(output) {}
+    BaseMuxer(std::string type, const std::uint32_t track_id, Output& output)
+        : type_(std::move(type)), track_id_(track_id), output_(output) {}
     virtual ~BaseMuxer() = default;
 
     void reset_samples() {
@@ -132,6 +174,7 @@ protected:
 
     void set_track(Mp4Track track) {
         if (track_) return;
+        track.id = track_id_;
         track_ = std::move(track);
         output_.init(type_, *track_);
     }
@@ -191,7 +234,7 @@ protected:
         for (std::size_t index = 0; index < count; ++index) {
             segment.push_back(std::move(ready_[index]));
         }
-        output_.segment(type_, media_segment(*track_, segment, sequence_++));
+        output_.segment(type_, *track_, segment, sequence_++);
         ready_.erase(ready_.begin(), ready_.begin() + static_cast<std::ptrdiff_t>(count));
         ready_duration_ -= emitted_duration;
     }
@@ -200,6 +243,7 @@ protected:
 
 private:
     std::string type_;
+    std::uint32_t track_id_;
     Output& output_;
     std::optional<Sample> pending_;
     std::vector<Sample> ready_;
@@ -210,7 +254,7 @@ private:
 
 class HevcMuxer final : public BaseMuxer {
 public:
-    explicit HevcMuxer(Output& output) : BaseMuxer("video", output), output_(output) {}
+    explicit HevcMuxer(Output& output) : BaseMuxer("video", 1, output), output_(output) {}
 
     bool started() const noexcept { return started_; }
     // AacMuxer has its own (sample-rate) track timescale, so it needs this
@@ -354,7 +398,7 @@ private:
 class AacMuxer final : public BaseMuxer {
 public:
     explicit AacMuxer(Output& output, const std::uint32_t max_channels)
-        : BaseMuxer("audio", output), max_channels_(max_channels) {}
+        : BaseMuxer("audio", 2, output), max_channels_(max_channels) {}
 
     void discontinuity() { reset_samples(); }
 
@@ -396,7 +440,7 @@ private:
 class tlvdemux::MseRemuxer::Impl {
 public:
     explicit Impl(MseSink& sink, const MseOptions options)
-        : output(sink), video(output), options(options) {}
+        : output(sink, options.output_mode), video(output), options(options) {}
 
     void select(const aribtlv::TrackKind kind, std::optional<std::uint64_t> id) {
         if (kind == aribtlv::TrackKind::Video) {
