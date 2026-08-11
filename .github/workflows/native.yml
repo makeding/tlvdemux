@@ -37,7 +37,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Linux dependencies
         if: matrix.os == 'linux'
@@ -95,7 +95,7 @@ jobs:
         run: cmake --install build --prefix "${RUNNER_TEMP}/tlvdemux-${{ matrix.name }}"
 
       - name: Upload static package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: tlvdemux-${{ matrix.name }}
           path: ${{ runner.temp }}/tlvdemux-${{ matrix.name }}
@@ -110,7 +110,7 @@ jobs:
       contents: write
     steps:
       - name: Download native packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: tlvdemux-*
           path: release-assets
@@ -125,10 +125,8 @@ jobs:
             tar -C "$package_dir" -czf "release-assets/${package_name}.tar.gz" .
           done
 
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "${GITHUB_REF_NAME}" release-assets/*.tar.gz \
-            --title "${GITHUB_REF_NAME}" \
-            --generate-notes
+      - name: Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: release-assets/*.tar.gz
+          generate_release_notes: true
