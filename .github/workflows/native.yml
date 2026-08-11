@@ -77,7 +77,7 @@ jobs:
             cmake_args+=(
               "-DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake"
               "-DVCPKG_TARGET_TRIPLET=${{ matrix.vcpkg_triplet }}"
-              "-DCMAKE_EXE_LINKER_FLAGS=-static-libgcc -static-libstdc++"
+              "-DCMAKE_EXE_LINKER_FLAGS=-static -static-libgcc -static-libstdc++ -mconsole"
             )
           elif [[ "${{ matrix.os }}" == macos ]]; then
             cmake_args+=("-DZLIB_ROOT=$(brew --prefix zlib)")
