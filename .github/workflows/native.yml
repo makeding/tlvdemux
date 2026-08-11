@@ -1,0 +1,138 @@
+name: Native builds
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: linux
+            runner: ubuntu-24.04
+          - name: linux-aarch64
+            os: linux
+            runner: ubuntu-24.04-arm
+          - name: macos-x86_64
+            os: macos
+            runner: macos-15-intel
+          - name: macos-aarch64
+            os: macos
+            runner: macos-15
+          - name: windows-x86_64
+            os: windows
+            runner: windows-2025
+            vcpkg_triplet: x64-windows-static
+          - name: windows-aarch64
+            os: windows
+            runner: windows-11-arm
+            vcpkg_triplet: arm64-windows-static
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: matrix.os == 'linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y ninja-build zlib1g-dev
+
+      - name: Install macOS dependencies
+        if: matrix.os == 'macos'
+        shell: bash
+        run: brew install ninja zlib
+
+      - name: Install Windows dependencies
+        if: matrix.os == 'windows'
+        shell: bash
+        run: |
+          vcpkg install "zlib:${{ matrix.vcpkg_triplet }}" --triplet "${{ matrix.vcpkg_triplet }}"
+
+      - name: Configure
+        shell: bash
+        run: |
+          cmake_args=(
+            -S .
+            -B build
+            -G Ninja
+            -DCMAKE_BUILD_TYPE=Release
+            -DBUILD_SHARED_LIBS=OFF
+            -DBUILD_TESTING=ON
+            -DTLVDEMUX_BUILD_TOOLS=ON
+            -DTLVDEMUX_BUILD_WASM_BINDINGS=OFF
+            -DTLVDEMUX_LIBARIBTLV_SOURCE_DIR=
+          )
+
+          if [[ "${{ matrix.os }}" == windows ]]; then
+            vcpkg_root="$(cygpath -m "${VCPKG_INSTALLATION_ROOT}")"
+            cmake_args+=(
+              "-DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake"
+              "-DVCPKG_TARGET_TRIPLET=${{ matrix.vcpkg_triplet }}"
+            )
+          elif [[ "${{ matrix.os }}" == macos ]]; then
+            cmake_args+=("-DZLIB_ROOT=$(brew --prefix zlib)")
+          fi
+
+          cmake "${cmake_args[@]}"
+
+      - name: Build and test
+        shell: bash
+        run: |
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure
+
+      - name: Install static package
+        shell: bash
+        run: cmake --install build --prefix "${RUNNER_TEMP}/tlvdemux-${{ matrix.name }}"
+
+      - name: Upload static package
+        uses: actions/upload-artifact@v4
+        with:
+          name: tlvdemux-${{ matrix.name }}
+          path: ${{ runner.temp }}/tlvdemux-${{ matrix.name }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: native
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download native packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: tlvdemux-*
+          path: release-assets
+          merge-multiple: false
+
+      - name: Archive native packages
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for package_dir in release-assets/tlvdemux-*; do
+            package_name="${package_dir##*/}"
+            tar -C "$package_dir" -czf "release-assets/${package_name}.tar.gz" .
+          done
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" release-assets/*.tar.gz \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes
