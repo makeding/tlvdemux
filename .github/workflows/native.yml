@@ -33,7 +33,7 @@ jobs:
           - name: windows-x86_64
             os: windows
             runner: windows-2025
-            vcpkg_triplet: x64-windows-static
+            vcpkg_triplet: x64-mingw-static
           - name: windows-aarch64
             os: windows
             runner: windows-11-arm
