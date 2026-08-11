@@ -34,10 +34,6 @@ jobs:
             os: windows
             runner: windows-2025
             vcpkg_triplet: x64-mingw-static
-          - name: windows-aarch64
-            os: windows
-            runner: windows-11-arm
-            vcpkg_triplet: arm64-windows-static
 
     steps:
       - name: Check out source
