@@ -36,15 +36,31 @@ checkout を指定します。インストール済み package を使う場合�
 なので、動的リンクする利用側でも互換性のあるコンパイラーと C++ 標準ライブラリを
 使用してください。
 
-`add_subdirectory()` でプロジェクトに組み込む場合、診断用実行ファイルは
+`add_subdirectory()` でプロジェクトに組み込む場合、コマンドライン実行ファイルは
 `-DTLVDEMUX_BUILD_TOOLS=OFF` で無効化できます。テストは CMake 標準の
 `BUILD_TESTING` オプションに従います。
+
+tag 付き GitHub Release では、対応 platform ごとに単体で動作する
+`tlvdemux-PLATFORM-ARCH`（Windows は `.exe` 付き）を配布します。download 後は
+`tlvdemux` に rename し、Unix では実行権限を付けてください。利用者向けの各機能は
+subcommand になっています。
+
+```sh
+tlvdemux --help
+tlvdemux probe recording.mmts
+tlvdemux inspect --list recording.mmts
+```
+
+この統合実行ファイルは、従来 install されていた `tlvdemux-pipe`、
+`tlvdemux-probe`、`tlvdemux-inspect`、`tlvdemux-extract`、`tlvanalyze` を
+置き換えます。既存 script では `tlvdemux` の後に対応する subcommand を追加してください。
 
 macOS では、ブラウザーを起動せずに VideoToolbox probe でブラウザー向け MSE
 経路全体を検証できます。この probe は MMTS を実際の `MseRemuxer` に入力し、
 `tfdt`／`trun` の連続性と HEVC サンプルフラグを検証し、Chromium と同様の
 `hvc1` 変換を適用してハードウェアデコーダーへ渡します。次の例では、サンプルを
 3 倍速で送りながら、決定的なランダムバイト位置からの再生を 16 回繰り返します。
+この開発者向け probe は source build で利用でき、単一ファイルの Release には含まれません。
 
 ```sh
 ./build/tlvdemux-videotoolbox-probe demo/8k.mmts \
@@ -59,7 +75,7 @@ cmake --install build --prefix /desired/prefix
 ```
 
 共有または静的ライブラリ、公開ヘッダー、CMake パッケージターゲット
-`tlvdemux::tlvdemux`、有効な場合は診断ツール、および MIT ライセンスが
+`tlvdemux::tlvdemux`、有効な場合は `tlvdemux` 実行ファイル、および MIT ライセンスが
 インストールされます。
 
 ## ライブラリの使い方
@@ -230,16 +246,16 @@ request に応答できます。WASM の利用側では通常、同じイベン�
 
 ## FFmpeg へ pipe する
 
-`tlvdemux-pipe` は、最初に一致した HEVC 映像と AAC-LATM 音声を、seek 不要の
+`tlvdemux pipe` は、最初に一致した HEVC 映像と AAC-LATM 音声を、seek 不要の
 fragmented MP4 として stdout へ remux します。診断は stderr のみに出すため、
 そのまま FFmpeg に接続できます。
 
 ```sh
-./build/tlvdemux-pipe recording.mmts |
+./build/tlvdemux pipe recording.mmts |
   ffmpeg -f mp4 -i pipe:0 -c copy output.mp4
 
 curl 'http://MIRAKURUN/api/services/SERVICE_ID/stream?decode=0' |
-  ./build/tlvdemux-pipe - |
+  ./build/tlvdemux pipe - |
   ffmpeg -f mp4 -i pipe:0 -c:v copy -c:a aac output.mkv
 ```
 
@@ -252,27 +268,27 @@ configuration が両方届いてから出力を開始します。pipe には拡�
 映像1 track の fragmented MP4 を出力します。
 
 ```sh
-./build/tlvdemux-pipe --video-only recording.mmts |
+./build/tlvdemux pipe --video-only recording.mmts |
   ffmpeg -f mp4 -skip_frame nointra -i pipe:0 -frames:v 10 -f null -
 ```
 
-有限個の frame を受け取った consumer が pipe を閉じた場合、`tlvdemux-pipe` は stdout
+有限個の frame を受け取った consumer が pipe を閉じた場合、`tlvdemux pipe` は stdout
 の切断を正常な consumer cancellation として扱います。`--video-only` と
 `--audio-packet-id` は同時に指定できません。
 
 ## ストリームを調査する
 
 ```sh
-./build/tlvdemux-inspect --list test.tlv
-./build/tlvdemux-inspect --trace-au test.tlv
-./build/tlvdemux-inspect --video video.hevc --audio audio.loas \
+./build/tlvdemux inspect --list test.tlv
+./build/tlvdemux inspect --trace-au test.tlv
+./build/tlvdemux inspect --video video.hevc --audio audio.loas \
   --subtitle subtitle.ttml test.tlv
-./build/tlvdemux-inspect --audio secondary.loas \
+./build/tlvdemux inspect --audio secondary.loas \
   --audio-packet-id 0xf311 test.tlv
-./build/tlvanalyze test.tlv
+./build/tlvdemux analyze test.tlv
 ```
 
-`tlvanalyze` は録画全体を走査し、再構成した ARIB-HTML5 resource を一覧化します。
+`tlvdemux analyze` は録画全体を走査し、再構成した ARIB-HTML5 resource を一覧化します。
 各 virtual file について path、MIME type、展開後 size と CRC32、carousel 上の
 出現回数、完全一致した重複回数、および重複 payload byte 数を表示します。
 重複判定では完全な wire payload を比較し、対応不明、discontinuity、または内容が
@@ -459,7 +475,7 @@ node tests/wasm_application_resources.mjs build-wasm/tlvdemux.js test.tlv
 request を実行し、取得した byte 列をそのまま `pushRange()` へ渡します。
 成功した `duration()` の `status` は `"complete"` です。失敗は `state()` と
 `failure()` で明示され、file 全体の download へ暗黙に fallback することは
-ありません。native の `tlvdemux-probe INPUT` tool も同じ protocol を使用します。
+ありません。native の `tlvdemux probe INPUT` command も同じ protocol を使用します。
 
 録画で正確に seek するには、stream 全体を入力する前に `startIndex(false)` を呼び、
 実際の EOF で `finalizeIndex()` を呼びます。`seekPointsFor(targetUs)` は、対象時刻を

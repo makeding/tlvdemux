@@ -1,5 +1,7 @@
 #include <aribtlv/demuxer.hpp>
 
+#include "commands.hpp"
+
 #include <array>
 #include <cstdint>
 #include <fstream>
@@ -343,7 +345,7 @@ struct Inspector final : aribtlv::Sink {
 };
 
 void usage() {
-    std::cerr << "usage: tlvdemux-inspect [--list] [--trace-au] [--service ID]"
+    std::cerr << "usage: tlvdemux inspect [--list] [--trace-au] [--service ID]"
                  " [--video FILE] [--video-packet-id ID]"
                  " [--audio FILE] [--audio-packet-id ID]"
                  " [--subtitle FILE] [--subtitle-packet-id ID] INPUT\n";
@@ -357,7 +359,7 @@ std::uint16_t parse_packet_id(const std::string& value) {
 
 } // namespace
 
-int main(int argc, char** argv) {
+int tlvdemux_cli::run_inspect(int argc, char** argv) {
     try {
         Inspector inspector;
         std::optional<std::uint32_t> service;
@@ -431,7 +433,7 @@ int main(int argc, char** argv) {
         }
         return 0;
     } catch (const std::exception& error) {
-        std::cerr << "tlvdemux-inspect: " << error.what() << '\n';
+        std::cerr << "tlvdemux inspect: " << error.what() << '\n';
         return 2;
     }
 }

@@ -106,18 +106,20 @@ install(FILES
 )
 
 if(TLVDEMUX_BUILD_TOOLS)
-    add_executable(tlvdemux-inspect tools/tlvdemux-inspect.cpp)
-    target_link_libraries(tlvdemux-inspect PRIVATE aribtlv::aribtlv)
+    add_executable(tlvdemux-cli
+        tools/tlvdemux.cpp
+        tools/tlvdemux-inspect.cpp
+        tools/tlvdemux-extract.cpp
+        tools/tlvdemux-probe.cpp
+        tools/tlvdemux-pipe.cpp
+        tools/tlvanalyze.cpp
+    )
+    target_link_libraries(tlvdemux-cli PRIVATE tlvdemux::tlvdemux)
+    target_compile_definitions(tlvdemux-cli PRIVATE
+        TLVDEMUX_VERSION="${PROJECT_VERSION}")
+    set_target_properties(tlvdemux-cli PROPERTIES OUTPUT_NAME tlvdemux)
     add_executable(tlvdemux-cocktail tools/tlvdemux-cocktail.cpp)
     target_link_libraries(tlvdemux-cocktail PRIVATE tlvdemux::tlvdemux)
-    add_executable(tlvdemux-extract tools/tlvdemux-extract.cpp)
-    target_link_libraries(tlvdemux-extract PRIVATE aribtlv::aribtlv)
-    add_executable(tlvdemux-probe tools/tlvdemux-probe.cpp)
-    target_link_libraries(tlvdemux-probe PRIVATE aribtlv::aribtlv)
-    add_executable(tlvdemux-pipe tools/tlvdemux-pipe.cpp)
-    target_link_libraries(tlvdemux-pipe PRIVATE tlvdemux::tlvdemux)
-    add_executable(tlvanalyze tools/tlvanalyze.cpp)
-    target_link_libraries(tlvanalyze PRIVATE aribtlv::aribtlv)
     if(APPLE)
         add_executable(tlvdemux-videotoolbox-probe tools/tlvdemux-videotoolbox-probe.cpp)
         target_link_libraries(tlvdemux-videotoolbox-probe PRIVATE
@@ -131,26 +133,14 @@ if(TLVDEMUX_BUILD_TOOLS)
             -Wall -Wextra -Wpedantic)
     endif()
     if(MSVC)
-        target_compile_options(tlvdemux-inspect PRIVATE /W4 /permissive-)
+        target_compile_options(tlvdemux-cli PRIVATE /W4 /permissive-)
         target_compile_options(tlvdemux-cocktail PRIVATE /W4 /permissive-)
-        target_compile_options(tlvdemux-extract PRIVATE /W4 /permissive-)
-        target_compile_options(tlvdemux-probe PRIVATE /W4 /permissive-)
-        target_compile_options(tlvdemux-pipe PRIVATE /W4 /permissive-)
-        target_compile_options(tlvanalyze PRIVATE /W4 /permissive-)
     else()
-        target_compile_options(tlvdemux-inspect PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(tlvdemux-cli PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(tlvdemux-cocktail PRIVATE -Wall -Wextra -Wpedantic)
-        target_compile_options(tlvdemux-extract PRIVATE -Wall -Wextra -Wpedantic)
-        target_compile_options(tlvdemux-probe PRIVATE -Wall -Wextra -Wpedantic)
-        target_compile_options(tlvdemux-pipe PRIVATE -Wall -Wextra -Wpedantic)
-        target_compile_options(tlvanalyze PRIVATE -Wall -Wextra -Wpedantic)
     endif()
-    install(TARGETS tlvdemux-inspect tlvdemux-extract tlvdemux-probe tlvdemux-pipe tlvanalyze
+    install(TARGETS tlvdemux-cli
             RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-    if(APPLE)
-        install(TARGETS tlvdemux-videotoolbox-probe
-                RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-    endif()
 endif()
 
 if(TLVDEMUX_BUILD_WASM_BINDINGS)
@@ -186,6 +176,19 @@ if(TLVDEMUX_BUILD_WASM_BINDINGS)
 endif()
 
 if(BUILD_TESTING)
+    if(TLVDEMUX_BUILD_TOOLS)
+        add_test(NAME tlvdemux-cli-help COMMAND tlvdemux-cli --help)
+        add_test(NAME tlvdemux-cli-version COMMAND tlvdemux-cli --version)
+        foreach(command pipe probe inspect extract analyze)
+            add_test(NAME tlvdemux-cli-${command}-help
+                     COMMAND tlvdemux-cli ${command} --help)
+        endforeach()
+        add_test(NAME tlvdemux-cli-missing-command COMMAND tlvdemux-cli)
+        set_tests_properties(tlvdemux-cli-missing-command PROPERTIES WILL_FAIL TRUE)
+        add_test(NAME tlvdemux-cli-unknown-command COMMAND tlvdemux-cli unknown)
+        set_tests_properties(tlvdemux-cli-unknown-command PROPERTIES WILL_FAIL TRUE)
+    endif()
+
     add_executable(tlvdemux-playback-tests tests/playback_tests.cpp)
     target_link_libraries(tlvdemux-playback-tests PRIVATE tlvdemux::tlvdemux)
     if(MSVC)

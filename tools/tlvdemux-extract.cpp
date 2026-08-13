@@ -1,5 +1,7 @@
 #include <aribtlv/demuxer.hpp>
 
+#include "commands.hpp"
+
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -53,13 +55,17 @@ private:
 };
 
 void usage() {
-    std::cerr << "usage: tlvdemux-extract OUTPUT-DIR INPUT\n";
+    std::cerr << "usage: tlvdemux extract OUTPUT-DIR INPUT\n";
 }
 
 } // namespace
 
-int main(int argc, char** argv) {
+int tlvdemux_cli::run_extract(int argc, char** argv) {
     try {
+        if (argc == 2 && (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help")) {
+            std::cout << "usage: tlvdemux extract OUTPUT-DIR INPUT\n";
+            return 0;
+        }
         if (argc != 3) {
             usage();
             return 2;
@@ -79,7 +85,7 @@ int main(int argc, char** argv) {
         std::cerr << "extracted " << extractor.written << " files\n";
         return extractor.written == 0 ? 1 : 0;
     } catch (const std::exception& error) {
-        std::cerr << "tlvdemux-extract: " << error.what() << '\n';
+        std::cerr << "tlvdemux extract: " << error.what() << '\n';
         return 2;
     }
 }

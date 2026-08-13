@@ -1,5 +1,7 @@
 #include <aribtlv/demuxer.hpp>
 
+#include "commands.hpp"
+
 #include <zlib.h>
 
 #include <array>
@@ -112,12 +114,16 @@ struct Analyzer final : aribtlv::Sink {
     }
 };
 
-void usage() { std::cerr << "usage: tlvanalyze INPUT\n"; }
+void usage() { std::cerr << "usage: tlvdemux analyze INPUT\n"; }
 
 } // namespace
 
-int main(const int argc, char** argv) {
+int tlvdemux_cli::run_analyze(const int argc, char** argv) {
     try {
+        if (argc == 2 && (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help")) {
+            std::cout << "usage: tlvdemux analyze INPUT\n";
+            return 0;
+        }
         if (argc != 2) {
             usage();
             return 2;
@@ -171,7 +177,7 @@ int main(const int argc, char** argv) {
                   << " recoverable-errors=" << analyzer.recoverable_errors << '\n';
         return 0;
     } catch (const std::exception& error) {
-        std::cerr << "tlvanalyze: " << error.what() << '\n';
+        std::cerr << "tlvdemux analyze: " << error.what() << '\n';
         return 1;
     }
 }

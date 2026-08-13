@@ -1,5 +1,7 @@
 #include <aribtlv/duration_probe.hpp>
 
+#include "commands.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -28,10 +30,14 @@ const char* failure_name(const aribtlv::DurationProbeFailure failure) noexcept {
 
 } // namespace
 
-int main(int argc, char** argv) {
+int tlvdemux_cli::run_probe(int argc, char** argv) {
     try {
+        if (argc == 2 && (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help")) {
+            std::cout << "usage: tlvdemux probe INPUT\n";
+            return 0;
+        }
         if (argc != 2) {
-            std::cerr << "usage: tlvdemux-probe INPUT\n";
+            std::cerr << "usage: tlvdemux probe INPUT\n";
             return 2;
         }
         const std::string path = argv[1];
@@ -87,7 +93,7 @@ int main(int argc, char** argv) {
                   << " bytes-read=" << probe.transferredBytes() << '\n';
         return 0;
     } catch (const std::exception& error) {
-        std::cerr << "tlvdemux-probe: " << error.what() << '\n';
+        std::cerr << "tlvdemux probe: " << error.what() << '\n';
         return 2;
     }
 }

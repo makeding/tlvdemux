@@ -1,6 +1,8 @@
 #include <aribtlv/demuxer.hpp>
 #include <tlvdemux/mse_remuxer.hpp>
 
+#include "commands.hpp"
+
 #include <array>
 #include <cerrno>
 #include <csignal>
@@ -99,13 +101,13 @@ std::uint16_t packet_id(const std::string& value) {
 }
 
 void usage() {
-    std::cerr << "usage: tlvdemux-pipe [--video-only] [--service ID] [--video-packet-id ID]"
+    std::cerr << "usage: tlvdemux pipe [--video-only] [--service ID] [--video-packet-id ID]"
                  " [--audio-packet-id ID] INPUT|-\n";
 }
 
 } // namespace
 
-int main(int argc, char** argv) {
+int tlvdemux_cli::run_pipe(int argc, char** argv) {
     try {
         std::optional<std::uint32_t> service;
         std::optional<std::uint16_t> video_packet_id;
@@ -189,7 +191,7 @@ int main(int argc, char** argv) {
     } catch (const ConsumerClosed&) {
         return 0;
     } catch (const std::exception& error) {
-        std::cerr << "tlvdemux-pipe: " << error.what() << '\n';
+        std::cerr << "tlvdemux pipe: " << error.what() << '\n';
         return 2;
     }
 }

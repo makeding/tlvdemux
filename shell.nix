@@ -9,5 +9,6 @@ pkgs.mkShell {
     nodejs
     pkg-config
     zlib
+    zlib.static
   ];
 }

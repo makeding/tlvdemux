@@ -36,9 +36,25 @@ produces the corresponding `libtlvdemux.0.dylib`. Use
 The exported interface is a C++20 ABI, so dynamically linked consumers should
 use a compatible compiler and C++ standard library.
 
-When embedding the project with `add_subdirectory()`, the diagnostic executable
+When embedding the project with `add_subdirectory()`, the command-line executable
 can be disabled with `-DTLVDEMUX_BUILD_TOOLS=OFF`. Tests follow CMake's standard
 `BUILD_TESTING` option.
+
+Tagged GitHub releases provide one standalone executable for each supported
+platform, named `tlvdemux-PLATFORM-ARCH` (with `.exe` on Windows). Rename the
+download to `tlvdemux` and, on Unix, mark it executable. It exposes the
+user-facing tools as subcommands:
+
+```sh
+tlvdemux --help
+tlvdemux probe recording.mmts
+tlvdemux inspect --list recording.mmts
+```
+
+This unified executable replaces the previously installed `tlvdemux-pipe`,
+`tlvdemux-probe`, `tlvdemux-inspect`, `tlvdemux-extract`, and `tlvanalyze`
+programs. Existing scripts should insert the corresponding subcommand after
+`tlvdemux`.
 
 On macOS, the VideoToolbox probe can exercise the complete browser-facing MSE
 path without launching a browser. It feeds MMTS through the production
@@ -46,6 +62,9 @@ path without launching a browser. It feeds MMTS through the production
 Chromium-style `hvc1` conversion, and submits the result to hardware decoding.
 The following also repeats the run at sixteen deterministic random byte
 landings while pacing samples at 3x:
+
+This developer probe is available in source builds and is not included in the
+standalone release executable.
 
 ```sh
 ./build/tlvdemux-videotoolbox-probe demo/8k.mmts \
@@ -60,7 +79,7 @@ cmake --install build --prefix /desired/prefix
 ```
 
 The install includes the playback/MSE library, public headers, the
-`tlvdemux::tlvdemux` CMake package target, the diagnostic tool when enabled,
+`tlvdemux::tlvdemux` CMake package target, the `tlvdemux` executable when enabled,
 and the MIT license. Its CMake package requires an installed `aribtlv` package.
 
 ## Library usage
@@ -234,16 +253,16 @@ cannot grow memory without limit.
 
 ## Pipe into FFmpeg
 
-`tlvdemux-pipe` remuxes the first matching HEVC video and AAC-LATM audio tracks
+`tlvdemux pipe` remuxes the first matching HEVC video and AAC-LATM audio tracks
 to a non-seekable fragmented MP4 stream on stdout. Diagnostics are written only
 to stderr, so the output can be connected directly to FFmpeg:
 
 ```sh
-./build/tlvdemux-pipe recording.mmts |
+./build/tlvdemux pipe recording.mmts |
   ffmpeg -f mp4 -i pipe:0 -c copy output.mp4
 
 curl 'http://MIRAKURUN/api/services/SERVICE_ID/stream?decode=0' |
-  ./build/tlvdemux-pipe - |
+  ./build/tlvdemux pipe - |
   ffmpeg -f mp4 -i pipe:0 -c:v copy -c:a aac output.mkv
 ```
 
@@ -257,27 +276,27 @@ For video-only consumers such as thumbnail extraction, `--video-only` emits a
 single-track fragmented MP4 without waiting for or remuxing audio:
 
 ```sh
-./build/tlvdemux-pipe --video-only recording.mmts |
+./build/tlvdemux pipe --video-only recording.mmts |
   ffmpeg -f mp4 -skip_frame nointra -i pipe:0 -frames:v 10 -f null -
 ```
 
 When a finite consumer closes the pipe after receiving all requested frames,
-`tlvdemux-pipe` treats the closed stdout as normal consumer cancellation.
+`tlvdemux pipe` treats the closed stdout as normal consumer cancellation.
 `--audio-packet-id` cannot be combined with `--video-only`.
 
 ## Inspect a stream
 
 ```sh
-./build/tlvdemux-inspect --list test.tlv
-./build/tlvdemux-inspect --trace-au test.tlv
-./build/tlvdemux-inspect --video video.hevc --audio audio.loas \
+./build/tlvdemux inspect --list test.tlv
+./build/tlvdemux inspect --trace-au test.tlv
+./build/tlvdemux inspect --video video.hevc --audio audio.loas \
   --subtitle subtitle.ttml test.tlv
-./build/tlvdemux-inspect --audio secondary.loas \
+./build/tlvdemux inspect --audio secondary.loas \
   --audio-packet-id 0xf311 test.tlv
-./build/tlvanalyze test.tlv
+./build/tlvdemux analyze test.tlv
 ```
 
-`tlvanalyze` scans the complete recording and inventories reconstructed
+`tlvdemux analyze` scans the complete recording and inventories reconstructed
 ARIB-HTML5 resources. For each virtual file it reports its path, MIME type,
 decoded size and CRC32, carousel occurrence count, exact duplicate count, and
 duplicate payload bytes. Duplicate classification compares the complete wire
@@ -465,7 +484,7 @@ client. Start it with the known file size, fulfill each object returned by
 `nextRange()`, and pass the exact bytes to `pushRange()`. A successful
 `duration()` has `status: "complete"`; failure remains explicit through
 `state()` and `failure()` and never falls back to downloading the whole file.
-The native `tlvdemux-probe INPUT` tool exercises the same protocol.
+The native `tlvdemux probe INPUT` command exercises the same protocol.
 
 For precise recorded seek, call `startIndex(false)` before feeding the full
 stream and `finalizeIndex()` at its real EOF. `seekPointsFor(targetUs)` returns
