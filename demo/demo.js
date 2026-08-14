@@ -1664,8 +1664,14 @@ elements.video.addEventListener('seeking', () => {
     if (!activeMediaSource) return;
     appendLog(`ユーザーシーク ${target.toFixed(3)}s` +
       (automaticFallbackActive ? '、映像層を再評価します' : ''));
-    stopPlayback(true, true);
-    loadAndPlay(target, true);
+    // A SourceBuffer that has already changed from the preferred 4K decoder
+    // configuration to the rainfall 1080p configuration is unsafe to reuse
+    // for a backwards seek into 4K. Chromium retains per-frame decoder config
+    // history, and overlapping the old timeline can eventually surface as
+    // VideoToolbox -17694. Rebuild MSE only for this cross-layer seek.
+    const reuseMedia = !automaticFallbackActive;
+    stopPlayback(true, reuseMedia);
+    loadAndPlay(target, reuseMedia);
   }, 120);
 });
 elements.video.addEventListener('seeked', () => {
