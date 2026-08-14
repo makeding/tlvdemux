@@ -492,6 +492,13 @@ declare namespace createTlvDemuxModule {
     presentationTimeUs: bigint;
   }
 
+  interface MseLayerSwitch {
+    videoTrackId: bigint;
+    audioTrackId: bigint;
+    videoPresentationTimeUs: bigint;
+    audioPresentationTimeUs: bigint;
+  }
+
   interface MseVideoStart {
     nalType: number;
     signalledRandomAccess: boolean;
@@ -533,6 +540,7 @@ declare namespace createTlvDemuxModule {
     onMseSegment?: (segment: MseMediaSegment) => void;
     onMseAudioSplice?: (splice: MseAudioSplice) => void;
     onMseVideoSplice?: (splice: MseVideoSplice) => void;
+    onMseLayerSwitch?: (layer: MseLayerSwitch) => void;
     onMseVideoStart?: (start: MseVideoStart) => void;
   }
 
@@ -550,6 +558,11 @@ declare namespace createTlvDemuxModule {
     selectService(contextId?: number | null): void;
     selectTrack(kind: TrackKind, trackId?: bigint | null): void;
     switchAudioTrack(trackId: bigint, earliestPresentationTimeUs: bigint): bigint | null;
+    switchLayer(
+      videoTrackId: bigint,
+      audioTrackId: bigint,
+      earliestPresentationTimeUs: bigint,
+    ): boolean;
     setMseOutputEnabled(enabled: boolean): void;
     setSubtitlePassthroughEnabled(enabled: boolean): void;
     drainApplicationResources(maxEvents: number): boolean;

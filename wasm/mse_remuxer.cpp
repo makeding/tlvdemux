@@ -133,6 +133,16 @@ public:
         sink_.onMseVideoSplice(tlvdemux::MseVideoSplice{presentation_time_us});
     }
 
+    void layer_switch(const std::uint64_t video_track_id,
+                      const std::uint64_t audio_track_id,
+                      const std::int64_t video_presentation_time_us,
+                      const std::int64_t audio_presentation_time_us) {
+        if (!enabled_) return;
+        sink_.onMseLayerSwitch(tlvdemux::MseLayerSwitch{
+            video_track_id, audio_track_id,
+            video_presentation_time_us, audio_presentation_time_us});
+    }
+
     void video_start(const int nal_type, const bool signalled) {
         if (!enabled_) return;
         sink_.onMseVideoStart(tlvdemux::MseVideoStart{nal_type, signalled});
@@ -314,6 +324,9 @@ public:
         return unit.discontinuity && input_track_id_.has_value() &&
             *input_track_id_ != unit.track_id;
     }
+    std::optional<std::int64_t> take_splice_boundary_us() noexcept {
+        return std::exchange(splice_boundary_us_, std::nullopt);
+    }
     // AacMuxer has its own (sample-rate) track timescale, so it needs this
     // shared offset in microseconds regardless of the video track timescale.
     std::optional<std::int64_t> timeline_offset_us() const noexcept {
@@ -330,9 +343,11 @@ public:
         sequence_start_ = true;
         timeline_offset_ticks_.reset();
         input_track_id_.reset();
+        splice_boundary_us_.reset();
     }
 
     void push(const aribtlv::AccessUnit& unit, const bool output_enabled) {
+        splice_boundary_us_.reset();
         const auto nalus = annex_b_views(unit.data);
         bool has_parameter_set = false;
         for (const auto& nalu : nalus) {
@@ -378,7 +393,8 @@ public:
                 const auto boundary_pts = scaled(unit.pts.value, unit.pts.timescale,
                                                  track_->timescale) + offset;
                 flush_at(boundary_dts);
-                output_.video_splice(scaled(boundary_pts, track_->timescale, 1000000));
+                splice_boundary_us_ = scaled(boundary_pts, track_->timescale, 1000000);
+                output_.video_splice(*splice_boundary_us_);
                 candidate.timescale = track_->timescale;
                 replace_track(std::move(candidate));
                 started_ = false;
@@ -394,7 +410,8 @@ public:
             const auto boundary_pts = scaled(unit.pts.value, unit.pts.timescale,
                                              track_->timescale) + offset;
             flush_at(boundary_dts);
-            output_.video_splice(scaled(boundary_pts, track_->timescale, 1000000));
+            splice_boundary_us_ = scaled(boundary_pts, track_->timescale, 1000000);
+            output_.video_splice(*splice_boundary_us_);
             started_ = false;
             no_rasl_output_ = false;
             sequence_start_ = true;
@@ -510,6 +527,7 @@ private:
     bool sequence_start_ = true;
     std::optional<std::int64_t> timeline_offset_ticks_;
     std::optional<std::uint64_t> input_track_id_;
+    std::optional<std::int64_t> splice_boundary_us_;
 };
 
 class AacMuxer final : public BaseMuxer {
@@ -672,10 +690,12 @@ public:
 
     void select(const aribtlv::TrackKind kind, std::optional<std::uint64_t> id) {
         if (kind == aribtlv::TrackKind::Video) {
+            pending_layer.reset();
             video_id = id;
             return;
         }
         if (kind != aribtlv::TrackKind::Audio) return;
+        pending_layer.reset();
         if (audio_id == id && active_audio != nullptr) return;
         std::optional<std::int64_t> resume_at;
         std::uint32_t resume_timescale = 0;
@@ -715,12 +735,49 @@ public:
         return boundary;
     }
 
+    bool switch_layer(const std::uint64_t target_video_id,
+                      const std::uint64_t target_audio_id,
+                      const std::int64_t earliest_presentation_time_us) {
+        if (target_video_id == 0 || target_audio_id == 0 ||
+            video_id == target_video_id) return false;
+        pending_layer = PendingLayerSwitch{
+            target_video_id, target_audio_id,
+            earliest_presentation_time_us, std::nullopt};
+        video_id = target_video_id;
+        return true;
+    }
+
+    void complete_layer_switch() {
+        if (!pending_layer || !pending_layer->video_boundary_us) return;
+        if (audio_id == pending_layer->audio_track_id && active_audio != nullptr) {
+            output.layer_switch(
+                pending_layer->video_track_id, pending_layer->audio_track_id,
+                *pending_layer->video_boundary_us, *pending_layer->video_boundary_us);
+            pending_layer.reset();
+            return;
+        }
+        const auto boundary = switch_audio(
+            pending_layer->audio_track_id,
+            std::max(pending_layer->earliest_presentation_time_us,
+                     *pending_layer->video_boundary_us));
+        if (!boundary) return;
+        output.layer_switch(
+            pending_layer->video_track_id, pending_layer->audio_track_id,
+            *pending_layer->video_boundary_us, *boundary);
+        pending_layer.reset();
+    }
+
     void push(const aribtlv::AccessUnit& unit) {
         if (video_id && unit.track_id == *video_id) {
             if (unit.discontinuity && !video.is_input_track_switch(unit)) {
                 for (auto& entry : audio) entry.second.discontinuity();
             }
             video.push(unit, enabled);
+            if (pending_layer && unit.track_id == pending_layer->video_track_id) {
+                const auto boundary = video.take_splice_boundary_us();
+                if (boundary) pending_layer->video_boundary_us = boundary;
+                complete_layer_switch();
+            }
             return;
         }
         if (unit.codec == aribtlv::Codec::AacLatm) {
@@ -734,6 +791,9 @@ public:
             iterator->second.push(unit, active,
                                   active && enabled && video.started(),
                                   video.timeline_offset_us());
+            if (pending_layer && unit.track_id == pending_layer->audio_track_id) {
+                complete_layer_switch();
+            }
         }
     }
 
@@ -746,12 +806,21 @@ public:
         video.reset();
         audio.clear();
         active_audio = nullptr;
+        pending_layer.reset();
     }
 
     void reposition() {
         video.reset();
         for (auto& entry : audio) entry.second.discontinuity();
+        pending_layer.reset();
     }
+
+    struct PendingLayerSwitch {
+        std::uint64_t video_track_id = 0;
+        std::uint64_t audio_track_id = 0;
+        std::int64_t earliest_presentation_time_us = 0;
+        std::optional<std::int64_t> video_boundary_us;
+    };
 
     Output output;
     HevcMuxer video;
@@ -760,6 +829,7 @@ public:
     MseOptions options;
     std::optional<std::uint64_t> video_id;
     std::optional<std::uint64_t> audio_id;
+    std::optional<PendingLayerSwitch> pending_layer;
     bool enabled = true;
 };
 
@@ -775,6 +845,13 @@ void tlvdemux::MseRemuxer::selectTrack(const TrackKind kind,
 std::optional<std::int64_t> tlvdemux::MseRemuxer::switchAudioTrack(
     const std::uint64_t id, const std::int64_t earliest_presentation_time_us) {
     return impl_->switch_audio(id, earliest_presentation_time_us);
+}
+
+bool tlvdemux::MseRemuxer::switchLayer(
+    const std::uint64_t video_track_id, const std::uint64_t audio_track_id,
+    const std::int64_t earliest_presentation_time_us) {
+    return impl_->switch_layer(
+        video_track_id, audio_track_id, earliest_presentation_time_us);
 }
 
 void tlvdemux::MseRemuxer::setOutputEnabled(const bool enabled) {
@@ -835,6 +912,16 @@ public:
         emit("onMseVideoSplice", event);
     }
 
+    void onMseLayerSwitch(const tlvdemux::MseLayerSwitch& layer) override {
+        if (!has("onMseLayerSwitch")) return;
+        auto event = val::object();
+        event.set("videoTrackId", layer.video_track_id);
+        event.set("audioTrackId", layer.audio_track_id);
+        event.set("videoPresentationTimeUs", layer.video_presentation_time_us);
+        event.set("audioPresentationTimeUs", layer.audio_presentation_time_us);
+        emit("onMseLayerSwitch", event);
+    }
+
     void onMseVideoStart(const tlvdemux::MseVideoStart& start) override {
         if (!has("onMseVideoStart")) return;
         auto event = val::object();
@@ -871,6 +958,13 @@ void WasmMseRemuxer::selectTrack(const aribtlv::TrackKind kind,
 std::optional<std::int64_t> WasmMseRemuxer::switchAudioTrack(
     const std::uint64_t id, const std::int64_t earliest_presentation_time_us) {
     return impl_->remuxer().switchAudioTrack(id, earliest_presentation_time_us);
+}
+
+bool WasmMseRemuxer::switchLayer(
+    const std::uint64_t video_track_id, const std::uint64_t audio_track_id,
+    const std::int64_t earliest_presentation_time_us) {
+    return impl_->remuxer().switchLayer(
+        video_track_id, audio_track_id, earliest_presentation_time_us);
 }
 
 void WasmMseRemuxer::setOutputEnabled(const bool enabled) {

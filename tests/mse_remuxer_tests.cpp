@@ -37,11 +37,16 @@ public:
         events.push_back("video-splice");
         video_splices.push_back(splice);
     }
+    void onMseLayerSwitch(const tlvdemux::MseLayerSwitch& layer) override {
+        events.push_back("layer-switch");
+        layer_switches.push_back(layer);
+    }
 
     std::vector<tlvdemux::MseTrackInit> inits;
     std::vector<tlvdemux::MseMediaSegment> segments;
     std::vector<tlvdemux::MseAudioSplice> splices;
     std::vector<tlvdemux::MseVideoSplice> video_splices;
+    std::vector<tlvdemux::MseLayerSwitch> layer_switches;
     std::vector<std::string> events;
 };
 
@@ -830,6 +835,70 @@ void test_video_track_switch_preserves_prepared_alternate_audio() {
           "alternate-audio switch did not retain its cached boundary after video-layer switch");
 }
 
+void test_layer_switch_coordinates_video_rap_and_prepared_audio() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.push(hevc_unit(2, 0, 0, true, true));
+
+    constexpr std::int64_t frame = 1024;
+    for (std::int64_t index = 0; index < 12; ++index) {
+        remuxer.push(audio_unit(1, index * frame));
+        remuxer.push(audio_unit(9, index * frame));
+    }
+    check(remuxer.switchLayer(3, 9, audio_time_us(4 * frame)),
+          "valid layer switch request was rejected");
+    auto replacement = hevc_unit(3, 100000, 100000, true, true);
+    replacement.discontinuity = true;
+    remuxer.push(replacement);
+
+    const auto expected_audio_boundary = audio_time_us(5 * frame);
+    check(sink.layer_switches.size() == 1,
+          "prepared A/V layer switch did not emit completion");
+    const auto& completed = sink.layer_switches.front();
+    check(completed.video_track_id == 3 && completed.audio_track_id == 9 &&
+              completed.video_presentation_time_us == 100000 &&
+              completed.audio_presentation_time_us == expected_audio_boundary,
+          "layer-switch completion did not expose its actual A/V boundaries");
+    check(sink.video_splices.size() == 1 && sink.splices.size() == 1 &&
+              sink.splices.front().presentation_time_us == expected_audio_boundary,
+          "layer switch did not splice both SourceBuffers");
+    const auto video_splice = std::find(
+        sink.events.begin(), sink.events.end(), "video-splice");
+    const auto audio_splice = std::find(sink.events.begin(), sink.events.end(), "splice");
+    const auto completion = std::find(
+        sink.events.begin(), sink.events.end(), "layer-switch");
+    check(video_splice < audio_splice && audio_splice < completion,
+          "layer switch completion was emitted before both splice boundaries");
+}
+
+void test_layer_switch_waits_for_target_audio_after_video_rap() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.push(hevc_unit(2, 0, 0, true, true));
+    remuxer.push(audio_unit(1, 0));
+
+    check(remuxer.switchLayer(3, 9, 0),
+          "layer switch should accept an audio track that has not arrived yet");
+    auto replacement = hevc_unit(3, 100000, 100000, true, true);
+    replacement.discontinuity = true;
+    remuxer.push(replacement);
+    check(sink.layer_switches.empty(),
+          "layer switch completed before target audio reached the video boundary");
+
+    constexpr std::int64_t frame = 1024;
+    for (std::int64_t index = 0; index <= 5; ++index) {
+        remuxer.push(audio_unit(9, index * frame));
+    }
+    check(sink.layer_switches.size() == 1 &&
+              sink.layer_switches.front().audio_presentation_time_us ==
+                  audio_time_us(5 * frame),
+          "layer switch did not complete when target audio reached the boundary");
+}
+
 void test_audio_init_is_restored_when_output_is_reenabled() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
@@ -1023,6 +1092,8 @@ void test_video_only_output_does_not_wait_for_audio() {
 int main() {
     test_audio_switch_uses_cached_frame_boundary_without_video_rap();
     test_video_track_switch_preserves_prepared_alternate_audio();
+    test_layer_switch_coordinates_video_rap_and_prepared_audio();
+    test_layer_switch_waits_for_target_audio_after_video_rap();
     test_audio_init_is_restored_when_output_is_reenabled();
     test_audio_channel_limit();
     test_unlimited_22_2_channel_count();

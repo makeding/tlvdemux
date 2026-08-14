@@ -153,6 +153,11 @@ class WorkerDemuxer extends WorkerObject {
   switchAudioTrack(trackId, earliestPresentationTimeUs) {
     return this.call('switchAudioTrack', [trackId, earliestPresentationTimeUs]);
   }
+  switchLayer(videoTrackId, audioTrackId, earliestPresentationTimeUs) {
+    return this.call('switchLayer', [
+      videoTrackId, audioTrackId, earliestPresentationTimeUs,
+    ]);
+  }
   setMseOutputEnabled(enabled) { return this.call('setMseOutputEnabled', [enabled]); }
   setSubtitlePassthroughEnabled(enabled) {
     return this.call('setSubtitlePassthroughEnabled', [enabled]);

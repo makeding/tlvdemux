@@ -184,6 +184,7 @@ function createDemuxer(module, objectId, options) {
     onMseVideoStart: event('onMseVideoStart'),
     onMseVideoSplice: event('onMseVideoSplice'),
     onMseAudioSplice: event('onMseAudioSplice'),
+    onMseLayerSwitch: event('onMseLayerSwitch'),
     onMseInit(init) {
       sendEvent(objectId, 'onMseInit', init, [init.data.buffer]);
     },
@@ -341,19 +342,24 @@ async function invokeObject(message) {
       value = method.apply(record.instance, message.args || []);
       if (record.type === 'demuxer' &&
           (message.method === 'selectTrack' ||
-           (message.method === 'switchAudioTrack' && value !== null))) {
-        const [kind, trackId] = message.method === 'selectTrack'
-          ? (message.args || []) : ['audio', message.args?.[0]];
-        const key = `${kind}Track`;
-        if (key in record.selection) {
-          const track = record.tracks.get(trackId);
-          const packetKey = `${kind}PacketId`;
-          if (track) rememberSelection(record, kind, track);
-          else {
-            record.selection[key] = trackId ?? null;
-            record.selection[`${kind}Identity`] = null;
-            if (packetKey in record.selection && trackId == null) {
-              record.selection[packetKey] = null;
+           (message.method === 'switchAudioTrack' && value !== null) ||
+           (message.method === 'switchLayer' && value === true))) {
+        const selections = message.method === 'switchLayer'
+          ? [['video', message.args?.[0]], ['audio', message.args?.[1]]]
+          : [message.method === 'selectTrack'
+              ? (message.args || []) : ['audio', message.args?.[0]]];
+        for (const [kind, trackId] of selections) {
+          const key = `${kind}Track`;
+          if (key in record.selection) {
+            const track = record.tracks.get(trackId);
+            const packetKey = `${kind}PacketId`;
+            if (track) rememberSelection(record, kind, track);
+            else {
+              record.selection[key] = trackId ?? null;
+              record.selection[`${kind}Identity`] = null;
+              if (packetKey in record.selection && trackId == null) {
+                record.selection[packetKey] = null;
+              }
             }
           }
         }

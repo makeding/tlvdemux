@@ -39,6 +39,13 @@ struct MseVideoSplice {
     std::int64_t presentation_time_us = 0;
 };
 
+struct MseLayerSwitch {
+    std::uint64_t video_track_id = 0;
+    std::uint64_t audio_track_id = 0;
+    std::int64_t video_presentation_time_us = 0;
+    std::int64_t audio_presentation_time_us = 0;
+};
+
 struct MseVideoStart {
     int nal_type = -1;
     bool signalled_random_access = false;
@@ -65,6 +72,7 @@ public:
     virtual void onMseSegment(MseMediaSegment&&) = 0;
     virtual void onMseAudioSplice(const MseAudioSplice&) {}
     virtual void onMseVideoSplice(const MseVideoSplice&) {}
+    virtual void onMseLayerSwitch(const MseLayerSwitch&) {}
     virtual void onMseVideoStart(const MseVideoStart&) {}
 };
 
@@ -78,6 +86,8 @@ public:
     void selectTrack(TrackKind kind, std::optional<std::uint64_t> track_id);
     std::optional<std::int64_t> switchAudioTrack(
         std::uint64_t track_id, std::int64_t earliest_presentation_time_us);
+    bool switchLayer(std::uint64_t video_track_id, std::uint64_t audio_track_id,
+                     std::int64_t earliest_presentation_time_us);
     void setOutputEnabled(bool enabled);
     void push(const AccessUnit& unit);
     void flush();

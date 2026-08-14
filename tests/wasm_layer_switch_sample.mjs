@@ -16,6 +16,7 @@ let selectedInitialTracks = false;
 let switchRequested = false;
 let videoBoundary = null;
 let audioBoundary = null;
+let completedLayer = null;
 let videoSegments = 0;
 let replacementVideoSegments = 0;
 let videoInits = 0;
@@ -35,6 +36,10 @@ const demuxer = new module.TlvDemuxer({
   onMseAudioSplice(splice) {
     audioBoundary = BigInt(splice.presentationTimeUs);
     events.push('splice:audio');
+  },
+  onMseLayerSwitch(layer) {
+    completedLayer = layer;
+    events.push('complete:layer');
   },
   onMseSegment(segment) {
     events.push(`segment:${segment.type}`);
@@ -63,15 +68,11 @@ try {
       selectedInitialTracks = true;
     }
     if (!switchRequested && lowVideo && lowAudio && videoSegments >= 2) {
-      demuxer.selectTrack('video', lowVideo.trackId);
+      assert.equal(demuxer.switchLayer(lowVideo.trackId, lowAudio.trackId, 0n), true);
       switchRequested = true;
-      events.push('request:video');
+      events.push('request:layer');
     }
-    if (videoBoundary !== null && audioBoundary === null && lowAudio) {
-      const boundary = demuxer.switchAudioTrack(lowAudio.trackId, videoBoundary);
-      if (boundary !== null) audioBoundary = BigInt(boundary);
-    }
-    if (audioBoundary !== null && replacementVideoSegments >= 2) break;
+    if (completedLayer !== null && replacementVideoSegments >= 2) break;
   }
   demuxer.flush();
 } finally {
@@ -83,6 +84,9 @@ assert.equal(selectedInitialTracks, true, 'sample did not expose the initial A/V
 assert.equal(switchRequested, true, 'sample did not reach the layer-switch request');
 assert.notEqual(videoBoundary, null, 'target video RAP did not create a splice boundary');
 assert.notEqual(audioBoundary, null, 'prepared lower-layer audio did not splice');
+assert.notEqual(completedLayer, null, 'WASM layer switch did not complete');
+assert.equal(BigInt(completedLayer.videoPresentationTimeUs), videoBoundary);
+assert.equal(BigInt(completedLayer.audioPresentationTimeUs), audioBoundary);
 assert.ok(replacementVideoSegments > 0, 'no target-layer video media followed the splice');
 assert.ok(videoInits >= 2, 'different target HEVC configuration did not emit a new init');
 assert.ok(events.indexOf('splice:video') < events.lastIndexOf('init:video'));

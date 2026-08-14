@@ -614,6 +614,20 @@ public:
         return val(*boundary);
     }
 
+    bool switchLayer(const std::uint64_t video_track_id,
+                     const std::uint64_t audio_track_id,
+                     const std::int64_t earliest_presentation_time_us) {
+        if (!mse_enabled_ || !mse_remuxer_.switchLayer(
+                video_track_id, audio_track_id,
+                earliest_presentation_time_us)) return false;
+        selected_audio_track_ = audio_track_id;
+        demuxer_.selectTrack(aribtlv::TrackKind::Video, video_track_id);
+        if (index_active_ && recording_index_.state() == aribtlv::IndexState::Building) {
+            recording_index_.selectVideoTrack(video_track_id);
+        }
+        return true;
+    }
+
     void setMseOutputEnabled(const bool enabled) {
         mse_remuxer_.setOutputEnabled(enabled);
     }
@@ -1241,6 +1255,7 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("selectService", &WasmDemuxer::selectService)
         .function("selectTrack", &WasmDemuxer::selectTrack)
         .function("switchAudioTrack", &WasmDemuxer::switchAudioTrack)
+        .function("switchLayer", &WasmDemuxer::switchLayer)
         .function("setMseOutputEnabled", &WasmDemuxer::setMseOutputEnabled)
         .function("setSubtitlePassthroughEnabled", &WasmDemuxer::setSubtitlePassthroughEnabled)
         .function("drainApplicationResources", &WasmDemuxer::drainApplicationResources)
