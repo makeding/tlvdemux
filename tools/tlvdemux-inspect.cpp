@@ -104,6 +104,16 @@ struct Inspector final : aribtlv::Sink {
                           << " main=" << info.audio->main_component
                           << " sample-rate=" << info.audio->sample_rate;
             }
+            if (info.subtitle.has_value()) {
+                const auto& subtitle = *info.subtitle;
+                std::cerr << " subtitle-type=" << static_cast<unsigned>(subtitle.type)
+                          << " format=" << static_cast<unsigned>(subtitle.format)
+                          << " operation=" << static_cast<unsigned>(subtitle.operation_mode)
+                          << " timing=" << static_cast<unsigned>(subtitle.timing_mode)
+                          << " display=" << static_cast<unsigned>(subtitle.display_mode)
+                          << " resolution=" << static_cast<unsigned>(subtitle.resolution)
+                          << " compression=" << static_cast<unsigned>(subtitle.compression_type);
+            }
             for (const auto& region : info.presentation_regions) {
                 std::cerr << " presentation=mpu:" << region.mpu_sequence_number
                           << "@layout:" << static_cast<unsigned>(region.layout_number)
@@ -326,7 +336,32 @@ struct Inspector final : aribtlv::Sink {
                       << " pts=" << unit.pts.value << '/' << unit.pts.timescale
                       << " dts=" << unit.dts.value << '/' << unit.dts.timescale
                       << " rap=" << unit.random_access
-                      << " discontinuity=" << unit.discontinuity << '\n';
+                      << " discontinuity=" << unit.discontinuity;
+            if (unit.codec == aribtlv::Codec::Ttml) {
+                std::cerr << " subtitle-compression=";
+                if (unit.subtitle_compression_type.has_value()) {
+                    std::cerr << static_cast<unsigned>(*unit.subtitle_compression_type);
+                } else {
+                    std::cerr << "none";
+                }
+                std::cerr << " subtitle-payload=";
+                if (unit.subtitle_compression_type == std::optional<std::uint8_t>{1} ||
+                    unit.subtitle_compression_type == std::optional<std::uint8_t>{2}) {
+                    std::cerr << "exi";
+                } else if (!unit.data.empty() && unit.data.front() == '<') {
+                    std::cerr << "xml";
+                } else {
+                    std::cerr << "binary";
+                }
+                std::cerr << " first=";
+                const auto count = unit.data.size() < 8 ? unit.data.size() : 8;
+                for (std::size_t index = 0; index < count; ++index) {
+                    if (index != 0) std::cerr << ',';
+                    std::cerr << "0x" << std::hex
+                              << static_cast<unsigned>(unit.data[index]) << std::dec;
+                }
+            }
+            std::cerr << '\n';
         }
         std::ofstream* output = nullptr;
         if (unit.codec == aribtlv::Codec::Hevc && video_track == unit.track_id) output = &video;
