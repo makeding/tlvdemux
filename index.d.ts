@@ -138,8 +138,21 @@ declare namespace createTlvDemuxModule {
   }
 
   interface SubtitleTrackInfo {
+    /** ARIB STD-B60 subtitle_tag. */
+    tag: number;
+    infoVersion: number;
+    /** 0 is caption and 1 is character superimpose. */
+    type: 0 | 1;
+    format: number;
     operationMode: number;
     timingMode: number;
+    displayMode: number;
+    resolution: number;
+    compressionType: number;
+    startMpuSequenceNumber: number | null;
+    /** Unsigned 64-bit NTP reference_start_time, or null when absent. */
+    referenceStartNtp: bigint | null;
+    referenceStartTimeLeapIndicator: number;
   }
 
   interface AssetGroupInfo {

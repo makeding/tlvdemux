@@ -751,8 +751,25 @@ public:
         }
         if (info.subtitle.has_value()) {
             auto subtitle = val::object();
+            subtitle.set("tag", info.subtitle->tag);
+            subtitle.set("infoVersion", info.subtitle->info_version);
+            subtitle.set("type", info.subtitle->type);
+            subtitle.set("format", info.subtitle->format);
             subtitle.set("operationMode", info.subtitle->operation_mode);
             subtitle.set("timingMode", info.subtitle->timing_mode);
+            subtitle.set("displayMode", info.subtitle->display_mode);
+            subtitle.set("resolution", info.subtitle->resolution);
+            subtitle.set("compressionType", info.subtitle->compression_type);
+            subtitle.set("startMpuSequenceNumber",
+                         info.subtitle->start_mpu_sequence_number.has_value()
+                             ? val(*info.subtitle->start_mpu_sequence_number)
+                             : val::null());
+            subtitle.set("referenceStartNtp",
+                         info.subtitle->reference_start_ntp.has_value()
+                             ? val(*info.subtitle->reference_start_ntp)
+                             : val::null());
+            subtitle.set("referenceStartTimeLeapIndicator",
+                         info.subtitle->reference_start_time_leap_indicator);
             event.set("subtitle", subtitle);
         }
         emit("onTrack", event);
