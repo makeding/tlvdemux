@@ -56,12 +56,26 @@ This unified executable replaces the previously installed `tlvdemux-pipe`,
 programs. Existing scripts should insert the corresponding subcommand after
 `tlvdemux`.
 
-On macOS, the VideoToolbox probe can exercise the complete browser-facing MSE
-path without launching a browser. It feeds MMTS through the production
-`MseRemuxer`, validates `tfdt`/`trun` continuity and HEVC sample flags, applies
-Chromium-style `hvc1` conversion, and submits the result to hardware decoding.
-The following also repeats the run at sixteen deterministic random byte
-landings while pacing samples at 3x:
+On macOS, the VideoToolbox probe exercises the native part of the browser-facing
+MSE path without launching a browser. It feeds MMTS through the production
+`MseRemuxer`, applies Chromium-compatible coded-frame discontinuity and random
+access rules, validates `tfdt`/`trun` continuity and HEVC sample flags, and
+submits the result to hardware VideoToolbox decoding. Actual `SourceBuffer`
+scheduling and rendering still require a Chromium browser acceptance run.
+
+This command covers automatic 4K-to-rainfall video/audio fallback on the edge
+sample:
+
+```sh
+./build/tlvdemux-videotoolbox-probe \
+  demo/20260728-101-162500_6fc8390b-bf23-41c3-beb6-6301b012be26-superimpose-sample.mmts \
+  --mse --video-packet-id 0xf300 --audio-packet-id 0xf310 \
+  --fallback-video-packet-id 0xf301 --fallback-audio-packet-id 0xf314 \
+  --max-au 30000 --inflight 8
+```
+
+The following repeats a run at sixteen deterministic random byte landings
+while pacing samples at 3x:
 
 This developer probe is available in source builds and is not included in the
 standalone release executable.

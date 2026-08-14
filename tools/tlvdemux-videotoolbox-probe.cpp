@@ -330,7 +330,9 @@ public:
     std::uint64_t largest_timeline_gap_us() const { return largest_timeline_gap_us_; }
     std::size_t audio_sample_count() const { return audio_sample_count_; }
     std::size_t audio_timeline_gap_count() const { return audio_timeline_gap_count_; }
-    std::uint64_t largest_audio_timeline_gap() const { return largest_audio_timeline_gap_; }
+    std::uint64_t largest_audio_timeline_gap_us() const {
+        return largest_audio_timeline_gap_us_;
+    }
     std::size_t mse_pps_sample_count() const { return mse_pps_sample_count_; }
     std::size_t mse_pps_variant_count() const { return mse_pps_variants_.size(); }
 
@@ -806,7 +808,9 @@ private:
             if (dts > *previous_audio_decode_end_) {
                 const auto gap = dts - *previous_audio_decode_end_;
                 ++audio_timeline_gap_count_;
-                largest_audio_timeline_gap_ = std::max(largest_audio_timeline_gap_, gap);
+                const auto gap_us = scale_to_us(gap, timescale);
+                largest_audio_timeline_gap_us_ = std::max(
+                    largest_audio_timeline_gap_us_, gap_us);
                 std::cerr << "audio timeline gap fragment=" << (audio_fragment_count_ + 1)
                           << " previous_end="
                           << (static_cast<double>(*previous_audio_decode_end_) / timescale)
@@ -893,7 +897,7 @@ private:
     std::size_t audio_fragment_count_ = 0;
     std::size_t audio_sample_count_ = 0;
     std::size_t audio_timeline_gap_count_ = 0;
-    std::uint64_t largest_audio_timeline_gap_ = 0;
+    std::uint64_t largest_audio_timeline_gap_us_ = 0;
     tlvdemux::MseRemuxer mse_remuxer_;
     bool automatic_layer_configured_ = false;
     bool layer_switch_completed_ = false;
@@ -939,7 +943,7 @@ bool tlvdemux::tools::vt_probe::run_probe(const Options& options, const std::uin
               << " largest_gap_us=" << probe.largest_timeline_gap_us()
               << " audio_samples=" << probe.audio_sample_count()
               << " audio_timeline_gaps=" << probe.audio_timeline_gap_count()
-              << " largest_audio_gap=" << probe.largest_audio_timeline_gap()
+              << " largest_audio_gap_us=" << probe.largest_audio_timeline_gap_us()
               << " pps_samples=" << probe.mse_pps_sample_count()
               << " pps_variants=" << probe.mse_pps_variant_count() << '\n';
     return probe.ok();

@@ -56,10 +56,25 @@ tlvdemux inspect --list recording.mmts
 置き換えます。既存 script では `tlvdemux` の後に対応する subcommand を追加してください。
 
 macOS では、ブラウザーを起動せずに VideoToolbox probe でブラウザー向け MSE
-経路全体を検証できます。この probe は MMTS を実際の `MseRemuxer` に入力し、
-`tfdt`／`trun` の連続性と HEVC サンプルフラグを検証し、Chromium と同様の
-`hvc1` 変換を適用してハードウェアデコーダーへ渡します。次の例では、サンプルを
-3 倍速で送りながら、決定的なランダムバイト位置からの再生を 16 回繰り返します。
+経路のネイティブ部分を検証できます。この probe は MMTS を実際の
+`MseRemuxer` に入力し、Chromium 互換の coded-frame discontinuity／RAP 規則を
+適用して、`tfdt`／`trun` の連続性と HEVC サンプルフラグを検証し、ハードウェア
+VideoToolbox デコーダーへ渡します。実際の `SourceBuffer` スケジューリングと
+描画は、別途 Chromium ブラウザーでの受け入れ確認が必要です。
+
+次のコマンドは、境界サンプルで 4K から降雨対応映像・音声への自動切替を
+検証します。
+
+```sh
+./build/tlvdemux-videotoolbox-probe \
+  demo/20260728-101-162500_6fc8390b-bf23-41c3-beb6-6301b012be26-superimpose-sample.mmts \
+  --mse --video-packet-id 0xf300 --audio-packet-id 0xf310 \
+  --fallback-video-packet-id 0xf301 --fallback-audio-packet-id 0xf314 \
+  --max-au 30000 --inflight 8
+```
+
+次の例では、サンプルを 3 倍速で送りながら、決定的なランダムバイト位置からの
+再生を 16 回繰り返します。
 この開発者向け probe は source build で利用でき、単一ファイルの Release には含まれません。
 
 ```sh
