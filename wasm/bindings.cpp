@@ -1096,15 +1096,11 @@ private:
         event.set("subtitleTimingMode", unit.subtitle_timing_mode.has_value()
                                             ? val(*unit.subtitle_timing_mode)
                                             : val::null());
-        event.set("subtitleOperationMode", unit.subtitle_operation_mode.has_value()
-                                               ? val(*unit.subtitle_operation_mode)
-                                               : val::null());
-        event.set("subtitleDisplayMode", unit.subtitle_display_mode.has_value()
-                                              ? val(*unit.subtitle_display_mode)
-                                              : val::null());
-        event.set("subtitleCompressionType", unit.subtitle_compression_type.has_value()
-                                                  ? val(*unit.subtitle_compression_type)
-                                                  : val::null());
+        // Per-access-unit subtitle metadata is temporarily unavailable in the
+        // pinned libaribtlv revision. Track-level metadata remains available.
+        event.set("subtitleOperationMode", val::null());
+        event.set("subtitleDisplayMode", val::null());
+        event.set("subtitleCompressionType", val::null());
         event.set("data", data);
         event.set("ptsValue", unit.pts.value);
         event.set("ptsTimescale", unit.pts.timescale);

@@ -27,11 +27,13 @@ export function sameVideoLayerGroup(left, right) {
 
 export function automaticLayerSwitchEligible(
   currentTrack, currentPtsUs, candidateTrack, candidateRapPtsUs, lagUs,
+  allowQualityUpgrade = true,
 ) {
   if (currentPtsUs === undefined || candidateRapPtsUs === undefined ||
       !sameVideoLayerGroup(currentTrack, candidateTrack)) return false;
   const currentLevel = selectionLevel(currentTrack) ?? 0xff;
   const candidateLevel = selectionLevel(candidateTrack) ?? 0xff;
+  if (candidateLevel < currentLevel && !allowQualityUpgrade) return false;
   return candidateLevel < currentLevel
     ? candidateRapPtsUs + lagUs >= currentPtsUs
     : candidateRapPtsUs > currentPtsUs + lagUs;

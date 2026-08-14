@@ -1,4 +1,3 @@
-import { B62TTMLRenderer } from '/aribb62.js/src/index.js';
 import { DataBroadcastController } from './data-broadcast.js?v=webkit-canvas-plane-v4';
 import {
   automaticLayerSwitchEligible,
@@ -11,6 +10,13 @@ import { shouldRenderSubtitleTrack, subtitleTrackKind } from './subtitle-tracks.
 import { coalesceReadableStream } from './live-stream.mjs?v=asset-groups-v3';
 import { createWorkerTlvDemuxModule } from './worker-tlvdemux.js?v=layer-duration-v2';
 import { MseAppendQueue, finalizeMseMediaSource } from '../mse-append-queue.mjs?v=asset-groups-v3';
+
+const b62RendererClass = import('/aribb62.js/dist/aribb62.js')
+  .then(module => module.B62TTMLRenderer)
+  .catch(error => {
+    console.warn('ARIB-B62 字幕レンダラーを読み込めませんでした', error);
+    return null;
+  });
 
 const MiB = 1024n * 1024n;
 const PLAYBACK_CHUNK = 2n * MiB;
@@ -27,7 +33,10 @@ const SEEK_PREROLL_US = 8000000n;
 const SEEK_PROBE_BYTES = 64n * MiB;
 const MAX_SEEK_PROBE_ATTEMPTS = 5;
 const AUTOMATIC_LAYER_SWITCH_LAG_US = 2000000n;
-const DEFAULT_PLAYBACK_RATE = 2;
+const VIDEO_OUTPUT_STALL_US = 1000000n;
+const VIDEO_SEGMENT_CONTIGUITY_US = 100000n;
+const LAYER_SWITCH_VIDEO_PREROLL_US = 500000n;
+const DEFAULT_PLAYBACK_RATE = 10;
 const LIVE_PLAYBACK_RATE = 1;
 const SHORT_RECORDING_THRESHOLD_SECONDS = 60;
 const URL_STORAGE_KEY = 'tlvdemux.demo.httpUrl';
@@ -74,6 +83,7 @@ let activeVideoSwitch = null;
 let activeAudioSwitch = null;
 let activeSubtitleSwitch = null;
 let activeSubtitleRenderer = null;
+let subtitleRendererRequest = 0;
 let selectedAudioPacketId = null;
 let selectedAudioGroupId = null;
 let preferredAudioPacketId = null;
@@ -85,14 +95,6 @@ let preferredSubtitlePacketId = null;
 let knownSubtitleTracks = new Map();
 let knownTtmlTracks = new Map();
 let playbackQualityTimer = null;
-
-dataBroadcast.setCaptionSubscriptionListener(() => {
-  for (const track of knownTtmlTracks.values()) {
-    if (dataBroadcast.isCaptionSubscribed(track.componentTag)) {
-      activeSubtitleRenderer?.clearTrack(track.packetId);
-    }
-  }
-});
 
 elements.video.defaultPlaybackRate = DEFAULT_PLAYBACK_RATE;
 elements.video.playbackRate = DEFAULT_PLAYBACK_RATE;
@@ -423,19 +425,29 @@ function setRunning(running) {
 }
 
 function createSubtitleRenderer(liveMode) {
+  const request = ++subtitleRendererRequest;
   activeSubtitleRenderer?.destroy();
-  activeSubtitleRenderer = new B62TTMLRenderer({
-    mediaElement: elements.video,
-    overlayElement: elements.subtitleOverlay,
-    isLive: liveMode,
-    maxCues: liveMode ? 300 : 100000,
-    normalFont: '"Rounded M+ 1m for ARIB", "Hiragino Maru Gothic Pro", "BIZ UDGothic", "Yu Gothic Medium", sans-serif',
-    forceStrokeColor: '#000000',
-    strokeWidthInPlane: 4,
-    backgroundPadding: '0 0.08em',
-    lineBackground: true,
-    captionVisible: elements.captionVisible.checked,
-    superimposeVisible: elements.superimposeVisible.checked,
+  activeSubtitleRenderer = null;
+  void b62RendererClass.then(Renderer => {
+    if (!Renderer || request !== subtitleRendererRequest) return;
+    try {
+      activeSubtitleRenderer = new Renderer({
+        mediaElement: elements.video,
+        overlayElement: elements.subtitleOverlay,
+        isLive: liveMode,
+        maxCues: liveMode ? 300 : 100000,
+        normalFont: '"Rounded M+ 1m for ARIB", "Hiragino Maru Gothic Pro", "BIZ UDGothic", "Yu Gothic Medium", sans-serif',
+        forceStrokeColor: '#000000',
+        strokeWidthInPlane: 4,
+        backgroundPadding: '0 0.08em',
+        lineBackground: true,
+        captionVisible: elements.captionVisible.checked,
+        superimposeVisible: elements.superimposeVisible.checked,
+      });
+    } catch (error) {
+      activeSubtitleRenderer = null;
+      console.warn('ARIB-B62 字幕レンダラーを初期化できませんでした', error);
+    }
   });
 }
 
@@ -451,6 +463,7 @@ function timestampMicroseconds(value, timescale) {
 }
 
 function releaseMedia() {
+  subtitleRendererRequest += 1;
   if (playbackQualityTimer !== null) clearInterval(playbackQualityTimer);
   playbackQualityTimer = null;
   activeMediaSource = null;
@@ -698,6 +711,8 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const videoProgress = new Map();
   const audioProgress = new Map();
   let automaticLayerSwitchInFlight = false;
+  let automaticQualityUpgradeAllowed = startTimeSeconds === 0;
+  const retiredVideoPacketIds = new Set();
   let selectedAudio = null;
   let selectedSubtitle = null;
   let subtitleEventCount = 0;
@@ -706,11 +721,12 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   let callbackError = null;
   let recoverableErrors = 0;
   let incompleteInputTail = false;
-  let played = reuseMedia && !elements.video.paused;
+  let played = startTimeSeconds === 0 && reuseMedia && !elements.video.paused;
   let suppressOutput = startTimeSeconds > 0;
   let headVideoSeen = false;
   let seekProbeActive = false;
   let seekProbeRap = null;
+  let selectedVideoOutputEndUs = null;
   const pendingInits = new Map();
   const pendingSegments = new Map([['video', []], ['audio', []]]);
   const mseSegmentTypes = new Set();
@@ -718,7 +734,8 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
      durationSeconds(probeResult.duration) * 1000000));
 
   const maybeStartPlayback = () => {
-    if (played || generation !== runGeneration || queues.size < 2) return;
+    if (generation !== runGeneration || queues.size < 2) return;
+    if (played) return;
     let commonRanges = null;
     for (const queue of queues.values()) {
       const ranges = queue.bufferedRanges();
@@ -828,6 +845,15 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
           mseSegmentTypes.add(segment.type);
           appendLog(`${segment.type} media segment 開始`);
         }
+        if (segment.type === 'video') {
+          const start = BigInt(segment.startTimeUs);
+          const end = BigInt(segment.endTimeUs);
+          if (selectedVideoOutputEndUs === null ||
+              (start <= selectedVideoOutputEndUs + VIDEO_SEGMENT_CONTIGUITY_US &&
+               end > selectedVideoOutputEndUs)) {
+            selectedVideoOutputEndUs = end;
+          }
+        }
         appendSegment(segment);
       }
       catch (error) { callbackError = error; }
@@ -905,11 +931,15 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const synchronizeAudioForVideoLayer = () => {
     const targetLevel = selectionLevel(selectedVideoTrack);
     if (targetLevel === null) return;
-    const currentTrack = [...knownAudioTracks.values()].find(
+    const availableAudioTracks = [...tracks.values()].filter(track => track.kind === 'audio');
+    const currentTrack = availableAudioTracks.find(
       track => track.trackId === selectedAudio,
-    ) || preferredMseAudioTrack(knownAudioTracks, preferredAudioPacketId);
+    ) || preferredMseAudioTrack(
+      new Map(availableAudioTracks.map(track => [track.packetId, track])),
+      preferredAudioPacketId,
+    );
     const corresponding = correspondingAudioTrack(
-      knownAudioTracks.values(), currentTrack, targetLevel, selectedAudioGroupId,
+      availableAudioTracks, currentTrack, targetLevel, selectedAudioGroupId,
     );
     if (!corresponding || !mseAudioTrackSupported(corresponding.track)) return;
     selectedAudioGroupId = corresponding.groupIdentification;
@@ -958,6 +988,9 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       tracks.set(track.trackId, track);
       appendLog(`トラック ${track.kind} packet_id=0x${track.packetId.toString(16)} codec=${track.codec}`);
       if (track.kind === 'video') {
+        if (retiredVideoPacketIds.delete(track.packetId)) {
+          automaticQualityUpgradeAllowed = true;
+        }
         knownVideoTracks.set(track.packetId, track);
         renderVideoTracks();
         const previousGroup = selectedVideoTrack?.assetGroups?.[0];
@@ -1030,6 +1063,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     onTrackRemoved(track) {
       tracks.delete(track.trackId);
       if (track.kind === 'video') {
+        retiredVideoPacketIds.add(track.packetId);
         knownVideoTracks.delete(track.packetId);
         if (selectedVideo === track.trackId) selectedVideo = null;
         renderVideoTracks();
@@ -1108,10 +1142,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
           if (!track || !activeSubtitleRenderer) return;
           const trackKind = subtitleTrackKind(track);
           if (!shouldRenderSubtitleTrack(track, selectedSubtitle)) return;
-          if (dataBroadcast.isCaptionSubscribed(unit.componentTag)) {
-            activeSubtitleRenderer.clearTrack(track.packetId);
-            return;
-          }
           if (unit.discontinuity) activeSubtitleRenderer.clearTrack(track.packetId);
           const subtitleData = {
             packetId: track.packetId,
@@ -1166,7 +1196,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   await demuxer.setSubtitlePassthroughEnabled(true);
   await demuxer.setMseOutputEnabled(!suppressOutput);
   activeDemuxer = demuxer;
-  activeVideoSwitch = async packetId => {
+  activeVideoSwitch = async (packetId, earliestUs = null) => {
     const track = knownVideoTracks.get(packetId);
     if (!track) throw new Error(`映像 packet_id=0x${packetId.toString(16)} は利用できません`);
     if (track.trackId === selectedVideo) return;
@@ -1180,7 +1210,8 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     if (!corresponding) {
       throw new Error('切替先の映像レイヤーに対応する音声がありません');
     }
-    const earliest = BigInt(Math.round((elements.video.currentTime + 0.1) * 1000000));
+    const earliest = earliestUs ??
+      BigInt(Math.round((elements.video.currentTime + 0.1) * 1000000));
     pendingLayerSwitch = {
       video: track,
       audio: corresponding.track,
@@ -1196,18 +1227,24 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     appendLog(`${videoTrackLabel(track)} を次の RAP で切り替えます`);
   };
   const maybeSwitchLayer = async () => {
-    if (liveMode || wantedVideoPacketId !== undefined ||
+    if (!played || liveMode || wantedVideoPacketId !== undefined ||
         automaticLayerSwitchInFlight || pendingLayerSwitch || selectedVideoTrack === null) return;
     const current = videoProgress.get(selectedVideo);
     if (current?.lastPtsUs === undefined) return;
+    const outputStalled = selectedVideoOutputEndUs !== null &&
+      current.lastPtsUs > selectedVideoOutputEndUs + VIDEO_OUTPUT_STALL_US;
     const candidates = [...knownVideoTracks.values()]
       .filter(track => track.trackId !== selectedVideo &&
         sameVideoLayerGroup(selectedVideoTrack, track))
       .map(track => ({track, progress: videoProgress.get(track.trackId)}))
-      .filter(candidate => automaticLayerSwitchEligible(
-        selectedVideoTrack, current.lastPtsUs, candidate.track,
-        candidate.progress?.lastRandomAccessPtsUs, AUTOMATIC_LAYER_SWITCH_LAG_US,
-      ))
+      .filter(candidate => {
+        const rap = candidate.progress?.lastRandomAccessPtsUs;
+        return (outputStalled && rap !== undefined && rap > selectedVideoOutputEndUs) ||
+          automaticLayerSwitchEligible(
+            selectedVideoTrack, current.lastPtsUs, candidate.track,
+            rap, AUTOMATIC_LAYER_SWITCH_LAG_US, automaticQualityUpgradeAllowed,
+          );
+      })
       .sort((left, right) => {
         const levelDifference = (selectionLevel(left.track) ?? 0xff) -
           (selectionLevel(right.track) ?? 0xff);
@@ -1238,10 +1275,20 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     const target = targetChoice?.candidate.track;
     if (!target) return;
     automaticLayerSwitchInFlight = true;
+    const currentLevel = selectionLevel(selectedVideoTrack) ?? 0xff;
+    const targetLevel = selectionLevel(target) ?? 0xff;
+    const disablesQualityUpgrade = outputStalled && targetLevel > currentLevel;
+    const previousQualityUpgradeAllowed = automaticQualityUpgradeAllowed;
+    if (disablesQualityUpgrade) automaticQualityUpgradeAllowed = false;
     try {
-      await activeVideoSwitch(target.packetId);
+      const earliest = outputStalled && selectedVideoOutputEndUs !== null
+        ? (selectedVideoOutputEndUs > LAYER_SWITCH_VIDEO_PREROLL_US
+          ? selectedVideoOutputEndUs - LAYER_SWITCH_VIDEO_PREROLL_US : 0n)
+        : null;
+      await activeVideoSwitch(target.packetId, earliest);
       appendLog(`${videoTrackLabel(target)} へ自動切替します`);
     } catch (error) {
+      automaticQualityUpgradeAllowed = previousQualityUpgradeAllowed;
       automaticLayerSwitchInFlight = false;
       appendLog(`自動レイヤー切替に失敗: ${error.message || error}`);
     }
@@ -1364,6 +1411,9 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     }
     offset = seekProbeRap.restartOffset;
     await demuxer.reposition(offset, true);
+    videoProgress.clear();
+    audioProgress.clear();
+    selectedVideoOutputEndUs = null;
     suppressOutput = false;
     await demuxer.setMseOutputEnabled(true);
     if (!reuseMedia) {
@@ -1390,7 +1440,8 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     }
   }
   while ((!liveMode || !source.stream) && offset < source.size && generation === runGeneration) {
-    const length = source.size - offset < PLAYBACK_CHUNK ? source.size - offset : PLAYBACK_CHUNK;
+    const length = source.size - offset < PLAYBACK_CHUNK
+      ? source.size - offset : PLAYBACK_CHUNK;
     const data = await source.read(offset, length);
     if (generation !== runGeneration) return;
     if (!await demuxer.push(data)) throw new Error(`分離入力に失敗しました: ${offset}`);

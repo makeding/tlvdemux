@@ -296,6 +296,13 @@ When a finite consumer closes the pipe after receiving all requested frames,
 ./build/tlvdemux analyze test.tlv
 ```
 
+For TTML tracks, `inspect --list` reports the B60 subtitle signalling fields,
+including `compression=0`, `compression=1` (schema-informed EXI), or
+`compression=2` (schema-less EXI). With `--trace-au`, each subtitle access
+unit also reports `subtitle-compression`, a payload classification
+(`xml`, `exi`, or `binary`), and its first bytes, so a real EXI sample can
+be identified before handing it to a renderer.
+
 `tlvdemux analyze` scans the complete recording and inventories reconstructed
 ARIB-HTML5 resources. For each virtual file it reports its path, MIME type,
 decoded size and CRC32, carousel occurrence count, exact duplicate count, and

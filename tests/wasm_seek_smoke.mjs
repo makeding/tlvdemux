@@ -2,11 +2,15 @@ import assert from 'node:assert/strict';
 import { open } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 
-const [modulePath, mediaPath, targetText, durationText, audioPacketText] = process.argv.slice(2);
+const [modulePath, mediaPath, targetText, durationText, audioPacketText, videoPacketText] =
+  process.argv.slice(2);
 assert.ok(modulePath && mediaPath && targetText && durationText,
-  'usage: node tests/wasm_seek_smoke.mjs TLVDEMUX_JS SAMPLE TARGET_S DURATION_S [AUDIO_PACKET_ID]');
+  'usage: node tests/wasm_seek_smoke.mjs TLVDEMUX_JS SAMPLE TARGET_S DURATION_S ' +
+  '[AUDIO_PACKET_ID] [VIDEO_PACKET_ID]');
 const wantedAudioPacketId = audioPacketText === undefined ? null : Number(audioPacketText);
+const wantedVideoPacketId = videoPacketText === undefined ? null : Number(videoPacketText);
 if (wantedAudioPacketId !== null) assert.ok(Number.isInteger(wantedAudioPacketId), 'invalid audio packet id');
+if (wantedVideoPacketId !== null) assert.ok(Number.isInteger(wantedVideoPacketId), 'invalid video packet id');
 const targetUs = BigInt(Math.round(Number(targetText) * 1000000));
 const durationUs = BigInt(Math.round(Number(durationText) * 1000000));
 const require = createRequire(import.meta.url);
@@ -25,7 +29,8 @@ let demuxer;
 demuxer = new module.TlvDemuxer({
   onMseSegment(segment) { mseSegments[segment.type] += 1; },
   onTrack(track) {
-    if (track.kind === 'video' && videoTrack === null) {
+    if (track.kind === 'video' && videoTrack === null &&
+        (wantedVideoPacketId === null || track.packetId === wantedVideoPacketId)) {
       videoTrack = track.trackId;
       demuxer.selectTrack('video', videoTrack);
       assert.equal(demuxer.setIndexDuration(durationUs), true);
@@ -123,6 +128,7 @@ console.log(JSON.stringify({
   inputOffset: firstSeekUnit.inputOffset.toString(),
   mseSegments,
   audioPacketId: wantedAudioPacketId,
+  videoPacketId: wantedVideoPacketId,
 }, null, 2));
 demuxer.delete();
 assert.ok(Number(firstSeekUnit.ptsValue) / firstSeekUnit.ptsTimescale <= Number(targetText) + 0.25,

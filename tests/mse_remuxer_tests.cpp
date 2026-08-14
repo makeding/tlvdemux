@@ -858,7 +858,7 @@ void test_layer_switch_coordinates_video_rap_and_prepared_audio() {
     auto replacement = hevc_unit(3, 100000, 100000, true, true);
     remuxer.push(replacement);
 
-    const auto expected_audio_boundary = audio_time_us(5 * frame);
+    const auto expected_audio_boundary = audio_time_us(4 * frame);
     check(sink.layer_switches.size() == 1,
           "prepared A/V layer switch did not emit completion");
     const auto& completed = sink.layer_switches.front();
@@ -882,6 +882,42 @@ void test_layer_switch_coordinates_video_rap_and_prepared_audio() {
     check(!remuxer.endOfStream().has_value() &&
               sink.layer_switch_cancellations.empty(),
           "completed layer switch was later reported as cancelled");
+}
+
+void test_layer_switch_replays_cached_target_video_from_requested_rap() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.push(hevc_unit(2, 0, 0, true, true));
+
+    remuxer.push(hevc_unit(
+        3, 800000, 800000, std::vector<unsigned>{}, true));
+    remuxer.push(hevc_unit(3, 850000, 850000, true, false));
+    remuxer.push(hevc_unit(3, 1000000, 1000000, true, false));
+    remuxer.push(hevc_unit(3, 1033367, 1033367, false, false));
+
+    constexpr std::int64_t frame = 1024;
+    for (std::int64_t index = 47; index < 72; ++index) {
+        remuxer.push(audio_unit(9, index * frame));
+    }
+    const auto segment_count = sink.segments.size();
+    check(remuxer.switchLayer(3, 9, 900000),
+          "cached layer switch request was rejected");
+
+    check(sink.layer_switches.size() == 1,
+          "cached target video was not replayed synchronously");
+    check(sink.layer_switches.front().video_presentation_time_us == 1000000,
+          "cached switch ignored the requested earliest RAP");
+    check(sink.layer_switches.front().audio_presentation_time_us == 900000,
+          "cached video replay did not align prepared target audio");
+    check(std::any_of(sink.segments.begin(), sink.segments.end(),
+              [](const tlvdemux::MseMediaSegment& segment) {
+                  return segment.type == "audio" && segment.start_time_us == 900000;
+              }),
+          "cached layer switch did not rebase replacement audio media");
+    check(sink.segments.size() > segment_count,
+          "cached video replay did not emit replacement media");
 }
 
 void test_layer_switch_waits_for_target_audio_after_video_rap() {
@@ -908,8 +944,7 @@ void test_layer_switch_waits_for_target_audio_after_video_rap() {
           "layer switch exposed target video before audio had 400ms prepared");
     remuxer.push(audio_unit(9, 23 * frame));
     check(sink.layer_switches.size() == 1 &&
-              sink.layer_switches.front().audio_presentation_time_us ==
-                  audio_time_us(5 * frame),
+              sink.layer_switches.front().audio_presentation_time_us == 0,
           "layer switch did not complete after target audio had 400ms prepared");
 }
 
@@ -942,8 +977,7 @@ void test_layer_switch_retries_distant_audio_at_later_video_boundary() {
     remuxer.push(aligned_replacement);
     check(sink.layer_switches.size() == 1 &&
               sink.layer_switches.front().video_presentation_time_us == 3100000 &&
-              sink.layer_switches.front().audio_presentation_time_us >= 3100000 &&
-              sink.layer_switches.front().audio_presentation_time_us <= 5100000,
+              sink.layer_switches.front().audio_presentation_time_us == 3000000,
           "layer switch did not retry at an A/V-aligned video RAP");
 }
 
@@ -1219,6 +1253,7 @@ int main() {
     test_audio_switch_uses_cached_frame_boundary_without_video_rap();
     test_video_track_switch_preserves_prepared_alternate_audio();
     test_layer_switch_coordinates_video_rap_and_prepared_audio();
+    test_layer_switch_replays_cached_target_video_from_requested_rap();
     test_layer_switch_waits_for_target_audio_after_video_rap();
     test_layer_switch_retries_distant_audio_at_later_video_boundary();
     test_unspecified_media_timescale_is_not_remuxed();

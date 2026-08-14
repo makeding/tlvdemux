@@ -37,6 +37,8 @@ const lag = 2000000n;
 assert.equal(automaticLayerSwitchEligible(videoHigh, 10000000n, videoLow, 12000001n, lag), true);
 assert.equal(automaticLayerSwitchEligible(videoHigh, 10000000n, videoLow, 12000000n, lag), false);
 assert.equal(automaticLayerSwitchEligible(videoLow, 10000000n, videoHigh, 8000000n, lag), true);
+assert.equal(automaticLayerSwitchEligible(
+  videoLow, 10000000n, videoHigh, 8000000n, lag, false), false);
 assert.equal(automaticLayerSwitchEligible(videoLow, 10000000n, videoHigh, 7999999n, lag), false);
 assert.equal(automaticLayerSwitchEligible(videoLow, 10000000n,
   {...videoHigh, contextId: 2}, 10000000n, lag), false);

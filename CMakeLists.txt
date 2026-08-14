@@ -47,6 +47,7 @@ add_library(tlvdemux
     src/mse/hevc_parser.cpp
     src/mse/latm_parser.cpp
     src/mse/mp4_builder.cpp
+    src/mse/video_access_unit_history.cpp
     wasm/mse_remuxer.cpp
     src/playback.cpp
 )

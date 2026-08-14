@@ -3,6 +3,7 @@
 #include "mse/hevc_parser.hpp"
 #include "mse/latm_parser.hpp"
 #include "mse/mp4_builder.hpp"
+#include "mse/video_access_unit_history.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -27,6 +28,7 @@ using tlvdemux::detail::mse::LatmParser;
 using tlvdemux::detail::mse::Mp4Track;
 using tlvdemux::detail::mse::NaluView;
 using tlvdemux::detail::mse::Sample;
+using tlvdemux::detail::mse::VideoAccessUnitHistory;
 using tlvdemux::detail::mse::annex_b_views;
 using tlvdemux::detail::mse::append;
 using tlvdemux::detail::mse::copy_nalu;
@@ -643,7 +645,8 @@ public:
     }
 
     std::optional<std::int64_t> activate_from(
-        const std::int64_t earliest_presentation_time_us) {
+        const std::int64_t earliest_presentation_time_us,
+        const std::optional<std::int64_t> output_boundary_us = std::nullopt) {
         if (!track_) return std::nullopt;
         const auto first = std::find_if(history_.begin(), history_.end(),
             [this, earliest_presentation_time_us](const Sample& sample) {
@@ -652,12 +655,19 @@ public:
             });
         if (first == history_.end()) return std::nullopt;
         clear_resume();
-        const auto boundary_us = scaled(first->pts, track_->timescale, 1000000);
+        const auto source_boundary = first->pts;
+        const auto boundary_us = output_boundary_us.value_or(
+            scaled(source_boundary, track_->timescale, 1000000));
+        const auto output_boundary = scaled(boundary_us, 1000000, track_->timescale);
+        const auto timestamp_shift = source_boundary - output_boundary;
         output_.audio_splice(boundary_us);
         BaseMuxer::activate();
         for (auto iterator = first; iterator != history_.end(); ++iterator) {
             auto sample = *iterator;
-            if (enqueue(std::move(sample))) last_enqueued_dts_ = iterator->dts;
+            sample.dts -= timestamp_shift;
+            sample.pts -= timestamp_shift;
+            const auto dts = sample.dts;
+            if (enqueue(std::move(sample))) last_enqueued_dts_ = dts;
         }
         flush();
         return boundary_us;
@@ -802,6 +812,7 @@ public:
         if (kind == aribtlv::TrackKind::Video) {
             video.cancel_staged_switch();
             output.discard_staged_video();
+            video_history.clear();
             video_id = id;
             return cancelled;
         }
@@ -835,13 +846,14 @@ public:
     }
 
     std::optional<std::int64_t> switch_audio(
-        const std::uint64_t id, const std::int64_t earliest_presentation_time_us) {
+        const std::uint64_t id, const std::int64_t earliest_presentation_time_us,
+        const std::optional<std::int64_t> output_boundary_us = std::nullopt) {
         if (pending_layer) return std::nullopt;
         if (audio_id == id && active_audio != nullptr) return std::nullopt;
         const auto candidate = audio.find(id);
         if (candidate == audio.end()) return std::nullopt;
         const auto boundary = candidate->second.activate_from(
-            earliest_presentation_time_us);
+            earliest_presentation_time_us, output_boundary_us);
         if (!boundary.has_value()) return std::nullopt;
         if (active_audio) active_audio->discard();
         audio_id = id;
@@ -860,6 +872,10 @@ public:
             earliest_presentation_time_us, std::nullopt};
         video.stage_next_switch();
         video_id = target_video_id;
+        for (const auto& unit : video_history.take_from(
+                 target_video_id, earliest_presentation_time_us)) {
+            push_selected_video(unit);
+        }
         return true;
     }
 
@@ -892,11 +908,14 @@ public:
             return;
         }
         const auto completed = *pending_layer;
+        const auto audio_output_boundary = std::max(
+            completed.earliest_presentation_time_us,
+            *completed.video_boundary_us - kLayerSwitchAudioBufferUs);
         pending_layer.reset();
         video.flush();
         output.commit_staged_video();
         const auto boundary = switch_audio(
-            completed.audio_track_id, earliest_audio);
+            completed.audio_track_id, earliest_audio, audio_output_boundary);
         if (!boundary) return;
         output.layer_switch(
             completed.video_track_id, completed.audio_track_id,
@@ -907,16 +926,11 @@ public:
         if ((unit.codec == aribtlv::Codec::Hevc ||
              unit.codec == aribtlv::Codec::AacLatm) &&
             (unit.pts.timescale <= 1 || unit.dts.timescale <= 1)) return;
-        if (video_id && unit.track_id == *video_id) {
-            if (unit.discontinuity && !video.is_input_track_switch(unit) &&
-                !(pending_layer && unit.track_id == pending_layer->video_track_id)) {
-                for (auto& entry : audio) entry.second.discontinuity();
-            }
-            video.push(unit, enabled);
-            if (pending_layer && unit.track_id == pending_layer->video_track_id) {
-                const auto boundary = video.take_splice_boundary_us();
-                if (boundary) pending_layer->video_boundary_us = boundary;
-                complete_layer_switch();
+        if (unit.codec == aribtlv::Codec::Hevc) {
+            if (video_id && unit.track_id == *video_id) {
+                push_selected_video(unit);
+            } else {
+                video_history.push(unit);
             }
             return;
         }
@@ -950,6 +964,7 @@ public:
     std::optional<MseLayerSwitchCancelled> reset() {
         auto cancelled = cancel_layer(MseLayerSwitchCancelReason::Reset);
         video.reset();
+        video_history.clear();
         audio.clear();
         active_audio = nullptr;
         output.discard_staged_video();
@@ -959,6 +974,7 @@ public:
     std::optional<MseLayerSwitchCancelled> reposition() {
         auto cancelled = cancel_layer(MseLayerSwitchCancelReason::Reposition);
         video.reset();
+        video_history.clear();
         for (auto& entry : audio) entry.second.discontinuity();
         output.discard_staged_video();
         return cancelled;
@@ -972,6 +988,19 @@ public:
         std::int64_t earliest_presentation_time_us = 0;
         std::optional<std::int64_t> video_boundary_us;
     };
+
+    void push_selected_video(const aribtlv::AccessUnit& unit) {
+        if (unit.discontinuity && !video.is_input_track_switch(unit) &&
+            !(pending_layer && unit.track_id == pending_layer->video_track_id)) {
+            for (auto& entry : audio) entry.second.discontinuity();
+        }
+        video.push(unit, enabled);
+        if (pending_layer && unit.track_id == pending_layer->video_track_id) {
+            const auto boundary = video.take_splice_boundary_us();
+            if (boundary) pending_layer->video_boundary_us = boundary;
+            complete_layer_switch();
+        }
+    }
 
     std::optional<MseLayerSwitchCancelled> cancel_layer(
         const MseLayerSwitchCancelReason reason) {
@@ -997,6 +1026,7 @@ public:
     MseSink& sink;
     Output output;
     HevcMuxer video;
+    VideoAccessUnitHistory video_history;
     std::map<std::uint64_t, AacMuxer> audio;
     AacMuxer* active_audio = nullptr;
     MseOptions options;
