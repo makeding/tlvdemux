@@ -50,6 +50,26 @@ const media = currentTime => ({
 }
 
 {
+  const sourceQueues = queues(
+    [{start: 0, end: 307.14}, {start: 334.37, end: 375.63}],
+    [{start: 0, end: 306.94}, {start: 334.48, end: 375.22}],
+  );
+  const player = media(298.0);
+  const jumps = [];
+  const recovery = createMseGapRecovery({
+    media: player,
+    queues: sourceQueues,
+    seek: (target, previous) => {
+      jumps.push({target, previous});
+      player.currentTime = target;
+    },
+  });
+  recovery.notifyWaiting();
+  assert.deepEqual(jumps, [{target: 334.48, previous: 298.0}],
+    'decoder underflow inside an optimistic buffered range did not skip to later A/V data');
+}
+
+{
   let videoRanges = [
     {start: 0, end: 10},
     {start: 20, end: 20.2},

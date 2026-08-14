@@ -7,6 +7,7 @@ import {
   resolveAudioSelection,
   sameVideoLayerGroup,
   selectionLevel,
+  shouldReprobeVideoLayerForSeek,
 } from '../demo/asset-groups.mjs';
 
 const track = (packetId, groups, componentTag = packetId & 0xff) => ({
@@ -42,6 +43,12 @@ assert.equal(preferredSeekVideoRap([
   {track: videoLow, rap: {ptsUs: 237000000n}},
 ], 500000n).track, videoLow);
 assert.equal(preferredSeekVideoRap([], 500000n), null);
+assert.equal(shouldReprobeVideoLayerForSeek(videoLow, undefined), true,
+  'automatic fallback seek did not request layer reprobe');
+assert.equal(shouldReprobeVideoLayerForSeek(videoLow, 0xf301), false,
+  'explicit fallback selection was overridden during seek');
+assert.equal(shouldReprobeVideoLayerForSeek(videoHigh, undefined), false,
+  'preferred layer seek unnecessarily requested a layer reprobe');
 
 const ordinaryTracks = [audioMainHigh, audioSubHigh, audioMainLow, audioSubLow];
 assert.deepEqual(correspondingAudioTrack(

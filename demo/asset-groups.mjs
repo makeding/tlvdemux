@@ -12,6 +12,10 @@ export function selectionLevel(track, groupIdentification = null) {
     !(track.assetGroups?.length) ? 0 : null;
 }
 
+export function shouldReprobeVideoLayerForSeek(track, explicitPacketId) {
+  return explicitPacketId === undefined && (selectionLevel(track) ?? 0) > 0;
+}
+
 export function sameVideoLayerGroup(left, right) {
   if (!left || !right || left.kind !== 'video' || right.kind !== 'video') return false;
   if (left.contextId !== undefined && right.contextId !== undefined &&

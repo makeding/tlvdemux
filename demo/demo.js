@@ -5,13 +5,14 @@ import {
   preferredSeekVideoRap,
   sameVideoLayerGroup,
   selectionLevel,
+  shouldReprobeVideoLayerForSeek,
 } from './asset-groups.mjs?v=cpp-layer-state-v1';
 import { shouldRenderSubtitleTrack, subtitleTrackKind } from './subtitle-tracks.mjs?v=subtitle-planes-v1';
 import { coalesceReadableStream } from './live-stream.mjs?v=asset-groups-v3';
 import {
   commonBufferedRanges,
   createMseGapRecovery,
-} from './mse-gap-recovery.mjs?v=gap-recovery-v1';
+} from './mse-gap-recovery.mjs?v=gap-recovery-v2';
 import { createWorkerTlvDemuxModule } from './worker-tlvdemux.js?v=cpp-layer-state-v1';
 import {
   MseAppendQueue,
@@ -1654,11 +1655,15 @@ elements.video.addEventListener('seeking', () => {
   const target = elements.video.currentTime;
   if (internalSeekTarget !== null && Math.abs(target - internalSeekTarget) < 0.1) return;
   internalSeekTarget = null;
-  if (isTimeBuffered(target)) return;
+  const currentVideoTrack = knownVideoTracks.get(selectedVideoPacketId);
+  const automaticFallbackActive = shouldReprobeVideoLayerForSeek(
+    currentVideoTrack, parsePacketId());
+  if (isTimeBuffered(target) && !automaticFallbackActive) return;
   clearTimeout(seekTimer);
   seekTimer = setTimeout(() => {
     if (!activeMediaSource) return;
-    appendLog(`ユーザーシーク ${target.toFixed(3)}s`);
+    appendLog(`ユーザーシーク ${target.toFixed(3)}s` +
+      (automaticFallbackActive ? '、映像層を再評価します' : ''));
     stopPlayback(true, true);
     loadAndPlay(target, true);
   }, 120);
