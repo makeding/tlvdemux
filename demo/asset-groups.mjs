@@ -6,7 +6,23 @@ function matchingGroup(track, groupIdentification, selectionLevel = null) {
 }
 
 export function selectionLevel(track, groupIdentification = null) {
-  return matchingGroup(track, groupIdentification)?.selectionLevel ?? null;
+  const group = matchingGroup(track, groupIdentification);
+  if (group) return group.selectionLevel;
+  return track?.kind === 'video' && groupIdentification === null &&
+    !(track.assetGroups?.length) ? 0 : null;
+}
+
+export function sameVideoLayerGroup(left, right) {
+  if (!left || !right || left.kind !== 'video' || right.kind !== 'video') return false;
+  if (left.contextId !== undefined && right.contextId !== undefined &&
+      left.contextId !== right.contextId) return false;
+  const leftGroups = left.assetGroups || [];
+  const rightGroups = right.assetGroups || [];
+  if (!leftGroups.length && !rightGroups.length) return false;
+  if (!leftGroups.length || !rightGroups.length) return true;
+  return leftGroups.some(leftGroup =>
+    rightGroups.some(rightGroup =>
+      leftGroup.groupIdentification === rightGroup.groupIdentification));
 }
 
 export function correspondingAudioTrack(tracks, currentTrack, targetLevel, activeGroupId = null) {

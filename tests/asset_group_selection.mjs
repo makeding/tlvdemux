@@ -4,6 +4,7 @@ import {
   audioTrackChoices,
   correspondingAudioTrack,
   resolveAudioSelection,
+  sameVideoLayerGroup,
   selectionLevel,
 } from '../demo/asset-groups.mjs';
 
@@ -12,8 +13,12 @@ const track = (packetId, groups, componentTag = packetId & 0xff) => ({
   ([groupIdentification, selectionLevel]) => ({groupIdentification, selectionLevel}),
 )});
 
-const videoHigh = track(0xf300, [[0x00, 0]]);
-const videoLow = track(0xf301, [[0x00, 1]]);
+const videoHigh = {kind: 'video', contextId: 1, packetId: 0xf300, componentTag: 0,
+  assetGroups: [{groupIdentification: 0x00, selectionLevel: 0}]};
+const videoLow = {kind: 'video', contextId: 1, packetId: 0xf301, componentTag: 1,
+  assetGroups: [{groupIdentification: 0x00, selectionLevel: 1}]};
+const videoBase = {kind: 'video', contextId: 1, packetId: 0xf302, componentTag: 0,
+  assetGroups: []};
 const audioMainHigh = track(0xf310, [[0x10, 0]]);
 const audioSubHigh = track(0xf311, [[0x11, 0]]);
 const audioMainLow = track(0xf314, [[0x10, 1]]);
@@ -22,7 +27,11 @@ const audioSharedLow = track(0xf316, [[0x10, 1], [0x11, 1]]);
 
 assert.equal(selectionLevel(videoHigh), 0);
 assert.equal(selectionLevel(videoLow), 1);
+assert.equal(selectionLevel(videoBase), 0);
 assert.equal(selectionLevel({}), null);
+assert.equal(sameVideoLayerGroup(videoBase, videoLow), true);
+assert.equal(sameVideoLayerGroup(videoHigh, videoLow), true);
+assert.equal(sameVideoLayerGroup(videoBase, {...videoBase, packetId: 0xf303}), false);
 
 const ordinaryTracks = [audioMainHigh, audioSubHigh, audioMainLow, audioSubLow];
 assert.deepEqual(correspondingAudioTrack(

@@ -26,12 +26,11 @@ const groupsByPacketId = Object.fromEntries(tracks.map(track => [
   `0x${track.packetId.toString(16)}`,
   track.assetGroups.map(group => [group.groupIdentification, group.selectionLevel]),
 ]));
-assert.deepEqual(groupsByPacketId['0xf300'], [[0x00, 0]]);
+assert.deepEqual(groupsByPacketId['0xf300'], []);
 assert.deepEqual(groupsByPacketId['0xf301'], [[0x00, 1]]);
 assert.deepEqual(groupsByPacketId['0xf310'], [[0x10, 0]]);
-assert.deepEqual(groupsByPacketId['0xf314'], [[0x10, 1]]);
+assert.deepEqual(groupsByPacketId['0xf314'], [[0x10, 1], [0x11, 1]]);
 assert.deepEqual(groupsByPacketId['0xf311'], [[0x11, 0]]);
-assert.deepEqual(groupsByPacketId['0xf315'], [[0x11, 1]]);
 const highVideo = tracks.find(track => track.packetId === 0xf300);
 assert.deepEqual(highVideo.video, {
   hdrWcgIdc: null,

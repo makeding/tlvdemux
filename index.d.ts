@@ -636,6 +636,7 @@ declare namespace createTlvDemuxModule {
     state(): DurationProbeState;
     failure(): DurationProbeFailure;
     duration(): DurationInfo | null;
+    selectedVideoPacketId(): number | null;
     generation(): bigint;
     transferredBytes(): bigint;
   }

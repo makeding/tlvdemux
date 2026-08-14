@@ -518,6 +518,11 @@ public:
         return duration_value(probe_.duration());
     }
 
+    val selectedVideoPacketId() const {
+        const auto packet_id = probe_.selectedVideoPacketId();
+        return packet_id.has_value() ? val(*packet_id) : val::null();
+    }
+
 private:
     template <typename T>
     static void assign_if_present(const val& object, const char* name, T& destination) {
@@ -637,7 +642,7 @@ public:
         selected_video_track_ = video_track_id;
         demuxer_.selectTrack(aribtlv::TrackKind::Video, video_track_id);
         if (index_active_ && recording_index_.state() == aribtlv::IndexState::Building) {
-            recording_index_.selectVideoTrack(video_track_id);
+            recording_index_.switchVideoTrack(video_track_id);
         }
         return true;
     }
@@ -1318,6 +1323,7 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("state", &WasmDurationProbe::state)
         .function("failure", &WasmDurationProbe::failure)
         .function("duration", &WasmDurationProbe::duration)
+        .function("selectedVideoPacketId", &WasmDurationProbe::selectedVideoPacketId)
         .function("generation", &WasmDurationProbe::generation)
         .function("transferredBytes", &WasmDurationProbe::transferredBytes);
 }

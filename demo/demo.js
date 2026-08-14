@@ -3,8 +3,9 @@ import { DataBroadcastController } from './data-broadcast.js?v=webkit-canvas-pla
 import {
   audioTrackChoices,
   correspondingAudioTrack,
+  sameVideoLayerGroup,
   selectionLevel,
-} from './asset-groups.mjs?v=layer-switch-v1';
+} from './asset-groups.mjs?v=layer-switch-v2';
 import { shouldRenderSubtitleTrack, subtitleTrackKind } from './subtitle-tracks.mjs?v=subtitle-planes-v1';
 import { coalesceReadableStream } from './live-stream.mjs?v=asset-groups-v3';
 import { createWorkerTlvDemuxModule } from './worker-tlvdemux.js?v=asset-groups-v3';
@@ -24,6 +25,7 @@ const MAX_SEEK_PREROLL_BYTES = 128n * MiB;
 const SEEK_PREROLL_US = 8000000n;
 const SEEK_PROBE_BYTES = 64n * MiB;
 const MAX_SEEK_PROBE_ATTEMPTS = 5;
+const AUTOMATIC_LAYER_SWITCH_LAG_US = 2000000n;
 const DEFAULT_PLAYBACK_RATE = 2;
 const LIVE_PLAYBACK_RATE = 1;
 const SHORT_RECORDING_THRESHOLD_SECONDS = 60;
@@ -524,6 +526,7 @@ async function probeDuration(source, generation) {
   }
   const result = {
     duration: await probe.duration(),
+    videoPacketId: await probe.selectedVideoPacketId(),
     transferred: await probe.transferredBytes(),
   };
   probe.delete();
@@ -686,6 +689,8 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   let selectedVideo = null;
   let selectedVideoTrack = null;
   let pendingLayerSwitch = null;
+  const videoProgress = new Map();
+  let automaticLayerSwitchInFlight = false;
   let selectedAudio = null;
   let selectedSubtitle = null;
   let subtitleEventCount = 0;
@@ -844,6 +849,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       if (!pending || pending.video.trackId !== layer.videoTrackId ||
           pending.audio.trackId !== layer.audioTrackId) return;
       pendingLayerSwitch = null;
+      automaticLayerSwitchInFlight = false;
       selectedVideo = pending.video.trackId;
       selectedVideoTrack = pending.video;
       selectedVideoPacketId = pending.video.packetId;
@@ -864,6 +870,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       if (!pending || pending.video.trackId !== cancelled.videoTrackId ||
           pending.audio.trackId !== cancelled.audioTrackId) return;
       pendingLayerSwitch = null;
+      automaticLayerSwitchInFlight = false;
       renderVideoTracks();
       renderAudioTracks();
       const reason = {
@@ -1049,6 +1056,12 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     },
     onAccessUnitView(unit) {
       try {
+        if (unit.codec === 'hevc') {
+          const progress = videoProgress.get(unit.trackId) || {};
+          progress.lastPtsUs = unit.ptsValue;
+          if (unit.randomAccess) progress.lastRandomAccessPtsUs = unit.ptsValue;
+          videoProgress.set(unit.trackId, progress);
+        }
         const subtitleTrack = tracks.get(unit.trackId);
         if (!suppressOutput && unit.codec === 'ttml' && subtitleTrack?.kind === 'subtitle') {
           dataBroadcast.captionDataChanged(unit);
@@ -1163,6 +1176,36 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       throw new Error('映像レイヤー切替を開始できませんでした');
     }
     appendLog(`${videoTrackLabel(track)} を次の RAP で切り替えます`);
+  };
+  const maybeSwitchLayer = async () => {
+    if (liveMode || wantedVideoPacketId !== undefined ||
+        automaticLayerSwitchInFlight || pendingLayerSwitch || selectedVideoTrack === null) return;
+    const current = videoProgress.get(selectedVideo);
+    if (current?.lastPtsUs === undefined) return;
+    const candidates = [...knownVideoTracks.values()]
+      .filter(track => track.trackId !== selectedVideo &&
+        sameVideoLayerGroup(selectedVideoTrack, track))
+      .map(track => ({track, progress: videoProgress.get(track.trackId)}))
+      .filter(candidate => candidate.progress?.lastRandomAccessPtsUs !== undefined &&
+        candidate.progress.lastRandomAccessPtsUs >
+          current.lastPtsUs + AUTOMATIC_LAYER_SWITCH_LAG_US)
+      .sort((left, right) => {
+        if (right.progress.lastRandomAccessPtsUs !== left.progress.lastRandomAccessPtsUs) {
+          return right.progress.lastRandomAccessPtsUs > left.progress.lastRandomAccessPtsUs ? 1 : -1;
+        }
+        return (selectionLevel(left.track) ?? 0xff) - (selectionLevel(right.track) ?? 0xff) ||
+          left.track.packetId - right.track.packetId;
+      });
+    const target = candidates[0]?.track;
+    if (!target) return;
+    automaticLayerSwitchInFlight = true;
+    try {
+      await activeVideoSwitch(target.packetId);
+      appendLog(`${videoTrackLabel(target)} へ自動切替します`);
+    } catch (error) {
+      automaticLayerSwitchInFlight = false;
+      appendLog(`自動レイヤー切替に失敗: ${error.message || error}`);
+    }
   };
   activeAudioSwitch = async (packetId, groupIdentification = null, earliestUs = null) => {
     let track = [...tracks.values()].find(
@@ -1309,6 +1352,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     if (generation !== runGeneration) return;
     if (!await demuxer.push(data)) throw new Error(`分離入力に失敗しました: ${offset}`);
     if (callbackError) throw callbackError;
+    await maybeSwitchLayer();
     offset += length;
     playbackBytes += length;
     elements.transferred.textContent = `${formatBytes(probeResult.transferred + playbackBytes)} / ${bufferedAhead().toFixed(1)}s`;

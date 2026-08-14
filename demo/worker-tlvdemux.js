@@ -120,6 +120,7 @@ class WorkerDurationProbe extends WorkerObject {
   state() { return this.call('state'); }
   failure() { return this.call('failure'); }
   duration() { return this.call('duration'); }
+  selectedVideoPacketId() { return this.call('selectedVideoPacketId'); }
   transferredBytes() { return this.call('transferredBytes'); }
   pushRange(requestId, offset, bytes, endOfRange) {
     const data = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
