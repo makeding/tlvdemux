@@ -685,7 +685,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const tracks = new Map();
   let selectedVideo = null;
   let selectedVideoTrack = null;
-  let pendingLayerAudio = null;
+  let pendingLayerSwitch = null;
   let selectedAudio = null;
   let selectedSubtitle = null;
   let subtitleEventCount = 0;
@@ -797,7 +797,10 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
           // Keep the reconfiguration in the same SourceBuffer mutation queue:
           // old media -> changeType (when needed) -> new init -> new media.
           queue.appendInitialization(init.data, init.mime);
-          if (type === 'audio') {
+          if (type === 'video') {
+            elements.mediaInfo.textContent = elements.mediaInfo.textContent.replace(
+              / · video [^·]+/, ` · video ${init.width}x${init.height}`);
+          } else if (type === 'audio') {
             elements.mediaInfo.textContent = elements.mediaInfo.textContent.replace(
               / · audio [^·]+$/, ` · audio ${init.sampleRate}Hz ${init.channels}ch`);
           }
@@ -833,18 +836,26 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       if (!queue) throw new Error('映像 SourceBuffer がまだ初期化されていません');
       queue.replaceFrom(boundary);
       appendLog(`映像バッファ切替境界 ${boundary.toFixed(6)}s`);
-      const audio = pendingLayerAudio;
-      pendingLayerAudio = null;
-      if (audio && activeAudioSwitch) {
-        activeAudioSwitch(
-          audio.track.packetId,
-          audio.groupIdentification,
-          BigInt(splice.presentationTimeUs),
-        ).catch(error => {
-          appendLog(`階層音声切替エラー ${error.message || error}`);
-          console.error(error);
-        });
-      }
+    } catch (error) { callbackError = error; }
+  };
+  const onMseLayerSwitch = layer => {
+    try {
+      const pending = pendingLayerSwitch;
+      if (!pending || pending.video.trackId !== layer.videoTrackId ||
+          pending.audio.trackId !== layer.audioTrackId) return;
+      pendingLayerSwitch = null;
+      selectedVideo = pending.video.trackId;
+      selectedVideoTrack = pending.video;
+      selectedVideoPacketId = pending.video.packetId;
+      selectedAudio = pending.audio.trackId;
+      selectedAudioPacketId = pending.audio.packetId;
+      selectedAudioGroupId = pending.groupIdentification;
+      renderVideoTracks();
+      renderAudioTracks();
+      appendLog(`${videoTrackLabel(pending.video)} へ切替完了 ` +
+        `(映像=${(Number(layer.videoPresentationTimeUs) / 1000000).toFixed(6)}s, ` +
+        `音声=${(Number(layer.audioPresentationTimeUs) / 1000000).toFixed(6)}s, ` +
+        `packet_id=0x${pending.audio.packetId.toString(16)})`);
     } catch (error) { callbackError = error; }
   };
   const wantedVideoPacketId = parsePacketId();
@@ -908,6 +919,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     onMseSegment,
     onMseAudioSplice,
     onMseVideoSplice,
+    onMseLayerSwitch,
     onTrack(track) {
       tracks.set(track.trackId, track);
       appendLog(`トラック ${track.kind} packet_id=0x${track.packetId.toString(16)} codec=${track.codec}`);
@@ -1109,22 +1121,30 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     const track = knownVideoTracks.get(packetId);
     if (!track) throw new Error(`映像 packet_id=0x${packetId.toString(16)} は利用できません`);
     if (track.trackId === selectedVideo) return;
+    if (pendingLayerSwitch) throw new Error('別の映像レイヤー切替が進行中です');
     const currentAudio = [...knownAudioTracks.values()].find(
       candidate => candidate.trackId === selectedAudio,
     );
     const corresponding = correspondingAudioTrack(
       knownAudioTracks.values(), currentAudio, selectionLevel(track), selectedAudioGroupId,
     );
-    if (currentAudio && !corresponding) {
+    if (!corresponding) {
       throw new Error('切替先の映像レイヤーに対応する音声がありません');
     }
-    pendingLayerAudio = corresponding;
-    selectedVideo = track.trackId;
-    selectedVideoTrack = track;
-    selectedVideoPacketId = track.packetId;
-    await demuxer.selectTrack('video', track.trackId);
+    const earliest = BigInt(Math.round((elements.video.currentTime + 0.1) * 1000000));
+    pendingLayerSwitch = {
+      video: track,
+      audio: corresponding.track,
+      groupIdentification: corresponding.groupIdentification,
+    };
+    const accepted = await demuxer.switchLayer(
+      track.trackId, corresponding.track.trackId, earliest,
+    );
+    if (!accepted) {
+      pendingLayerSwitch = null;
+      throw new Error('映像レイヤー切替を開始できませんでした');
+    }
     appendLog(`${videoTrackLabel(track)} を次の RAP で切り替えます`);
-    renderVideoTracks();
   };
   activeAudioSwitch = async (packetId, groupIdentification = null, earliestUs = null) => {
     let track = [...tracks.values()].find(

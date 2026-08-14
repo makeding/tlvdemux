@@ -843,7 +843,7 @@ void test_layer_switch_coordinates_video_rap_and_prepared_audio() {
     remuxer.push(hevc_unit(2, 0, 0, true, true));
 
     constexpr std::int64_t frame = 1024;
-    for (std::int64_t index = 0; index < 12; ++index) {
+    for (std::int64_t index = 0; index < 24; ++index) {
         remuxer.push(audio_unit(1, index * frame));
         remuxer.push(audio_unit(9, index * frame));
     }
@@ -867,10 +867,13 @@ void test_layer_switch_coordinates_video_rap_and_prepared_audio() {
     const auto video_splice = std::find(
         sink.events.begin(), sink.events.end(), "video-splice");
     const auto audio_splice = std::find(sink.events.begin(), sink.events.end(), "splice");
+    const auto replacement_video_segment = std::find(
+        video_splice, sink.events.end(), "segment:video");
     const auto completion = std::find(
         sink.events.begin(), sink.events.end(), "layer-switch");
-    check(video_splice < audio_splice && audio_splice < completion,
-          "layer switch completion was emitted before both splice boundaries");
+    check(video_splice < replacement_video_segment &&
+              replacement_video_segment < audio_splice && audio_splice < completion,
+          "layer switch did not release staged video before prepared audio and completion");
 }
 
 void test_layer_switch_waits_for_target_audio_after_video_rap() {
@@ -890,13 +893,16 @@ void test_layer_switch_waits_for_target_audio_after_video_rap() {
           "layer switch completed before target audio reached the video boundary");
 
     constexpr std::int64_t frame = 1024;
-    for (std::int64_t index = 0; index <= 5; ++index) {
+    for (std::int64_t index = 0; index <= 22; ++index) {
         remuxer.push(audio_unit(9, index * frame));
     }
+    check(sink.video_splices.empty() && sink.layer_switches.empty(),
+          "layer switch exposed target video before audio had 400ms prepared");
+    remuxer.push(audio_unit(9, 23 * frame));
     check(sink.layer_switches.size() == 1 &&
               sink.layer_switches.front().audio_presentation_time_us ==
                   audio_time_us(5 * frame),
-          "layer switch did not complete when target audio reached the boundary");
+          "layer switch did not complete after target audio had 400ms prepared");
 }
 
 void test_audio_init_is_restored_when_output_is_reenabled() {

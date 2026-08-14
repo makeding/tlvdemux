@@ -19,6 +19,7 @@ let audioBoundary = null;
 let completedLayer = null;
 let videoSegments = 0;
 let replacementVideoSegments = 0;
+let replacementAudioEnd = null;
 let videoInits = 0;
 
 const demuxer = new module.TlvDemuxer({
@@ -46,6 +47,10 @@ const demuxer = new module.TlvDemuxer({
     if (segment.type === 'video') {
       videoSegments += 1;
       if (videoBoundary !== null) replacementVideoSegments += 1;
+    } else if (segment.type === 'audio' && audioBoundary !== null) {
+      const end = BigInt(segment.endTimeUs);
+      replacementAudioEnd = replacementAudioEnd === null
+        ? end : replacementAudioEnd > end ? replacementAudioEnd : end;
     }
   },
 });
@@ -88,6 +93,8 @@ assert.notEqual(completedLayer, null, 'WASM layer switch did not complete');
 assert.equal(BigInt(completedLayer.videoPresentationTimeUs), videoBoundary);
 assert.equal(BigInt(completedLayer.audioPresentationTimeUs), audioBoundary);
 assert.ok(replacementVideoSegments > 0, 'no target-layer video media followed the splice');
+assert.ok(replacementAudioEnd !== null && replacementAudioEnd - audioBoundary >= 400000n,
+  'layer switch completed without 400ms of replacement audio');
 assert.ok(videoInits >= 2, 'different target HEVC configuration did not emit a new init');
 assert.ok(events.indexOf('splice:video') < events.lastIndexOf('init:video'));
 assert.ok(events.indexOf('splice:video') < events.lastIndexOf('segment:video'));
