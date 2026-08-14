@@ -179,23 +179,24 @@ protected:
         output_.init(type_, *track_);
     }
 
-    void enqueue(Sample sample) {
+    bool enqueue(Sample sample) {
         if (pending_) {
             // A trun sample duration is the delta to the next decode timestamp;
             // a non-advancing DTS has no representable duration, so drop it
             // rather than fabricate one (see Firefox CtsComparator background).
             const auto delta = sample.dts - pending_->dts;
-            if (delta <= 0) return;
+            if (delta <= 0) return false;
             pending_->duration = static_cast<std::uint32_t>(delta);
             last_duration_ = pending_->duration;
             ready_duration_ += pending_->duration;
             ready_.push_back(std::move(*pending_));
         }
         pending_ = std::move(sample);
-        if (!track_) return;
+        if (!track_) return true;
         const auto threshold = std::max<std::uint32_t>(1, track_->timescale / kFragmentDurationDivisor);
         if (ready_duration_ >= threshold) emit(false);
         if (ready_duration_ >= std::uint64_t(threshold) * kQueueDurationBoundMultiplier) emit(true);
+        return true;
     }
 
     // Longest prefix of ready_ whose composition interval cannot overlap
@@ -403,6 +404,41 @@ public:
 
     void discontinuity() { reset_samples(); }
 
+    void activate() {
+        clear_resume();
+        BaseMuxer::activate();
+    }
+
+    // Continue this muxer's decode timeline at the exact end of the previous
+    // audio track. This is set before the first access unit of a new track and
+    // reset on every later activation, including switches back to a used track.
+    void resume_at(const std::int64_t resume_at_ticks,
+                   const std::uint32_t resume_timescale) {
+        resume_at_ticks_ = resume_at_ticks;
+        resume_timescale_ = resume_timescale;
+        resume_offset_ticks_ = track_.has_value()
+            ? std::optional<std::int64_t>(scaled(resume_at_ticks,
+                                                resume_timescale, track_->timescale))
+            : std::nullopt;
+        resume_origin_ticks_.reset();
+        first_after_resume_ = false;
+    }
+
+    std::optional<std::int64_t> timeline_end() const noexcept {
+        if (!last_enqueued_dts_.has_value() || !track_.has_value()) return std::nullopt;
+        return *last_enqueued_dts_ + static_cast<std::int64_t>(default_duration());
+    }
+
+    std::optional<std::uint32_t> track_timescale() const noexcept {
+        return track_.has_value() ? std::optional<std::uint32_t>(track_->timescale)
+                                  : std::nullopt;
+    }
+
+    std::optional<std::uint32_t> track_sample_rate() const noexcept {
+        return track_.has_value() ? std::optional<std::uint32_t>(track_->sample_rate)
+                                  : std::nullopt;
+    }
+
     void push(const aribtlv::AccessUnit& unit, const bool enabled,
               const std::optional<std::int64_t> timeline_offset_us) {
         if (unit.discontinuity) reset_samples();
@@ -416,13 +452,34 @@ public:
             track.codec = "mp4a.40." + std::to_string(frame.object);
             track.config = frame.asc;
             set_track(std::move(track));
+            if (resume_at_ticks_.has_value()) {
+                // Now that we know this track's timescale, convert the resume
+                // point (given in the previous track's timescale) into ours.
+                resume_offset_ticks_ = scaled(*resume_at_ticks_,
+                    resume_timescale_, track_->timescale);
+            }
         }
         if (!enabled || !timeline_offset_us.has_value()) return;
         const auto shifted_us = scaled(unit.pts.value, unit.pts.timescale, 1000000) +
             *timeline_offset_us;
         if (shifted_us < 0) return;
-        const auto timestamp = scaled(shifted_us, 1000000, track_->timescale);
-        enqueue({std::move(frame.data), timestamp, timestamp, 0, true});
+        std::int64_t timestamp = scaled(shifted_us, 1000000, track_->timescale);
+        if (resume_offset_ticks_.has_value()) {
+            // First sample after a switch anchors to the resume point; later
+            // samples advance by their native inter-frame delta so the
+            // timeline does not drift relative to the source.
+            if (!first_after_resume_) {
+                resume_origin_ticks_ = timestamp;
+                timestamp = *resume_offset_ticks_;
+                first_after_resume_ = true;
+            } else {
+                timestamp = *resume_offset_ticks_ + (timestamp - *resume_origin_ticks_);
+            }
+        }
+        if (timestamp < 0) return;
+        if (enqueue({std::move(frame.data), timestamp, timestamp, 0, true})) {
+            last_enqueued_dts_ = timestamp;
+        }
     }
 
 private:
@@ -432,8 +489,23 @@ private:
                       : 21333;
     }
 
+    void clear_resume() noexcept {
+        resume_at_ticks_.reset();
+        resume_timescale_ = 0;
+        resume_offset_ticks_.reset();
+        resume_origin_ticks_.reset();
+        first_after_resume_ = false;
+        last_enqueued_dts_.reset();
+    }
+
     LatmParser parser_;
     std::uint32_t max_channels_ = 0;
+    std::optional<std::int64_t> resume_at_ticks_;
+    std::uint32_t resume_timescale_ = 0;
+    std::optional<std::int64_t> resume_offset_ticks_;
+    std::optional<std::int64_t> resume_origin_ticks_;
+    bool first_after_resume_ = false;
+    std::optional<std::int64_t> last_enqueued_dts_;
 };
 
 } // namespace
@@ -450,6 +522,16 @@ public:
         }
         if (kind != aribtlv::TrackKind::Audio) return;
         if (audio_id == id && active_audio != nullptr) return;
+        std::optional<std::int64_t> resume_at;
+        std::uint32_t resume_timescale = 0;
+        if (active_audio) {
+            // Seal and emit every old-track sample before a new init segment
+            // can be emitted. The returned end is therefore a real buffered
+            // boundary, not a guess based on an unflushed pending sample.
+            active_audio->flush();
+            resume_at = active_audio->timeline_end();
+            resume_timescale = active_audio->track_timescale().value_or(0);
+        }
         audio_id = id;
         if (!id) {
             active_audio = nullptr;
@@ -459,6 +541,9 @@ public:
             audio.try_emplace(*id, output, options.max_audio_channels);
         active_audio = &iterator->second;
         if (!inserted) active_audio->activate();
+        if (resume_at.has_value() && resume_timescale != 0) {
+            active_audio->resume_at(*resume_at, resume_timescale);
+        }
     }
 
     void push(const aribtlv::AccessUnit& unit) {

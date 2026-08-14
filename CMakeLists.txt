@@ -121,12 +121,19 @@ if(TLVDEMUX_BUILD_TOOLS)
     add_executable(tlvdemux-cocktail tools/tlvdemux-cocktail.cpp)
     target_link_libraries(tlvdemux-cocktail PRIVATE tlvdemux::tlvdemux)
     if(APPLE)
-        add_executable(tlvdemux-videotoolbox-probe tools/tlvdemux-videotoolbox-probe.cpp)
+        enable_language(OBJCXX)
+        add_executable(tlvdemux-videotoolbox-probe
+            tools/tlvdemux-videotoolbox-probe.cpp
+            tools/mac_display_hdr.mm
+            tools/recording_time_seek.cpp
+            tools/videotoolbox_probe_parsing.cpp
+        )
         target_link_libraries(tlvdemux-videotoolbox-probe PRIVATE
             tlvdemux::tlvdemux
             "-framework CoreFoundation"
             "-framework CoreMedia"
             "-framework CoreVideo"
+            "-framework AppKit"
             "-framework VideoToolbox"
         )
         target_compile_options(tlvdemux-videotoolbox-probe PRIVATE

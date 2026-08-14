@@ -1,6 +1,10 @@
 #include <aribtlv/demuxer.hpp>
 #include <tlvdemux/mse_remuxer.hpp>
 
+#include "recording_time_seek.hpp"
+#include "mac_display_hdr.hpp"
+#include "videotoolbox_probe_parsing.hpp"
+
 #include <CoreMedia/CoreMedia.h>
 #include <VideoToolbox/VideoToolbox.h>
 
@@ -26,137 +30,7 @@
 
 namespace {
 
-struct NalUnit {
-    const std::uint8_t* data = nullptr;
-    std::size_t size = 0;
-    std::uint8_t type = 0;
-    std::uint8_t layer_id = 0;
-};
-
-struct Mp4Box {
-    std::size_t offset = 0;
-    std::size_t size = 0;
-    std::size_t payload = 0;
-    std::string type;
-};
-
-std::uint32_t be32(const std::uint8_t* data) {
-    return (std::uint32_t(data[0]) << 24U) | (std::uint32_t(data[1]) << 16U) |
-           (std::uint32_t(data[2]) << 8U) | std::uint32_t(data[3]);
-}
-
-std::uint64_t be64(const std::uint8_t* data) {
-    return (std::uint64_t(be32(data)) << 32U) | be32(data + 4);
-}
-
-std::vector<Mp4Box> child_boxes(const std::vector<std::uint8_t>& data,
-                                std::size_t begin, std::size_t end) {
-    std::vector<Mp4Box> result;
-    while (begin + 8 <= end) {
-        std::uint64_t size = be32(data.data() + begin);
-        std::size_t header = 8;
-        if (size == 1) {
-            if (begin + 16 > end) return {};
-            size = be64(data.data() + begin + 8);
-            header = 16;
-        } else if (size == 0) {
-            size = end - begin;
-        }
-        if (size < header || size > end - begin) return {};
-        result.push_back({begin, static_cast<std::size_t>(size), begin + header,
-                          std::string(reinterpret_cast<const char*>(data.data() + begin + 4), 4)});
-        begin += static_cast<std::size_t>(size);
-    }
-    return begin == end ? result : std::vector<Mp4Box>{};
-}
-
-std::optional<Mp4Box> box_of_type(const std::vector<Mp4Box>& boxes,
-                                  const std::string& type) {
-    const auto found = std::find_if(boxes.begin(), boxes.end(), [&](const auto& box) {
-        return box.type == type;
-    });
-    if (found == boxes.end()) return std::nullopt;
-    return *found;
-}
-
-std::optional<Mp4Box> find_box_signature(const std::vector<std::uint8_t>& data,
-                                         const std::string& type) {
-    if (type.size() != 4) return std::nullopt;
-    for (std::size_t offset = 4; offset + 4 <= data.size(); ++offset) {
-        if (!std::equal(type.begin(), type.end(), data.begin() +
-                        static_cast<std::ptrdiff_t>(offset))) continue;
-        const auto size = be32(data.data() + offset - 4);
-        if (size >= 8 && offset - 4 + size <= data.size()) {
-            return Mp4Box{offset - 4, size, offset + 4, type};
-        }
-    }
-    return std::nullopt;
-}
-
-std::vector<NalUnit> split_length_prefixed(const std::uint8_t* data, std::size_t size,
-                                           std::uint8_t length_size) {
-    std::vector<NalUnit> result;
-    std::size_t offset = 0;
-    while (offset < size) {
-        if (length_size == 0 || length_size > 4 || offset + length_size > size) return {};
-        std::uint32_t nal_size = 0;
-        for (std::uint8_t index = 0; index < length_size; ++index) {
-            nal_size = (nal_size << 8U) | data[offset++];
-        }
-        if (nal_size < 2 || nal_size > size - offset) return {};
-        result.push_back({data + offset, nal_size,
-                          static_cast<std::uint8_t>((data[offset] >> 1U) & 0x3fU),
-                          static_cast<std::uint8_t>(((data[offset] & 1U) << 5U) |
-                                                    (data[offset + 1] >> 3U))});
-        offset += nal_size;
-    }
-    return result;
-}
-
-std::vector<NalUnit> split_annex_b(const std::vector<std::uint8_t>& bytes) {
-    std::vector<NalUnit> result;
-    const auto start_code = [&bytes](const std::size_t offset) -> std::size_t {
-        if (offset + 3 <= bytes.size() && bytes[offset] == 0 && bytes[offset + 1] == 0 &&
-            bytes[offset + 2] == 1) return 3;
-        if (offset + 4 <= bytes.size() && bytes[offset] == 0 && bytes[offset + 1] == 0 &&
-            bytes[offset + 2] == 0 && bytes[offset + 3] == 1) return 4;
-        return 0;
-    };
-
-    std::size_t cursor = 0;
-    while (cursor < bytes.size()) {
-        const auto prefix = start_code(cursor);
-        if (prefix == 0) {
-            ++cursor;
-            continue;
-        }
-        const auto nal_start = cursor + prefix;
-        auto nal_end = nal_start;
-        while (nal_end < bytes.size() && start_code(nal_end) == 0) ++nal_end;
-        if (nal_end > nal_start && nal_end - nal_start >= 2) {
-            result.push_back({
-                bytes.data() + nal_start,
-                nal_end - nal_start,
-                static_cast<std::uint8_t>((bytes[nal_start] >> 1U) & 0x3fU),
-                static_cast<std::uint8_t>(((bytes[nal_start] & 1U) << 5U) |
-                                          (bytes[nal_start + 1] >> 3U)),
-            });
-        }
-        cursor = nal_end;
-    }
-    return result;
-}
-
-std::string nal_types(const std::vector<NalUnit>& nals) {
-    std::string result;
-    for (const auto& nal : nals) {
-        if (!result.empty()) result += ',';
-        result += std::to_string(nal.type);
-        result += '@';
-        result += std::to_string(nal.layer_id);
-    }
-    return result;
-}
+using namespace tlvdemux::tools::vt_probe;
 
 class Probe final : public aribtlv::Sink, public tlvdemux::MseSink {
 public:
@@ -190,7 +64,22 @@ public:
             if (mse_pipeline_) mse_remuxer_.selectTrack(aribtlv::TrackKind::Video,
                                                         track.track_id);
             std::cerr << "video track packet_id=0x" << std::hex << track.packet_id << std::dec
-                      << " timescale=" << track.timescale << '\n';
+                      << " timescale=" << track.timescale;
+            if (track.video.has_value()) {
+                std::cerr << " hdr_wcg_idc=";
+                if (track.video->hdr_wcg_idc.has_value()) {
+                    std::cerr << unsigned(*track.video->hdr_wcg_idc);
+                } else {
+                    std::cerr << "missing";
+                }
+                std::cerr << " video_transfer_characteristics=";
+                if (track.video->video_transfer_characteristics.has_value()) {
+                    std::cerr << unsigned(*track.video->video_transfer_characteristics);
+                } else {
+                    std::cerr << "missing";
+                }
+            }
+            std::cerr << '\n';
         } else if (mse_pipeline_ && !audio_track_.has_value() &&
                    track.kind == aribtlv::TrackKind::Audio && track.audio.has_value() &&
                    aribtlv::audio_channel_count(track.audio->channel_layout) <= 6 &&
@@ -335,7 +224,20 @@ public:
         mse_config_parameter_sets_ = std::move(parsed_parameter_sets);
         std::cerr << "mse init " << init.mime << " length_size="
                   << unsigned(mse_nal_length_size_) << " size=" << init.width << 'x'
-                  << init.height << '\n';
+                  << init.height;
+        const auto colr = find_box_signature(init.data, "colr");
+        if (colr && colr->payload + 11 <= colr->offset + colr->size &&
+            std::equal(init.data.begin() + static_cast<std::ptrdiff_t>(colr->payload),
+                       init.data.begin() + static_cast<std::ptrdiff_t>(colr->payload + 4),
+                       "nclx")) {
+            const auto* color = init.data.data() + colr->payload + 4;
+            std::cerr << " nclx=" << be16(color) << '/' << be16(color + 2) << '/'
+                      << be16(color + 4) << " full_range="
+                      << ((color[6] & 0x80U) != 0 ? 1 : 0);
+        } else {
+            std::cerr << " nclx=missing";
+        }
+        std::cerr << '\n';
     }
 
     void onMseSegment(tlvdemux::MseMediaSegment&& segment) override {
@@ -450,6 +352,19 @@ private:
             return false;
         }
         decoder_parameter_sets_ = parameter_sets_;
+
+        std::cerr << "CMFormatDescription color primaries="
+                  << cf_description(CMFormatDescriptionGetExtension(
+                         format_, kCMFormatDescriptionExtension_ColorPrimaries))
+                  << " transfer="
+                  << cf_description(CMFormatDescriptionGetExtension(
+                         format_, kCMFormatDescriptionExtension_TransferFunction))
+                  << " matrix="
+                  << cf_description(CMFormatDescriptionGetExtension(
+                         format_, kCMFormatDescriptionExtension_YCbCrMatrix))
+                  << " full_range="
+                  << cf_description(CMFormatDescriptionGetExtension(
+                         format_, kCMFormatDescriptionExtension_FullRangeVideo)) << '\n';
 
         CFDictionaryRef decoder_specification = nullptr;
         if (require_hardware_) {
@@ -882,6 +797,7 @@ struct Options {
     std::optional<std::uint16_t> audio_packet_id;
     std::size_t random_seeks = 0;
     std::uint64_t seed = 0x544c564d5345ULL;
+    std::optional<double> target_seconds;
 };
 
 Options parse_options(const int argc, char** argv) {
@@ -912,6 +828,8 @@ Options parse_options(const int argc, char** argv) {
                 std::strtoull(value("--random-seeks").c_str(), nullptr, 0));
         } else if (argument == "--seed") {
             options.seed = std::strtoull(value("--seed").c_str(), nullptr, 0);
+        } else if (argument == "--target-seconds") {
+            options.target_seconds = std::strtod(value("--target-seconds").c_str(), nullptr);
         } else if (argument == "--prepend-parameter-sets-on-irap") {
             options.prepend_parameter_sets_on_irap = true;
         } else if (argument == "--max-au") {
@@ -946,11 +864,16 @@ Options parse_options(const int argc, char** argv) {
                      "[--inflight N] [--skip-leading-rasl] "
                      "[--prepend-parameter-sets-on-irap] [--mse] "
                      "[--timeline-only] [--audio-packet-id ID] [--allow-software] "
-                     "[--random-seeks N] [--seed N]\n";
+                     "[--random-seeks N] [--seed N] [--target-seconds N]\n";
         std::exit(2);
     }
     if (options.timeline_only && !options.mse_pipeline) {
         std::cerr << "--timeline-only requires --mse\n";
+        std::exit(2);
+    }
+    if (options.target_seconds.has_value() &&
+        (options.offset != 0 || options.random_seeks != 0)) {
+        std::cerr << "--target-seconds cannot be combined with --offset or --random-seeks\n";
         std::exit(2);
     }
     return options;
@@ -1006,6 +929,7 @@ bool run_probe(const Options& options, const std::uint64_t offset,
 
 int main(int argc, char** argv) {
     const auto options = parse_options(argc, argv);
+    tlvdemux::tools::log_mac_display_hdr(std::cerr);
     std::ifstream size_input(options.path, std::ios::binary | std::ios::ate);
     if (!size_input) {
         std::cerr << "cannot open " << options.path << '\n';
@@ -1017,7 +941,26 @@ int main(int argc, char** argv) {
         return 2;
     }
     const auto file_size = static_cast<std::uint64_t>(end);
-    std::vector<std::uint64_t> offsets{options.offset};
+    std::vector<std::uint64_t> offsets;
+    if (options.target_seconds.has_value()) {
+        try {
+            const auto target = tlvdemux::tools::locate_recording_time(
+                options.path, *options.target_seconds, std::cerr);
+            std::cerr << "target-seconds=" << *options.target_seconds
+                      << " first-pts-us=" << target.first_pts_us
+                      << " target-pts-us=" << target.target_pts_us
+                      << " sync-pts-us=" << target.point.presentation_time.value
+                      << " signalling-offset=" << target.point.signalling_offset
+                      << " random-access-offset=" << target.point.random_access_offset
+                      << " seek-points=" << target.seek_point_count << '\n';
+            offsets.push_back(target.point.signalling_offset);
+        } catch (const std::exception& error) {
+            std::cerr << "target lookup failed: " << error.what() << '\n';
+            return 2;
+        }
+    } else {
+        offsets.push_back(options.offset);
+    }
     std::mt19937_64 random(options.seed);
     // Keep at least 4 MiB after a landing point so a short tail does not turn
     // into a false decoder failure merely because it contains no following RAP.

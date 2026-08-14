@@ -17,11 +17,16 @@ class FakeSourceBuffer extends EventTarget {
     this.buffered = new FakeTimeRanges(ranges);
     this.appendFailures = [];
     this.removeCalls = [];
+    this.operations = [];
   }
-  appendBuffer() {
+  appendBuffer(data) {
     const failure = this.appendFailures.shift();
     if (failure) throw failure;
+    this.operations.push(['append', data[0]]);
     this.updating = true;
+  }
+  changeType(mime) {
+    this.operations.push(['changeType', mime]);
   }
   remove(start, end) {
     if (!(end > start)) throw new TypeError(`invalid remove range ${start}..${end}`);
@@ -53,6 +58,30 @@ const {MseAppendQueue, finalizeMseMediaSource} = await import('../mse-append-que
 
 async function tick() {
   await new Promise(resolve => setTimeout(resolve, 5));
+}
+
+{
+  const sourceBuffer = new FakeSourceBuffer();
+  const mediaSource = new FakeMediaSource(sourceBuffer);
+  const media = {currentTime: 0, error: null, buffered: new FakeTimeRanges()};
+  const queue = new MseAppendQueue(mediaSource, media, 'audio/mp4; codecs="mp4a.40.2"', null, {
+    forwardBufferHighSeconds: Infinity,
+  });
+  queue.append(new Uint8Array([1]));
+  queue.appendInitialization(new Uint8Array([2]), 'audio/mp4; codecs="mp4a.40.5"');
+  queue.append(new Uint8Array([3]));
+
+  assert.deepEqual(sourceBuffer.operations, [['append', 1]]);
+  sourceBuffer.complete();
+  assert.deepEqual(sourceBuffer.operations, [
+    ['append', 1],
+    ['changeType', 'audio/mp4; codecs="mp4a.40.5"'],
+    ['append', 2],
+  ]);
+  sourceBuffer.complete();
+  assert.deepEqual(sourceBuffer.operations.at(-1), ['append', 3]);
+  sourceBuffer.complete();
+  await queue.waitIdle();
 }
 
 {

@@ -4,6 +4,7 @@ pkgs.mkShell {
   nativeBuildInputs = with pkgs; [
     cmake
     emscripten
+    ffmpeg
     git
     ninja
     nodejs

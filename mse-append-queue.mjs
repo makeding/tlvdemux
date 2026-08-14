@@ -74,12 +74,20 @@ export class MseAppendQueue {
   }
 
   append(data) {
+    this.enqueueAppend({ data, mime: null });
+  }
+
+  appendInitialization(data, mime) {
+    this.enqueueAppend({ data, mime });
+  }
+
+  enqueueAppend(item) {
     if (this.error) throw this.error;
     if (this.state !== 'running') {
       throw new DOMException(`SourceBuffer queue is ${this.state}`, 'InvalidStateError');
     }
-    this.queue.push(data);
-    this.queuedBytes += data.byteLength;
+    this.queue.push(item);
+    this.queuedBytes += item.data.byteLength;
     this.pump();
   }
 
@@ -116,12 +124,20 @@ export class MseAppendQueue {
       return;
     }
 
-    const data = this.queue.shift();
+    const item = this.queue.shift();
+    const data = item.data;
     this.currentBytes = data.byteLength;
     try {
+      if (item.mime !== null && item.mime !== this.mime) {
+        if (typeof this.sourceBuffer.changeType !== 'function') {
+          throw new Error('SourceBuffer.changeType is not supported in this browser');
+        }
+        this.sourceBuffer.changeType(item.mime);
+        this.mime = item.mime;
+      }
       this.sourceBuffer.appendBuffer(data);
     } catch (error) {
-      this.queue.unshift(data);
+      this.queue.unshift(item);
       this.currentBytes = 0;
       this.recountQueuedBytes();
       if (error?.name === 'QuotaExceededError') {
@@ -234,7 +250,7 @@ export class MseAppendQueue {
 
   recountQueuedBytes() {
     this.queuedBytes = this.currentBytes +
-      this.queue.reduce((sum, item) => sum + item.byteLength, 0);
+      this.queue.reduce((sum, item) => sum + item.data.byteLength, 0);
   }
 
   fail(error) {

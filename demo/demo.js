@@ -1,8 +1,8 @@
 import { B62TTMLRenderer } from '/aribb62.js/src/index.js';
 import { DataBroadcastController } from './data-broadcast.js?v=webkit-canvas-plane-v4';
-import { coalesceReadableStream } from './live-stream.mjs';
-import { createWorkerTlvDemuxModule } from './worker-tlvdemux.js';
-import { MseAppendQueue, finalizeMseMediaSource } from '../mse-append-queue.mjs';
+import { coalesceReadableStream } from './live-stream.mjs?v=inplace-audio-switch-v1';
+import { createWorkerTlvDemuxModule } from './worker-tlvdemux.js?v=inplace-audio-switch-v1';
+import { MseAppendQueue, finalizeMseMediaSource } from '../mse-append-queue.mjs?v=inplace-audio-switch-v1';
 
 const MiB = 1024n * 1024n;
 const PLAYBACK_CHUNK = 2n * MiB;
@@ -642,7 +642,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const pendingSegments = new Map([['video', []], ['audio', []]]);
   const mseSegmentTypes = new Set();
   const externalDurationUs = liveMode ? null : BigInt(Math.round(
-    durationSeconds(probeResult.duration) * 1000000));
+     durationSeconds(probeResult.duration) * 1000000));
 
   const maybeStartPlayback = () => {
     if (played || generation !== runGeneration || queues.size < 2) return;
@@ -726,10 +726,12 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         appendLog(`${type} 初期化 ${init.mime}`);
         if (queues.size) {
           const queue = queues.get(type);
-          if (!queue || queue.mime !== init.mime) {
-            throw new Error(`${type} codec を切り替えられません: ${init.mime}`);
+          if (!queue) {
+            throw new Error(`${type} の SourceBuffer が見つかりません: ${init.mime}`);
           }
-          queue.append(init.data);
+          // Keep the reconfiguration in the same SourceBuffer mutation queue:
+          // old media -> changeType (when needed) -> new init -> new media.
+          queue.appendInitialization(init.data, init.mime);
           if (type === 'audio') {
             elements.mediaInfo.textContent = elements.mediaInfo.textContent.replace(
               / · audio [^·]+$/, ` · audio ${init.sampleRate}Hz ${init.channels}ch`);
@@ -923,12 +925,15 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     }
     if (track.trackId === selectedAudio) return;
     if (generation !== runGeneration) return;
-    const restartTime = liveMode ? 0 : Math.max(0, elements.video.currentTime);
-    const label = liveMode
-      ? `音声切替 packet_id=0x${packetId.toString(16)}、Live を再接続します`
-      : `音声切替 packet_id=0x${packetId.toString(16)}、${restartTime.toFixed(3)}s から MSE を再構築します`;
-    stopPlayback(true, false);
-    await loadAndPlay(restartTime, false, label);
+    // selectTrack seals the old audio fragment before activating the new
+    // track. Video and MediaSource stay in place; AAC supplies its own random
+    // access boundary, so changing only audio does not require a video RAP.
+    await demuxer.selectTrack('audio', track.trackId);
+    if (generation !== runGeneration) return;
+    selectedAudio = track.trackId;
+    selectedAudioPacketId = track.packetId;
+    appendLog(`音声切替 packet_id=0x${packetId.toString(16)} (インプレース)`);
+    renderAudioTracks();
   };
   activeSubtitleSwitch = packetId => {
     const track = [...tracks.values()].find(

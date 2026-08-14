@@ -88,6 +88,7 @@ function createDemuxer(module, objectId, options) {
       audioTrack: null,
       subtitleTrack: null,
     },
+    tracks: new Map(),
   };
   const event = (name, transform = value => value) => value => {
     sendEvent(objectId, name, transform(value));
@@ -103,6 +104,7 @@ function createDemuxer(module, objectId, options) {
     },
     onService: event('onService'),
     onTrack(track) {
+      record.tracks.set(track.trackId, track);
       automaticSelection(record, track);
       sendEvent(objectId, 'onTrack', track);
     },
@@ -240,6 +242,18 @@ async function invokeObject(message) {
         throw new Error(`unknown ${record.type} method: ${message.method}`);
       }
       value = method.apply(record.instance, message.args || []);
+      if (record.type === 'demuxer' && message.method === 'selectTrack') {
+        const [kind, trackId] = message.args || [];
+        const key = `${kind}Track`;
+        if (key in record.selection) {
+          record.selection[key] = trackId ?? null;
+          const track = record.tracks.get(trackId);
+          const packetKey = `${kind}PacketId`;
+          if (track && packetKey in record.selection) {
+            record.selection[packetKey] = track.packetId;
+          }
+        }
+      }
     }
     if (message.method === 'push' || message.method === 'flush') {
       drainApplications(record, message.method === 'flush');
