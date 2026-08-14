@@ -175,7 +175,7 @@ export async function createWorkerTlvDemuxModule(options = {}) {
   if (!protocol) throw new Error('demux-worker-protocol.js was not loaded');
   const client = new WorkerClient({
     workerUrl: options.workerUrl || new URL('./demux-worker-runtime.js', import.meta.url),
-    wasmUrl: options.wasmUrl || new URL('../build-wasm/tlvdemux.js?v=inplace-audio-switch-v1', import.meta.url).href,
+    wasmUrl: options.wasmUrl || new URL('../build-wasm/tlvdemux.js?v=audio-splice-v2', import.meta.url).href,
   });
   await client.ready;
   return {

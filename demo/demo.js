@@ -1,8 +1,8 @@
 import { B62TTMLRenderer } from '/aribb62.js/src/index.js';
 import { DataBroadcastController } from './data-broadcast.js?v=webkit-canvas-plane-v4';
-import { coalesceReadableStream } from './live-stream.mjs?v=inplace-audio-switch-v1';
-import { createWorkerTlvDemuxModule } from './worker-tlvdemux.js?v=inplace-audio-switch-v1';
-import { MseAppendQueue, finalizeMseMediaSource } from '../mse-append-queue.mjs?v=inplace-audio-switch-v1';
+import { coalesceReadableStream } from './live-stream.mjs?v=audio-splice-v2';
+import { createWorkerTlvDemuxModule } from './worker-tlvdemux.js?v=audio-splice-v2';
+import { MseAppendQueue, finalizeMseMediaSource } from '../mse-append-queue.mjs?v=audio-splice-v2';
 
 const MiB = 1024n * 1024n;
 const PLAYBACK_CHUNK = 2n * MiB;

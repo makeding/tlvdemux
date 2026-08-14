@@ -11,6 +11,11 @@ export interface MseBufferedRange {
   end: number;
 }
 
+export interface MseAppendTiming {
+  startTimeSeconds?: number;
+  endTimeSeconds?: number;
+}
+
 export interface FinalizeMseMediaSourceOptions {
   truncateToCommonEnd?: boolean;
   minimumTruncationSeconds?: number;
@@ -40,7 +45,9 @@ export declare class MseAppendQueue {
     options?: MseAppendQueueOptions,
   );
 
-  append(data: Uint8Array): void;
+  append(data: Uint8Array, timing?: MseAppendTiming): void;
+  appendInitialization(data: Uint8Array, mime: string): void;
+  replaceFrom(time: number): void;
   pump(): void;
   bufferedAhead(): number;
   bufferedRanges(): MseBufferedRange[];
