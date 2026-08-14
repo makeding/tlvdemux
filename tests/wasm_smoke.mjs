@@ -51,6 +51,26 @@ demuxer.delete();
 
 assert.deepEqual(errors, []);
 
+const cancellations = [];
+const mseDemuxer = new module.TlvDemuxer({
+    onMseInit() {},
+    onMseLayerSwitchCancelled: event => cancellations.push(event),
+});
+mseDemuxer.selectTrack('video', 2n);
+mseDemuxer.selectTrack('audio', 1n);
+assert.equal(mseDemuxer.switchLayer(3n, 9n, 0n), true);
+mseDemuxer.flush();
+assert.deepEqual(cancellations, [{
+    videoTrackId: 3n,
+    audioTrackId: 9n,
+    previousVideoTrackId: 2n,
+    previousAudioTrackId: 1n,
+    reason: 'end-of-input',
+}]);
+mseDemuxer.flush();
+assert.equal(cancellations.length, 1);
+mseDemuxer.delete();
+
 const probe = new module.DurationProbe();
 assert.equal(probe.begin(16n, { initialRangeSize: 4n, maxRangeSize: 8n }), true);
 let range = probe.nextRange();

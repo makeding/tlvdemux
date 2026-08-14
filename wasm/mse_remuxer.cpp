@@ -3,7 +3,6 @@
 #include "mse/hevc_parser.hpp"
 #include "mse/latm_parser.hpp"
 #include "mse/mp4_builder.hpp"
-
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -19,12 +18,6 @@
 #include <utility>
 #include <variant>
 #include <vector>
-
-#ifdef __EMSCRIPTEN__
-#include "mse_remuxer.hpp"
-#include <emscripten/bind.h>
-#endif
-
 namespace {
 
 using tlvdemux::detail::mse::AacFrame;
@@ -42,10 +35,6 @@ using tlvdemux::detail::mse::init_segment;
 using tlvdemux::detail::mse::media_segment;
 using tlvdemux::detail::mse::scaled;
 
-#ifdef __EMSCRIPTEN__
-using emscripten::val;
-#endif
-
 constexpr std::uint32_t kFragmentDurationDivisor = 4;
 // Firefox's MoofParser only bridges cross-moof composition gaps under 1us
 // (dom/media/mp4/MoofParser.cpp), so a fragment can only be cut where the
@@ -60,16 +49,6 @@ Bytes u32(const std::uint64_t value) {
             static_cast<std::uint8_t>(value >> 8U),
             static_cast<std::uint8_t>(value)};
 }
-
-#ifdef __EMSCRIPTEN__
-val copy_bytes(const Bytes& bytes) {
-    auto output = val::global("Uint8Array").new_(bytes.size());
-    if (!bytes.empty()) {
-        output.call<void>("set", emscripten::typed_memory_view(bytes.size(), bytes.data()));
-    }
-    return output;
-}
-#endif
 
 class Output {
 public:
@@ -778,25 +757,24 @@ private:
 class tlvdemux::MseRemuxer::Impl {
 public:
     explicit Impl(MseSink& sink, const MseOptions options)
-        : output(sink, options.output_mode), video(output), options(options) {}
+        : sink(sink), output(sink, options.output_mode), video(output), options(options) {}
 
-    void select(const aribtlv::TrackKind kind, std::optional<std::uint64_t> id) {
-        if (pending_layer &&
-            (kind == aribtlv::TrackKind::Video || kind == aribtlv::TrackKind::Audio)) {
-            return;
+    std::optional<MseLayerSwitchCancelled> select(
+        const aribtlv::TrackKind kind, std::optional<std::uint64_t> id) {
+        std::optional<MseLayerSwitchCancelled> cancelled;
+        if (kind == aribtlv::TrackKind::Video || kind == aribtlv::TrackKind::Audio) {
+            cancelled = cancel_layer(MseLayerSwitchCancelReason::SelectionChanged);
         }
         if (kind == aribtlv::TrackKind::Video) {
-            pending_layer.reset();
             video.cancel_staged_switch();
             output.discard_staged_video();
             video_id = id;
-            return;
+            return cancelled;
         }
-        if (kind != aribtlv::TrackKind::Audio) return;
-        pending_layer.reset();
+        if (kind != aribtlv::TrackKind::Audio) return cancelled;
         video.cancel_staged_switch();
         output.discard_staged_video();
-        if (audio_id == id && active_audio != nullptr) return;
+        if (audio_id == id && active_audio != nullptr) return cancelled;
         std::optional<std::int64_t> resume_at;
         std::uint32_t resume_timescale = 0;
         if (active_audio) {
@@ -810,7 +788,7 @@ public:
         audio_id = id;
         if (!id) {
             active_audio = nullptr;
-            return;
+            return cancelled;
         }
         auto [iterator, inserted] =
             audio.try_emplace(*id, output, options.max_audio_channels);
@@ -819,6 +797,7 @@ public:
         if (resume_at.has_value() && resume_timescale != 0) {
             active_audio->resume_at(*resume_at, resume_timescale);
         }
+        return cancelled;
     }
 
     std::optional<std::int64_t> switch_audio(
@@ -843,6 +822,7 @@ public:
             video_id == target_video_id || pending_layer) return false;
         pending_layer = PendingLayerSwitch{
             target_video_id, target_audio_id,
+            video_id.value_or(0), audio_id.value_or(0),
             earliest_presentation_time_us, std::nullopt};
         video.stage_next_switch();
         video_id = target_video_id;
@@ -914,28 +894,59 @@ public:
         if (active_audio) active_audio->flush();
     }
 
-    void reset() {
+    std::optional<MseLayerSwitchCancelled> end_of_stream() {
+        flush();
+        return cancel_layer(MseLayerSwitchCancelReason::EndOfInput);
+    }
+
+    std::optional<MseLayerSwitchCancelled> reset() {
+        auto cancelled = cancel_layer(MseLayerSwitchCancelReason::Reset);
         video.reset();
         audio.clear();
         active_audio = nullptr;
-        pending_layer.reset();
         output.discard_staged_video();
+        return cancelled;
     }
 
-    void reposition() {
+    std::optional<MseLayerSwitchCancelled> reposition() {
+        auto cancelled = cancel_layer(MseLayerSwitchCancelReason::Reposition);
         video.reset();
         for (auto& entry : audio) entry.second.discontinuity();
-        pending_layer.reset();
         output.discard_staged_video();
+        return cancelled;
     }
 
     struct PendingLayerSwitch {
         std::uint64_t video_track_id = 0;
         std::uint64_t audio_track_id = 0;
+        std::uint64_t previous_video_track_id = 0;
+        std::uint64_t previous_audio_track_id = 0;
         std::int64_t earliest_presentation_time_us = 0;
         std::optional<std::int64_t> video_boundary_us;
     };
 
+    std::optional<MseLayerSwitchCancelled> cancel_layer(
+        const MseLayerSwitchCancelReason reason) {
+        if (!pending_layer) return std::nullopt;
+        const auto pending = *pending_layer;
+        pending_layer.reset();
+        video.cancel_staged_switch();
+        output.discard_staged_video();
+        video_id = pending.previous_video_track_id == 0
+            ? std::nullopt
+            : std::optional<std::uint64_t>{pending.previous_video_track_id};
+        const MseLayerSwitchCancelled cancelled{
+            pending.video_track_id,
+            pending.audio_track_id,
+            pending.previous_video_track_id,
+            pending.previous_audio_track_id,
+            reason,
+        };
+        sink.onMseLayerSwitchCancelled(cancelled);
+        return cancelled;
+    }
+
+    MseSink& sink;
     Output output;
     HevcMuxer video;
     std::map<std::uint64_t, AacMuxer> audio;
@@ -951,9 +962,10 @@ tlvdemux::MseRemuxer::MseRemuxer(MseSink& sink, const MseOptions options)
     : impl_(std::make_unique<Impl>(sink, options)) {}
 tlvdemux::MseRemuxer::~MseRemuxer() = default;
 
-void tlvdemux::MseRemuxer::selectTrack(const TrackKind kind,
-                                       std::optional<std::uint64_t> id) {
-    impl_->select(kind, id);
+std::optional<tlvdemux::MseLayerSwitchCancelled>
+tlvdemux::MseRemuxer::selectTrack(const TrackKind kind,
+                                  std::optional<std::uint64_t> id) {
+    return impl_->select(kind, id);
 }
 
 std::optional<std::int64_t> tlvdemux::MseRemuxer::switchAudioTrack(
@@ -979,116 +991,9 @@ void tlvdemux::MseRemuxer::setOutputEnabled(const bool enabled) {
 
 void tlvdemux::MseRemuxer::push(const AccessUnit& unit) { impl_->push(unit); }
 void tlvdemux::MseRemuxer::flush() { impl_->flush(); }
-void tlvdemux::MseRemuxer::reset() { impl_->reset(); }
-void tlvdemux::MseRemuxer::reposition() { impl_->reposition(); }
-
-#ifdef __EMSCRIPTEN__
-class WasmMseRemuxer::Impl final : public tlvdemux::MseSink {
-public:
-    explicit Impl(val callbacks, const std::uint32_t max_audio_channels)
-        : callbacks_(std::move(callbacks)),
-          remuxer_(*this, tlvdemux::MseOptions{max_audio_channels}) {}
-
-    void onMseInit(tlvdemux::MseTrackInit&& init) override {
-        if (!has("onMseInit")) return;
-        auto event = val::object();
-        event.set("type", init.type);
-        event.set("mime", init.mime);
-        event.set("data", copy_bytes(init.data));
-        event.set("width", init.width);
-        event.set("height", init.height);
-        event.set("sampleRate", init.sample_rate);
-        event.set("channels", init.channels);
-        emit("onMseInit", event);
-    }
-
-    void onMseSegment(tlvdemux::MseMediaSegment&& segment) override {
-        if (!has("onMseSegment")) return;
-        auto event = val::object();
-        event.set("type", segment.type);
-        event.set("data", copy_bytes(segment.data));
-        event.set("startTimeUs", segment.start_time_us);
-        event.set("endTimeUs", segment.end_time_us);
-        emit("onMseSegment", event);
-    }
-
-    void onMseAudioSplice(const tlvdemux::MseAudioSplice& splice) override {
-        if (!has("onMseAudioSplice")) return;
-        auto event = val::object();
-        event.set("presentationTimeUs", splice.presentation_time_us);
-        emit("onMseAudioSplice", event);
-    }
-
-    void onMseVideoSplice(const tlvdemux::MseVideoSplice& splice) override {
-        if (!has("onMseVideoSplice")) return;
-        auto event = val::object();
-        event.set("presentationTimeUs", splice.presentation_time_us);
-        emit("onMseVideoSplice", event);
-    }
-
-    void onMseLayerSwitch(const tlvdemux::MseLayerSwitch& layer) override {
-        if (!has("onMseLayerSwitch")) return;
-        auto event = val::object();
-        event.set("videoTrackId", layer.video_track_id);
-        event.set("audioTrackId", layer.audio_track_id);
-        event.set("videoPresentationTimeUs", layer.video_presentation_time_us);
-        event.set("audioPresentationTimeUs", layer.audio_presentation_time_us);
-        emit("onMseLayerSwitch", event);
-    }
-
-    void onMseVideoStart(const tlvdemux::MseVideoStart& start) override {
-        if (!has("onMseVideoStart")) return;
-        auto event = val::object();
-        event.set("nalType", start.nal_type);
-        event.set("signalledRandomAccess", start.signalled_random_access);
-        emit("onMseVideoStart", event);
-    }
-
-    tlvdemux::MseRemuxer& remuxer() noexcept { return remuxer_; }
-
-private:
-    bool has(const char* name) const {
-        return callbacks_[name].typeOf().as<std::string>() == "function";
-    }
-
-    void emit(const char* name, const val& event) {
-        callbacks_[name].call<void>("call", callbacks_, event);
-    }
-
-    val callbacks_;
-    tlvdemux::MseRemuxer remuxer_;
-};
-
-WasmMseRemuxer::WasmMseRemuxer(val callbacks,
-                               const std::uint32_t max_audio_channels)
-    : impl_(std::make_unique<Impl>(std::move(callbacks), max_audio_channels)) {}
-WasmMseRemuxer::~WasmMseRemuxer() = default;
-
-void WasmMseRemuxer::selectTrack(const aribtlv::TrackKind kind,
-                                 std::optional<std::uint64_t> id) {
-    impl_->remuxer().selectTrack(kind, id);
-}
-
-std::optional<std::int64_t> WasmMseRemuxer::switchAudioTrack(
-    const std::uint64_t id, const std::int64_t earliest_presentation_time_us) {
-    return impl_->remuxer().switchAudioTrack(id, earliest_presentation_time_us);
-}
-
-bool WasmMseRemuxer::switchLayer(
-    const std::uint64_t video_track_id, const std::uint64_t audio_track_id,
-    const std::int64_t earliest_presentation_time_us) {
-    return impl_->remuxer().switchLayer(
-        video_track_id, audio_track_id, earliest_presentation_time_us);
-}
-
-void WasmMseRemuxer::setOutputEnabled(const bool enabled) {
-    impl_->remuxer().setOutputEnabled(enabled);
-}
-
-void WasmMseRemuxer::push(const aribtlv::AccessUnit& unit) {
-    impl_->remuxer().push(unit);
-}
-void WasmMseRemuxer::flush() { impl_->remuxer().flush(); }
-void WasmMseRemuxer::reset() { impl_->remuxer().reset(); }
-void WasmMseRemuxer::reposition() { impl_->remuxer().reposition(); }
-#endif
+std::optional<tlvdemux::MseLayerSwitchCancelled>
+tlvdemux::MseRemuxer::endOfStream() { return impl_->end_of_stream(); }
+std::optional<tlvdemux::MseLayerSwitchCancelled>
+tlvdemux::MseRemuxer::reset() { return impl_->reset(); }
+std::optional<tlvdemux::MseLayerSwitchCancelled>
+tlvdemux::MseRemuxer::reposition() { return impl_->reposition(); }

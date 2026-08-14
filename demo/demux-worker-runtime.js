@@ -185,6 +185,20 @@ function createDemuxer(module, objectId, options) {
     onMseVideoSplice: event('onMseVideoSplice'),
     onMseAudioSplice: event('onMseAudioSplice'),
     onMseLayerSwitch: event('onMseLayerSwitch'),
+    onMseLayerSwitchCancelled(cancelled) {
+      for (const [kind, trackId] of [
+        ['video', cancelled.previousVideoTrackId],
+        ['audio', cancelled.previousAudioTrackId],
+      ]) {
+        const track = trackId === 0n ? null : record.tracks.get(trackId);
+        if (track) rememberSelection(record, kind, track);
+        else {
+          record.selection[`${kind}Track`] = trackId === 0n ? null : trackId;
+          record.selection[`${kind}Identity`] = null;
+        }
+      }
+      sendEvent(objectId, 'onMseLayerSwitchCancelled', cancelled);
+    },
     onMseInit(init) {
       sendEvent(objectId, 'onMseInit', init, [init.data.buffer]);
     },

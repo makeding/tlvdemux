@@ -858,6 +858,23 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         `packet_id=0x${pending.audio.packetId.toString(16)})`);
     } catch (error) { callbackError = error; }
   };
+  const onMseLayerSwitchCancelled = cancelled => {
+    try {
+      const pending = pendingLayerSwitch;
+      if (!pending || pending.video.trackId !== cancelled.videoTrackId ||
+          pending.audio.trackId !== cancelled.audioTrackId) return;
+      pendingLayerSwitch = null;
+      renderVideoTracks();
+      renderAudioTracks();
+      const reason = {
+        'end-of-input': '入力が終了するまでに切替先を準備できませんでした',
+        reset: '再生状態がリセットされました',
+        reposition: '再生位置が変更されました',
+        'selection-changed': '別のトラックが選択されました',
+      }[cancelled.reason] ?? '切替を完了できませんでした';
+      appendLog(`${videoTrackLabel(pending.video)} への切替を中止: ${reason}`);
+    } catch (error) { callbackError = error; }
+  };
   const wantedVideoPacketId = parsePacketId();
 
   const selectAudioTrack = (track, groupIdentification = null) => {
@@ -920,6 +937,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     onMseAudioSplice,
     onMseVideoSplice,
     onMseLayerSwitch,
+    onMseLayerSwitchCancelled,
     onTrack(track) {
       tracks.set(track.trackId, track);
       appendLog(`トラック ${track.kind} packet_id=0x${track.packetId.toString(16)} codec=${track.codec}`);

@@ -41,12 +41,18 @@ public:
         events.push_back("layer-switch");
         layer_switches.push_back(layer);
     }
+    void onMseLayerSwitchCancelled(
+        const tlvdemux::MseLayerSwitchCancelled& cancelled) override {
+        events.push_back("layer-switch-cancelled");
+        layer_switch_cancellations.push_back(cancelled);
+    }
 
     std::vector<tlvdemux::MseTrackInit> inits;
     std::vector<tlvdemux::MseMediaSegment> segments;
     std::vector<tlvdemux::MseAudioSplice> splices;
     std::vector<tlvdemux::MseVideoSplice> video_splices;
     std::vector<tlvdemux::MseLayerSwitch> layer_switches;
+    std::vector<tlvdemux::MseLayerSwitchCancelled> layer_switch_cancellations;
     std::vector<std::string> events;
 };
 
@@ -874,6 +880,9 @@ void test_layer_switch_coordinates_video_rap_and_prepared_audio() {
     check(video_splice < replacement_video_segment &&
               replacement_video_segment < audio_splice && audio_splice < completion,
           "layer switch did not release staged video before prepared audio and completion");
+    check(!remuxer.endOfStream().has_value() &&
+              sink.layer_switch_cancellations.empty(),
+          "completed layer switch was later reported as cancelled");
 }
 
 void test_layer_switch_waits_for_target_audio_after_video_rap() {
@@ -903,6 +912,61 @@ void test_layer_switch_waits_for_target_audio_after_video_rap() {
               sink.layer_switches.front().audio_presentation_time_us ==
                   audio_time_us(5 * frame),
           "layer switch did not complete after target audio had 400ms prepared");
+}
+
+void test_layer_switch_cancels_once_at_end_of_input() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.push(hevc_unit(2, 0, 0, true, true));
+
+    check(remuxer.switchLayer(3, 9, 0),
+          "layer switch used by end-of-input test was rejected");
+    const auto cancelled = remuxer.endOfStream();
+    check(cancelled.has_value() &&
+              cancelled->reason == tlvdemux::MseLayerSwitchCancelReason::EndOfInput &&
+              cancelled->video_track_id == 3 && cancelled->audio_track_id == 9 &&
+              cancelled->previous_video_track_id == 2 &&
+              cancelled->previous_audio_track_id == 1,
+          "end of input did not return the complete cancelled selection");
+    check(sink.layer_switch_cancellations.size() == 1 &&
+              !remuxer.endOfStream().has_value() &&
+              sink.layer_switch_cancellations.size() == 1,
+          "end of input emitted duplicate layer-switch cancellation");
+}
+
+void test_layer_switch_cancels_on_reposition_and_explicit_selection() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    check(remuxer.switchLayer(3, 9, 0),
+          "layer switch used by reposition test was rejected");
+    const auto repositioned = remuxer.reposition();
+    check(repositioned.has_value() &&
+              repositioned->reason == tlvdemux::MseLayerSwitchCancelReason::Reposition,
+          "reposition did not cancel its pending layer switch");
+
+    check(remuxer.switchLayer(3, 9, 0),
+          "restored old selection could not start another layer switch");
+    const auto selected = remuxer.selectTrack(tlvdemux::TrackKind::Video, 4);
+    check(selected.has_value() &&
+              selected->reason == tlvdemux::MseLayerSwitchCancelReason::SelectionChanged &&
+              sink.layer_switch_cancellations.size() == 2,
+          "explicit track selection did not cancel the pending layer switch");
+
+    TestSink reset_sink;
+    tlvdemux::MseRemuxer reset_remuxer(reset_sink);
+    reset_remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    reset_remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    check(reset_remuxer.switchLayer(3, 9, 0),
+          "layer switch used by reset test was rejected");
+    const auto reset = reset_remuxer.reset();
+    check(reset.has_value() &&
+              reset->reason == tlvdemux::MseLayerSwitchCancelReason::Reset &&
+              reset_sink.layer_switch_cancellations.size() == 1,
+          "reset did not cancel its pending layer switch");
 }
 
 void test_audio_init_is_restored_when_output_is_reenabled() {
@@ -1100,6 +1164,8 @@ int main() {
     test_video_track_switch_preserves_prepared_alternate_audio();
     test_layer_switch_coordinates_video_rap_and_prepared_audio();
     test_layer_switch_waits_for_target_audio_after_video_rap();
+    test_layer_switch_cancels_once_at_end_of_input();
+    test_layer_switch_cancels_on_reposition_and_explicit_selection();
     test_audio_init_is_restored_when_output_is_reenabled();
     test_audio_channel_limit();
     test_unlimited_22_2_channel_count();

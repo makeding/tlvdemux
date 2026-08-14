@@ -46,6 +46,21 @@ struct MseLayerSwitch {
     std::int64_t audio_presentation_time_us = 0;
 };
 
+enum class MseLayerSwitchCancelReason {
+    EndOfInput,
+    Reset,
+    Reposition,
+    SelectionChanged,
+};
+
+struct MseLayerSwitchCancelled {
+    std::uint64_t video_track_id = 0;
+    std::uint64_t audio_track_id = 0;
+    std::uint64_t previous_video_track_id = 0;
+    std::uint64_t previous_audio_track_id = 0;
+    MseLayerSwitchCancelReason reason = MseLayerSwitchCancelReason::EndOfInput;
+};
+
 struct MseVideoStart {
     int nal_type = -1;
     bool signalled_random_access = false;
@@ -73,6 +88,7 @@ public:
     virtual void onMseAudioSplice(const MseAudioSplice&) {}
     virtual void onMseVideoSplice(const MseVideoSplice&) {}
     virtual void onMseLayerSwitch(const MseLayerSwitch&) {}
+    virtual void onMseLayerSwitchCancelled(const MseLayerSwitchCancelled&) {}
     virtual void onMseVideoStart(const MseVideoStart&) {}
 };
 
@@ -83,7 +99,8 @@ public:
     MseRemuxer(const MseRemuxer&) = delete;
     MseRemuxer& operator=(const MseRemuxer&) = delete;
 
-    void selectTrack(TrackKind kind, std::optional<std::uint64_t> track_id);
+    std::optional<MseLayerSwitchCancelled> selectTrack(
+        TrackKind kind, std::optional<std::uint64_t> track_id);
     std::optional<std::int64_t> switchAudioTrack(
         std::uint64_t track_id, std::int64_t earliest_presentation_time_us);
     bool switchLayer(std::uint64_t video_track_id, std::uint64_t audio_track_id,
@@ -91,8 +108,9 @@ public:
     void setOutputEnabled(bool enabled);
     void push(const AccessUnit& unit);
     void flush();
-    void reset();
-    void reposition();
+    std::optional<MseLayerSwitchCancelled> endOfStream();
+    std::optional<MseLayerSwitchCancelled> reset();
+    std::optional<MseLayerSwitchCancelled> reposition();
 
 private:
     class Impl;

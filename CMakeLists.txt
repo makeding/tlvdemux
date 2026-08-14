@@ -17,7 +17,7 @@ set(TLVDEMUX_LIBARIBTLV_GIT_REPOSITORY
     "https://github.com/makeding/libaribtlv.git" CACHE STRING
     "Git repository used to fetch libaribtlv")
 set(TLVDEMUX_LIBARIBTLV_GIT_TAG
-    "b253188e2f81ed3a283abcd04a65ced68c2902dd" CACHE STRING
+    "099ffc33c64ef2141a18bccf3a53c098a41afc04" CACHE STRING
     "Pinned libaribtlv Git revision")
 mark_as_advanced(
     TLVDEMUX_LIBARIBTLV_GIT_REPOSITORY
@@ -155,7 +155,10 @@ if(TLVDEMUX_BUILD_WASM_BINDINGS)
         message(FATAL_ERROR "TLVDEMUX_BUILD_WASM_BINDINGS requires the Emscripten toolchain")
     endif()
 
-    add_executable(tlvdemux-wasm wasm/bindings.cpp)
+    add_executable(tlvdemux-wasm
+        wasm/bindings.cpp
+        wasm/mse_remuxer_bindings.cpp
+    )
     target_link_libraries(tlvdemux-wasm PRIVATE tlvdemux::tlvdemux)
     target_link_options(tlvdemux-wasm PRIVATE
         --bind

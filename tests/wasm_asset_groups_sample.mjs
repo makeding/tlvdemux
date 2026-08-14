@@ -32,5 +32,10 @@ assert.deepEqual(groupsByPacketId['0xf310'], [[0x10, 0]]);
 assert.deepEqual(groupsByPacketId['0xf314'], [[0x10, 1]]);
 assert.deepEqual(groupsByPacketId['0xf311'], [[0x11, 0]]);
 assert.deepEqual(groupsByPacketId['0xf315'], [[0x11, 1]]);
+const highVideo = tracks.find(track => track.packetId === 0xf300);
+assert.deepEqual(highVideo.video, {
+  hdrWcgIdc: null,
+  videoTransferCharacteristics: 3,
+});
 
 console.log(JSON.stringify(groupsByPacketId, null, 2));

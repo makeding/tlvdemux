@@ -18,7 +18,8 @@ public:
     WasmMseRemuxer(const WasmMseRemuxer&) = delete;
     WasmMseRemuxer& operator=(const WasmMseRemuxer&) = delete;
 
-    void selectTrack(aribtlv::TrackKind kind, std::optional<std::uint64_t> track_id);
+    std::optional<tlvdemux::MseLayerSwitchCancelled> selectTrack(
+        aribtlv::TrackKind kind, std::optional<std::uint64_t> track_id);
     std::optional<std::int64_t> switchAudioTrack(
         std::uint64_t track_id, std::int64_t earliest_presentation_time_us);
     bool switchLayer(std::uint64_t video_track_id, std::uint64_t audio_track_id,
@@ -26,8 +27,9 @@ public:
     void setOutputEnabled(bool enabled);
     void push(const aribtlv::AccessUnit& unit);
     void flush();
-    void reset();
-    void reposition();
+    std::optional<tlvdemux::MseLayerSwitchCancelled> endOfStream();
+    std::optional<tlvdemux::MseLayerSwitchCancelled> reset();
+    std::optional<tlvdemux::MseLayerSwitchCancelled> reposition();
 
 private:
     class Impl;

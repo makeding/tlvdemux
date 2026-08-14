@@ -205,6 +205,16 @@ val track_info_value(const aribtlv::TrackInfo& info) {
     event.set("timescale", info.timescale);
     event.set("assetGroups", asset_groups_value(info.asset_groups));
     event.set("presentationRegions", presentation_regions_value(info.presentation_regions));
+    if (info.video.has_value()) {
+        auto video = val::object();
+        video.set("hdrWcgIdc", info.video->hdr_wcg_idc.has_value()
+            ? val(*info.video->hdr_wcg_idc) : val::null());
+        video.set("videoTransferCharacteristics",
+                  info.video->video_transfer_characteristics.has_value()
+                      ? val(*info.video->video_transfer_characteristics)
+                      : val::null());
+        event.set("video", video);
+    }
     return event;
 }
 
@@ -555,12 +565,13 @@ public:
 
     void flush() {
         demuxer_.flush();
-        if (mse_enabled_) mse_remuxer_.flush();
+        if (mse_enabled_) restoreLayerSelection(mse_remuxer_.endOfStream());
     }
     void reset() {
         reset_application_resources();
+        const auto cancelled = mse_enabled_ ? mse_remuxer_.reset() : std::nullopt;
         demuxer_.reset();
-        if (mse_enabled_) mse_remuxer_.reset();
+        restoreLayerSelection(cancelled);
         if (index_active_) recording_index_.begin(index_growing_);
     }
 
@@ -571,8 +582,9 @@ public:
         // therefore open data broadcasting immediately after a seek and keep
         // refreshing it from later carousel cycles.
         restart_application_assembly();
+        const auto cancelled = mse_enabled_ ? mse_remuxer_.reposition() : std::nullopt;
         demuxer_.reposition(aribtlv::RepositionOptions{input_offset, preserve_timeline});
-        if (mse_enabled_) mse_remuxer_.reposition();
+        restoreLayerSelection(cancelled);
     }
 
     void selectService(const val& context_id) {
@@ -588,6 +600,7 @@ public:
         if (kind == "subtitle") parsed_kind = aribtlv::TrackKind::Subtitle;
         if (!parsed_kind.has_value()) return;
         const auto selected = optional_number<std::uint64_t>(track_id);
+        if (*parsed_kind == aribtlv::TrackKind::Video) selected_video_track_ = selected;
         if (mse_enabled_ && *parsed_kind == aribtlv::TrackKind::Audio) {
             selected_audio_track_ = selected;
             // MSE keeps a bounded compressed-frame history for the other audio
@@ -621,6 +634,7 @@ public:
                 video_track_id, audio_track_id,
                 earliest_presentation_time_us)) return false;
         selected_audio_track_ = audio_track_id;
+        selected_video_track_ = video_track_id;
         demuxer_.selectTrack(aribtlv::TrackKind::Video, video_track_id);
         if (index_active_ && recording_index_.state() == aribtlv::IndexState::Building) {
             recording_index_.selectVideoTrack(video_track_id);
@@ -1229,6 +1243,21 @@ private:
         callback.call<void>("call", callbacks_, event);
     }
 
+    void restoreLayerSelection(
+        const std::optional<tlvdemux::MseLayerSwitchCancelled>& cancelled) {
+        if (!cancelled) return;
+        selected_video_track_ = cancelled->previous_video_track_id == 0
+            ? std::nullopt
+            : std::optional<std::uint64_t>{cancelled->previous_video_track_id};
+        selected_audio_track_ = cancelled->previous_audio_track_id == 0
+            ? std::nullopt
+            : std::optional<std::uint64_t>{cancelled->previous_audio_track_id};
+        demuxer_.selectTrack(aribtlv::TrackKind::Video, selected_video_track_);
+        if (index_active_ && recording_index_.state() == aribtlv::IndexState::Building) {
+            recording_index_.selectVideoTrack(selected_video_track_);
+        }
+    }
+
     val callbacks_;
     aribtlv::ApplicationResourceAssembler application_assembler_;
     std::deque<ApplicationEvent> application_events_;
@@ -1239,6 +1268,7 @@ private:
     bool index_active_ = false;
     bool index_growing_ = false;
     bool mse_enabled_ = false;
+    std::optional<std::uint64_t> selected_video_track_;
     std::optional<std::uint64_t> selected_audio_track_;
 };
 

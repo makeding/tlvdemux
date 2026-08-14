@@ -160,6 +160,13 @@ declare namespace createTlvDemuxModule {
     selectionLevel: number;
   }
 
+  interface VideoTrackInfo {
+    /** ARIB STD-B60 programme descriptor value, or null when absent. */
+    hdrWcgIdc: number | null;
+    /** ARIB STD-B60 programme transfer-characteristics value, or null when absent. */
+    videoTransferCharacteristics: number | null;
+  }
+
   interface TrackInfo {
     trackId: bigint;
     contextId: number;
@@ -172,6 +179,7 @@ declare namespace createTlvDemuxModule {
     /** ARIB STD-B60 Asset Group descriptors; an asset may belong to multiple groups. */
     assetGroups: AssetGroupInfo[];
     presentationRegions: MpuPresentationRegion[];
+    video?: VideoTrackInfo;
     audio?: AudioTrackInfo;
     subtitle?: SubtitleTrackInfo;
   }
@@ -499,6 +507,14 @@ declare namespace createTlvDemuxModule {
     audioPresentationTimeUs: bigint;
   }
 
+  interface MseLayerSwitchCancelled {
+    videoTrackId: bigint;
+    audioTrackId: bigint;
+    previousVideoTrackId: bigint;
+    previousAudioTrackId: bigint;
+    reason: "end-of-input" | "reset" | "reposition" | "selection-changed";
+  }
+
   interface MseVideoStart {
     nalType: number;
     signalledRandomAccess: boolean;
@@ -541,6 +557,7 @@ declare namespace createTlvDemuxModule {
     onMseAudioSplice?: (splice: MseAudioSplice) => void;
     onMseVideoSplice?: (splice: MseVideoSplice) => void;
     onMseLayerSwitch?: (layer: MseLayerSwitch) => void;
+    onMseLayerSwitchCancelled?: (cancelled: MseLayerSwitchCancelled) => void;
     onMseVideoStart?: (start: MseVideoStart) => void;
   }
 
