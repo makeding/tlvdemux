@@ -20,6 +20,7 @@ struct HevcConfiguration {
     std::uint32_t height = 0;
     std::string codec;
     Bytes hvcc;
+    std::optional<ColorInformation> color;
 };
 
 std::vector<NaluView> annex_b_views(const Bytes& data);

@@ -298,6 +298,7 @@ public:
             track.height = config.height;
             track.codec = config.codec;
             track.config = config.hvcc;
+            track.color = config.color;
             // Adopt the stream's own timescale so DTS/PTS stay exact integers
             // (e.g. 180000's 3003-tick frame interval is not an integer number
             // of microseconds, and the resulting rounding drift can make a

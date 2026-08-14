@@ -109,7 +109,14 @@ Bytes video_entry(const Mp4Track& track) {
                        u16(track.height), fixed16(72), fixed16(72), u32(0), u16(1),
                        compressor, u16(24), u16(0xffff));
     const auto* sample_entry = track.codec.rfind("hvc1.", 0) == 0 ? "hvc1" : "hev1";
-    return box(sample_entry, header, box("hvcC", track.config));
+    Bytes children = box("hvcC", track.config);
+    if (track.color) {
+        append(children, box("colr", ascii("nclx"), u16(track.color->primaries),
+                             u16(track.color->transfer), u16(track.color->matrix),
+                             Bytes{static_cast<std::uint8_t>(
+                                 track.color->full_range ? 0x80U : 0x00U)}));
+    }
+    return box(sample_entry, header, children);
 }
 
 Bytes descriptor(const std::uint8_t tag, const Bytes& payload) {

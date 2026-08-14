@@ -18,6 +18,7 @@ struct Mp4Track {
     std::uint32_t channels = 0;
     std::string codec;
     Bytes config;
+    std::optional<ColorInformation> color;
 };
 
 struct Sample {

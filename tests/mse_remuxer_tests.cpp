@@ -99,6 +99,10 @@ std::uint32_t read_u32(const std::vector<std::uint8_t>& data, const std::size_t 
     return (std::uint32_t(data[offset]) << 24) | (std::uint32_t(data[offset + 1]) << 16) |
            (std::uint32_t(data[offset + 2]) << 8) | std::uint32_t(data[offset + 3]);
 }
+std::uint16_t read_u16(const std::vector<std::uint8_t>& data, const std::size_t offset) {
+    return static_cast<std::uint16_t>(
+        (std::uint16_t(data[offset]) << 8) | std::uint16_t(data[offset + 1]));
+}
 std::uint64_t read_u64(const std::vector<std::uint8_t>& data, const std::size_t offset) {
     return (std::uint64_t(read_u32(data, offset)) << 32) | std::uint64_t(read_u32(data, offset + 4));
 }
@@ -199,6 +203,46 @@ std::uint32_t mdhd_timescale(const std::vector<std::uint8_t>& init_segment) {
     return read_u32(init_segment, mdhd->payload_start + 12);  // version/flags(4) + creation/modification time(8)
 }
 
+struct ParsedColorInformation {
+    std::uint16_t primaries = 0;
+    std::uint16_t transfer = 0;
+    std::uint16_t matrix = 0;
+    bool full_range = false;
+    bool operator==(const ParsedColorInformation&) const = default;
+};
+
+ParsedColorInformation video_color_information(
+    const std::vector<std::uint8_t>& init_segment) {
+    const auto moov = find_box(init_segment, 0, init_segment.size(), "moov");
+    check(moov.has_value(), "init segment is missing a moov box");
+    const auto trak = find_box(init_segment, moov->payload_start, moov->payload_end, "trak");
+    check(trak.has_value(), "moov is missing a trak box");
+    const auto mdia = find_box(init_segment, trak->payload_start, trak->payload_end, "mdia");
+    check(mdia.has_value(), "trak is missing a mdia box");
+    const auto minf = find_box(init_segment, mdia->payload_start, mdia->payload_end, "minf");
+    check(minf.has_value(), "mdia is missing a minf box");
+    const auto stbl = find_box(init_segment, minf->payload_start, minf->payload_end, "stbl");
+    check(stbl.has_value(), "minf is missing a stbl box");
+    const auto stsd = find_box(init_segment, stbl->payload_start, stbl->payload_end, "stsd");
+    check(stsd.has_value(), "stbl is missing a stsd box");
+    const auto hvc1 = find_box(init_segment, stsd->payload_start + 8, stsd->payload_end, "hvc1");
+    check(hvc1.has_value(), "stsd is missing an hvc1 sample entry");
+    const auto colr = find_box(init_segment, hvc1->payload_start + 78,
+                               hvc1->payload_end, "colr");
+    check(colr.has_value() && colr->payload_end - colr->payload_start == 11,
+          "hvc1 is missing a valid colr box");
+    check(std::equal(init_segment.begin() + static_cast<std::ptrdiff_t>(colr->payload_start),
+                     init_segment.begin() + static_cast<std::ptrdiff_t>(colr->payload_start + 4),
+                     "nclx"),
+          "colr does not use the nclx colour type");
+    return {
+        read_u16(init_segment, colr->payload_start + 4),
+        read_u16(init_segment, colr->payload_start + 6),
+        read_u16(init_segment, colr->payload_start + 8),
+        (init_segment[colr->payload_start + 10] & 0x80U) != 0,
+    };
+}
+
 std::vector<ParsedSegment> segments_of(const std::vector<tlvdemux::MseMediaSegment>& segments,
                                        const std::string& type) {
     std::vector<ParsedSegment> out;
@@ -257,7 +301,7 @@ std::vector<std::uint8_t> escape_rbsp(const std::vector<std::uint8_t>& raw) {
     return out;
 }
 
-// Matches exactly the fields parse_sps() (wasm/mse_remuxer.cpp) reads, with
+// Matches the fields parse_sps() reads, with
 // sps_max_sub_layers_minus1 = 0 so its sub-layer loops are skipped.
 std::vector<std::uint8_t> build_sps_nalu(const std::uint32_t width, const std::uint32_t height) {
     BitWriter writer;
@@ -278,6 +322,31 @@ std::vector<std::uint8_t> build_sps_nalu(const std::uint32_t width, const std::u
     writer.bits(0, 1);  // conformance_window_flag
     write_ue(writer, 0);  // bit_depth_luma_minus8
     write_ue(writer, 0);  // bit_depth_chroma_minus8
+    write_ue(writer, 4);  // log2_max_pic_order_cnt_lsb_minus4
+    writer.bits(0, 1);    // sps_sub_layer_ordering_info_present_flag
+    write_ue(writer, 0);  // sps_max_dec_pic_buffering_minus1[0]
+    write_ue(writer, 0);  // sps_max_num_reorder_pics[0]
+    write_ue(writer, 0);  // sps_max_latency_increase_plus1[0]
+    for (int i = 0; i < 6; ++i) write_ue(writer, 0);  // coding/transform block sizes
+    writer.bits(0, 1);  // scaling_list_enabled_flag
+    writer.bits(0, 1);  // amp_enabled_flag
+    writer.bits(0, 1);  // sample_adaptive_offset_enabled_flag
+    writer.bits(0, 1);  // pcm_enabled_flag
+    write_ue(writer, 0);  // num_short_term_ref_pic_sets
+    writer.bits(0, 1);  // long_term_ref_pics_present_flag
+    writer.bits(0, 1);  // sps_temporal_mvp_enabled_flag
+    writer.bits(0, 1);  // strong_intra_smoothing_enabled_flag
+    writer.bits(1, 1);  // vui_parameters_present_flag
+    writer.bits(1, 1);  // aspect_ratio_info_present_flag
+    writer.bits(1, 8);  // square pixels
+    writer.bits(0, 1);  // overscan_info_present_flag
+    writer.bits(1, 1);  // video_signal_type_present_flag
+    writer.bits(0, 3);  // component video
+    writer.bits(0, 1);  // video_full_range_flag: limited range
+    writer.bits(1, 1);  // colour_description_present_flag
+    writer.bits(9, 8);  // BT.2020 primaries
+    writer.bits(18, 8); // BT.2100 HLG transfer
+    writer.bits(9, 8);  // BT.2020 non-constant matrix
     return escape_rbsp(writer.take());
 }
 
@@ -701,6 +770,9 @@ void test_video_only_output_does_not_wait_for_audio() {
     check(moov.has_value(), "video-only init is missing moov");
     check(direct_box_count(init, moov->payload_start, moov->payload_end, "trak") == 1,
           "video-only init must declare exactly one track");
+    check(video_color_information(init) ==
+              ParsedColorInformation{9, 18, 9, false},
+          "video init did not preserve the SPS HLG colour information as nclx");
     check(parse_segment(sink.segments.front().data).track_id == 1,
           "video-only fragment must reference the video track");
 }

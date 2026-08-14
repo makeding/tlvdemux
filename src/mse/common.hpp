@@ -3,12 +3,21 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
 namespace tlvdemux::detail::mse {
 
 using Bytes = std::vector<std::uint8_t>;
+
+struct ColorInformation {
+    std::uint16_t primaries = 0;
+    std::uint16_t transfer = 0;
+    std::uint16_t matrix = 0;
+    bool full_range = false;
+    bool operator==(const ColorInformation&) const = default;
+};
 
 inline void append(Bytes& output, const Bytes& value) {
     output.insert(output.end(), value.begin(), value.end());

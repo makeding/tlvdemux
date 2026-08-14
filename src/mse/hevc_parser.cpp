@@ -1,6 +1,7 @@
 #include "hevc_parser.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <stdexcept>
 #include <utility>
@@ -60,7 +61,72 @@ struct SpsInfo {
     Bytes compatibility_bytes;
     Bytes constraints;
     std::string codec;
+    std::optional<ColorInformation> color;
 };
+
+void skip_scaling_list_data(BitReader& reader) {
+    for (unsigned size_id = 0; size_id < 4; ++size_id) {
+        const auto matrix_count = size_id == 3 ? 2U : 6U;
+        for (unsigned matrix = 0; matrix < matrix_count; ++matrix) {
+            if (!reader.boolean()) {
+                reader.ue();
+                continue;
+            }
+            const auto coefficient_count = std::min(64U, 1U << (4U + 2U * size_id));
+            if (size_id > 1) reader.ue();
+            for (unsigned coefficient = 0; coefficient < coefficient_count; ++coefficient) {
+                reader.ue();
+            }
+        }
+    }
+}
+
+void skip_short_term_reference_picture_set(
+    BitReader& reader, const std::uint32_t index,
+    std::array<std::uint32_t, 64>& delta_poc_counts) {
+    if (index != 0 && reader.boolean()) {
+        reader.bits(1);
+        reader.ue();
+        auto count = 0U;
+        for (std::uint32_t delta = 0; delta <= delta_poc_counts[index - 1]; ++delta) {
+            const bool used = reader.boolean();
+            const bool use_delta = used || reader.boolean();
+            if (use_delta) ++count;
+        }
+        delta_poc_counts[index] = count;
+        return;
+    }
+
+    const auto negative = reader.ue();
+    const auto positive = reader.ue();
+    if (negative > 64 || positive > 64 || negative + positive > 64) {
+        throw std::runtime_error("HEVC SPS has too many reference pictures");
+    }
+    delta_poc_counts[index] = negative + positive;
+    for (std::uint32_t picture = 0; picture < negative + positive; ++picture) {
+        reader.ue();
+        reader.bits(1);
+    }
+}
+
+std::optional<ColorInformation> parse_vui_color(BitReader& reader) {
+    if (reader.boolean()) {
+        const auto aspect_ratio_idc = reader.bits(8);
+        if (aspect_ratio_idc == 255) reader.bits(32);
+    }
+    if (reader.boolean()) reader.bits(1);
+    if (!reader.boolean()) return std::nullopt;
+
+    reader.bits(3);
+    const bool full_range = reader.boolean();
+    if (!reader.boolean()) return std::nullopt;
+    return ColorInformation{
+        static_cast<std::uint16_t>(reader.bits(8)),
+        static_cast<std::uint16_t>(reader.bits(8)),
+        static_cast<std::uint16_t>(reader.bits(8)),
+        full_range,
+    };
+}
 
 SpsInfo parse_sps(const Bytes& nalu) {
     const auto data = rbsp(nalu);
@@ -108,6 +174,49 @@ SpsInfo parse_sps(const Bytes& nalu) {
     }
     output.bit_luma = static_cast<std::uint8_t>(reader.ue());
     output.bit_chroma = static_cast<std::uint8_t>(reader.ue());
+    const auto log2_max_pic_order_count = reader.ue() + 4U;
+    if (log2_max_pic_order_count > 32) {
+        throw std::runtime_error("invalid HEVC picture-order count width");
+    }
+    const auto ordering_start = reader.boolean() ? 0U : max_layers;
+    for (auto layer = ordering_start; layer <= max_layers; ++layer) {
+        reader.ue();
+        reader.ue();
+        reader.ue();
+    }
+    for (unsigned syntax_element = 0; syntax_element < 6; ++syntax_element) {
+        reader.ue();
+    }
+    if (reader.boolean() && reader.boolean()) skip_scaling_list_data(reader);
+    reader.bits(1);
+    reader.bits(1);
+    if (reader.boolean()) {
+        reader.bits(8);
+        reader.ue();
+        reader.ue();
+        reader.bits(1);
+    }
+    const auto short_term_sets = reader.ue();
+    if (short_term_sets > 64) {
+        throw std::runtime_error("HEVC SPS has too many reference-picture sets");
+    }
+    std::array<std::uint32_t, 64> delta_poc_counts{};
+    for (std::uint32_t index = 0; index < short_term_sets; ++index) {
+        skip_short_term_reference_picture_set(reader, index, delta_poc_counts);
+    }
+    if (reader.boolean()) {
+        const auto long_term_pictures = reader.ue();
+        if (long_term_pictures > 32) {
+            throw std::runtime_error("HEVC SPS has too many long-term reference pictures");
+        }
+        for (std::uint32_t index = 0; index < long_term_pictures; ++index) {
+            reader.bits(log2_max_pic_order_count);
+            reader.bits(1);
+        }
+    }
+    reader.bits(1);
+    reader.bits(1);
+    if (reader.boolean()) output.color = parse_vui_color(reader);
     const auto sub_width = output.chroma == 1 || output.chroma == 2 ? 2U : 1U;
     const auto sub_height = output.chroma == 1 ? 2U : 1U;
     output.width = coded_width - sub_width * (left + right);
@@ -205,7 +314,8 @@ Bytes copy_nalu(const Bytes& data, const NaluView& view) {
 HevcConfiguration hevc_configuration(const Bytes& vps, const Bytes& sps,
                                      const Bytes& pps) {
     const auto info = parse_sps(sps);
-    return {info.width, info.height, info.codec, make_hvcc(vps, sps, pps, info)};
+    return {info.width, info.height, info.codec, make_hvcc(vps, sps, pps, info),
+            info.color};
 }
 
 } // namespace tlvdemux::detail::mse
