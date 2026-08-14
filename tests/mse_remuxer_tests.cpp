@@ -805,6 +805,31 @@ void test_audio_switch_uses_cached_frame_boundary_without_video_rap() {
           "switching back did not begin at the requested AAC frame");
 }
 
+void test_video_track_switch_preserves_prepared_alternate_audio() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.push(hevc_unit(2, 0, 0, true, true));
+
+    constexpr std::int64_t frame = 1024;
+    for (std::int64_t index = 0; index < 12; ++index) {
+        remuxer.push(audio_unit(9, index * frame));
+    }
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 3);
+    auto replacement = hevc_unit(3, 100000, 100000, true, true);
+    replacement.discontinuity = true;
+    remuxer.push(replacement);
+
+    const auto requested_boundary = audio_time_us(6 * frame);
+    const auto boundary = remuxer.switchAudioTrack(9, requested_boundary);
+    check(boundary == requested_boundary,
+          "video-layer discontinuity cleared prepared alternate-audio history");
+    check(sink.splices.size() == 1 &&
+              sink.splices.front().presentation_time_us == requested_boundary,
+          "alternate-audio switch did not retain its cached boundary after video-layer switch");
+}
+
 void test_audio_init_is_restored_when_output_is_reenabled() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
@@ -997,6 +1022,7 @@ void test_video_only_output_does_not_wait_for_audio() {
 
 int main() {
     test_audio_switch_uses_cached_frame_boundary_without_video_rap();
+    test_video_track_switch_preserves_prepared_alternate_audio();
     test_audio_init_is_restored_when_output_is_reenabled();
     test_audio_channel_limit();
     test_unlimited_22_2_channel_count();

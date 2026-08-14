@@ -310,6 +310,10 @@ public:
     explicit HevcMuxer(Output& output) : BaseMuxer("video", 1, output), output_(output) {}
 
     bool started() const noexcept { return started_; }
+    bool is_input_track_switch(const aribtlv::AccessUnit& unit) const noexcept {
+        return unit.discontinuity && input_track_id_.has_value() &&
+            *input_track_id_ != unit.track_id;
+    }
     // AacMuxer has its own (sample-rate) track timescale, so it needs this
     // shared offset in microseconds regardless of the video track timescale.
     std::optional<std::int64_t> timeline_offset_us() const noexcept {
@@ -713,7 +717,7 @@ public:
 
     void push(const aribtlv::AccessUnit& unit) {
         if (video_id && unit.track_id == *video_id) {
-            if (unit.discontinuity) {
+            if (unit.discontinuity && !video.is_input_track_switch(unit)) {
                 for (auto& entry : audio) entry.second.discontinuity();
             }
             video.push(unit, enabled);

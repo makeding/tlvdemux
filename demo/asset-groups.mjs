@@ -64,7 +64,12 @@ export function audioTrackChoices(tracks, supported = () => true) {
   const choices = new Map();
   for (const track of tracks) {
     if (track.kind !== 'audio' || !supported(track)) continue;
-    for (const group of track.assetGroups || []) {
+    const groups = track.assetGroups || [];
+    if (!groups.length) {
+      choices.set(`track:${track.packetId}`, {track, group: null});
+      continue;
+    }
+    for (const group of groups) {
       const current = choices.get(group.groupIdentification);
       const currentLevel = current?.group.selectionLevel ?? Number.POSITIVE_INFINITY;
       if (!current || group.selectionLevel < currentLevel ||
@@ -77,6 +82,6 @@ export function audioTrackChoices(tracks, supported = () => true) {
     .sort((left, right) => left.track.componentTag - right.track.componentTag)
     .map(({track, group}) => ({
       track,
-      groupIdentification: group.groupIdentification,
+      groupIdentification: group?.groupIdentification ?? null,
     }));
 }

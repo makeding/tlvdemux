@@ -66,5 +66,9 @@ assert.deepEqual(audioTrackChoices([audioMainLow, audioSubLow]), [
   {track: audioMainLow, groupIdentification: 0x10},
   {track: audioSubLow, groupIdentification: 0x11},
 ]);
+const ordinaryAudio = track(0xf320, []);
+assert.deepEqual(audioTrackChoices([ordinaryAudio]), [
+  {track: ordinaryAudio, groupIdentification: null},
+]);
 
 console.log('asset group selection test passed');

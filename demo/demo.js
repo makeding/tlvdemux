@@ -1,6 +1,10 @@
 import { B62TTMLRenderer } from '/aribb62.js/src/index.js';
 import { DataBroadcastController } from './data-broadcast.js?v=webkit-canvas-plane-v4';
-import { correspondingAudioTrack, selectionLevel } from './asset-groups.mjs?v=asset-groups-v3';
+import {
+  audioTrackChoices,
+  correspondingAudioTrack,
+  selectionLevel,
+} from './asset-groups.mjs?v=layer-switch-v1';
 import { shouldRenderSubtitleTrack, subtitleTrackKind } from './subtitle-tracks.mjs?v=subtitle-planes-v1';
 import { coalesceReadableStream } from './live-stream.mjs?v=asset-groups-v3';
 import { createWorkerTlvDemuxModule } from './worker-tlvdemux.js?v=asset-groups-v3';
@@ -68,6 +72,7 @@ let activeAudioSwitch = null;
 let activeSubtitleSwitch = null;
 let activeSubtitleRenderer = null;
 let selectedAudioPacketId = null;
+let selectedAudioGroupId = null;
 let preferredAudioPacketId = null;
 let selectedVideoPacketId = null;
 let knownVideoTracks = new Map();
@@ -75,13 +80,14 @@ let knownAudioTracks = new Map();
 let selectedSubtitlePacketId = null;
 let preferredSubtitlePacketId = null;
 let knownSubtitleTracks = new Map();
+let knownTtmlTracks = new Map();
 let playbackQualityTimer = null;
 
 dataBroadcast.setCaptionSubscriptionListener(() => {
-  const selectedTrack = [...knownSubtitleTracks.values()]
-    .find(track => track.packetId === selectedSubtitlePacketId);
-  if (selectedTrack && dataBroadcast.isCaptionSubscribed(selectedTrack.componentTag)) {
-    activeSubtitleRenderer?.clearTrack(selectedTrack.packetId);
+  for (const track of knownTtmlTracks.values()) {
+    if (dataBroadcast.isCaptionSubscribed(track.componentTag)) {
+      activeSubtitleRenderer?.clearTrack(track.packetId);
+    }
   }
 });
 
@@ -166,24 +172,40 @@ function audioTrackLabel(track) {
   return parts.join(' · ');
 }
 
+function audioChoiceValue(choice) {
+  return choice.groupIdentification === null
+    ? `track:${choice.track.packetId}`
+    : `group:${choice.groupIdentification}`;
+}
+
 function renderAudioTracks() {
   elements.audioTrack.replaceChildren();
   const automatic = document.createElement('option');
   automatic.value = '';
   automatic.textContent = '自動';
   elements.audioTrack.append(automatic);
-  for (const track of [...knownAudioTracks.values()].sort((a, b) => a.packetId - b.packetId)) {
+  const choices = audioTrackChoices(knownAudioTracks.values(), mseAudioTrackSupported);
+  for (const choice of choices) {
+    const {track, groupIdentification} = choice;
     const option = document.createElement('option');
-    option.value = String(track.packetId);
-    option.textContent = audioTrackLabel(track);
+    option.value = audioChoiceValue(choice);
+    option.textContent = groupIdentification === null
+      ? audioTrackLabel(track)
+      : `${audioTrackLabel(track)} · group=0x${groupIdentification.toString(16)}`;
     option.disabled = !mseAudioTrackSupported(track);
     elements.audioTrack.append(option);
   }
-  const desired = selectedAudioPacketId ?? preferredAudioPacketId;
-  const desiredTrack = desired === null ? undefined : knownAudioTracks.get(desired);
-  elements.audioTrack.value = desiredTrack && mseAudioTrackSupported(desiredTrack)
-    ? String(desired) : '';
-  elements.audioTrack.disabled = knownAudioTracks.size === 0;
+  let desiredGroup = selectedAudioGroupId;
+  if (desiredGroup === null && preferredAudioPacketId !== null) {
+    desiredGroup = knownAudioTracks.get(preferredAudioPacketId)?.assetGroups?.[0]
+      ?.groupIdentification ?? null;
+  }
+  const desiredChoice = desiredGroup !== null
+    ? choices.find(choice => choice.groupIdentification === desiredGroup)
+    : choices.find(choice => choice.track.packetId ===
+        (selectedAudioPacketId ?? preferredAudioPacketId));
+  elements.audioTrack.value = desiredChoice ? audioChoiceValue(desiredChoice) : '';
+  elements.audioTrack.disabled = choices.length === 0;
 }
 
 function subtitleTrackLabel(track) {
@@ -665,7 +687,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   let selectedVideoTrack = null;
   let pendingLayerAudio = null;
   let selectedAudio = null;
-  let selectedAudioGroupId = null;
   let selectedSubtitle = null;
   let subtitleEventCount = 0;
   let videoDiscontinuityCount = 0;
@@ -931,10 +952,20 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
           return;
         }
         const desired = preferredAudioPacketId ?? selectedAudioPacketId;
-        if (selectedAudio === null || track.packetId === desired) selectAudioTrack(track);
+        const targetLevel = selectionLevel(selectedVideoTrack);
+        const restoresSelectedGroup = selectedAudio === null && selectedAudioGroupId !== null &&
+          track.assetGroups?.some(group =>
+            group.groupIdentification === selectedAudioGroupId &&
+            (targetLevel === null || group.selectionLevel === targetLevel));
+        if (restoresSelectedGroup ||
+            (selectedAudioGroupId === null &&
+             (selectedAudio === null || track.packetId === desired))) {
+          selectAudioTrack(track, restoresSelectedGroup ? selectedAudioGroupId : null);
+        }
         synchronizeAudioForVideoLayer();
       } else if (track.kind === 'subtitle' && track.codec === 'ttml') {
         const trackKind = subtitleTrackKind(track);
+        knownTtmlTracks.set(track.packetId, track);
         dataBroadcast.captionTrackChanged(track);
         appendLog(`${trackKind === 'caption' ? '字幕' : '文字スーパー'} ` +
           `packet_id=0x${track.packetId.toString(16)} type=${track.subtitle.type} ` +
@@ -958,6 +989,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         if (selectedAudio === track.trackId) selectedAudio = null;
         renderAudioTracks();
       } else if (track.kind === 'subtitle') {
+        knownTtmlTracks.delete(track.packetId);
         knownSubtitleTracks.delete(track.packetId);
         if (selectedSubtitle === track.trackId) selectedSubtitle = null;
         renderSubtitleTracks();
@@ -1095,8 +1127,16 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     renderVideoTracks();
   };
   activeAudioSwitch = async (packetId, groupIdentification = null, earliestUs = null) => {
-    const track = [...tracks.values()].find(item => item.kind === 'audio' && item.packetId === packetId);
+    let track = [...tracks.values()].find(
+      item => item.kind === 'audio' && item.packetId === packetId,
+    );
     if (!track) throw new Error(`音声 packet_id=0x${packetId.toString(16)} は利用できません`);
+    if (groupIdentification !== null) {
+      const layered = correspondingAudioTrack(
+        knownAudioTracks.values(), track, selectionLevel(selectedVideoTrack), groupIdentification,
+      );
+      if (layered) track = layered.track;
+    }
     if (!mseAudioTrackSupported(track)) {
       throw new Error(`音声 packet_id=0x${packetId.toString(16)} の ` +
         `${track.audio?.channels ?? '?'}ch は MSE 非対応です`);
@@ -1108,7 +1148,14 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     if (generation !== runGeneration) return;
     const earliest = earliestUs ??
       BigInt(Math.round((elements.video.currentTime + 0.1) * 1000000));
-    const boundary = await demuxer.switchAudioTrack(track.trackId, earliest);
+    const preparationDeadline = earliestUs === null ? 0 : performance.now() + 3000;
+    let boundary = null;
+    do {
+      boundary = await demuxer.switchAudioTrack(track.trackId, earliest);
+      if (boundary !== null || preparationDeadline === 0 ||
+          performance.now() >= preparationDeadline || generation !== runGeneration) break;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    } while (true);
     if (callbackError) throw callbackError;
     if (boundary === null) {
       throw new Error('切替先の音声が現在の再生位置まで準備できていません');
@@ -1118,7 +1165,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     selectedAudioPacketId = track.packetId;
     selectedAudioGroupId = groupIdentification ??
       track.assetGroups?.[0]?.groupIdentification ?? null;
-    appendLog(`音声切替 packet_id=0x${packetId.toString(16)} (インプレース)`);
+    appendLog(`音声切替 packet_id=0x${track.packetId.toString(16)} (インプレース)`);
     renderAudioTracks();
   };
   activeSubtitleSwitch = packetId => {
@@ -1265,8 +1312,10 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false, operationLa
     knownVideoTracks = new Map();
     selectedVideoPacketId = null;
     selectedAudioPacketId = null;
+    selectedAudioGroupId = null;
     renderAudioTracks();
     knownSubtitleTracks = new Map();
+    knownTtmlTracks = new Map();
     selectedSubtitlePacketId = null;
     renderSubtitleTracks();
   }
@@ -1350,14 +1399,17 @@ elements.videoTrack.addEventListener('change', () => {
 });
 elements.audioTrack.addEventListener('change', () => {
   const value = elements.audioTrack.value;
-  preferredAudioPacketId = value === '' ? null : Number(value);
+  const choice = audioTrackChoices(
+    knownAudioTracks.values(), mseAudioTrackSupported,
+  ).find(item => audioChoiceValue(item) === value);
+  preferredAudioPacketId = choice?.track.packetId ?? null;
   try {
     if (preferredAudioPacketId === null) localStorage.removeItem(AUDIO_STORAGE_KEY);
     else localStorage.setItem(AUDIO_STORAGE_KEY, String(preferredAudioPacketId));
   } catch (_) { /* Keep track switching available without storage. */ }
-  const target = preferredMseAudioTrack(knownAudioTracks, preferredAudioPacketId);
+  const target = choice?.track ?? preferredMseAudioTrack(knownAudioTracks, preferredAudioPacketId);
   if (target && activeAudioSwitch) {
-    activeAudioSwitch(target.packetId).catch(error => {
+    activeAudioSwitch(target.packetId, choice?.groupIdentification ?? null).catch(error => {
       appendLog(`音声切替エラー ${error.message || error}`);
       console.error(error);
       renderAudioTracks();
