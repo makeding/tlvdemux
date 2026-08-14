@@ -142,6 +142,11 @@ declare namespace createTlvDemuxModule {
     timingMode: number;
   }
 
+  interface AssetGroupInfo {
+    groupIdentification: number;
+    selectionLevel: number;
+  }
+
   interface TrackInfo {
     trackId: bigint;
     contextId: number;
@@ -151,6 +156,8 @@ declare namespace createTlvDemuxModule {
     language: string;
     componentTag: number;
     timescale: number;
+    /** ARIB STD-B60 Asset Group descriptors; an asset may belong to multiple groups. */
+    assetGroups: AssetGroupInfo[];
     presentationRegions: MpuPresentationRegion[];
     audio?: AudioTrackInfo;
     subtitle?: SubtitleTrackInfo;

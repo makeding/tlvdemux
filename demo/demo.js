@@ -1,8 +1,9 @@
 import { B62TTMLRenderer } from '/aribb62.js/src/index.js';
 import { DataBroadcastController } from './data-broadcast.js?v=webkit-canvas-plane-v4';
-import { coalesceReadableStream } from './live-stream.mjs?v=audio-splice-v2';
-import { createWorkerTlvDemuxModule } from './worker-tlvdemux.js?v=audio-splice-v2';
-import { MseAppendQueue, finalizeMseMediaSource } from '../mse-append-queue.mjs?v=audio-splice-v2';
+import { correspondingAudioTrack, selectionLevel } from './asset-groups.mjs?v=asset-groups-v3';
+import { coalesceReadableStream } from './live-stream.mjs?v=asset-groups-v3';
+import { createWorkerTlvDemuxModule } from './worker-tlvdemux.js?v=asset-groups-v3';
+import { MseAppendQueue, finalizeMseMediaSource } from '../mse-append-queue.mjs?v=asset-groups-v3';
 
 const MiB = 1024n * 1024n;
 const PLAYBACK_CHUNK = 2n * MiB;
@@ -625,7 +626,9 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const queues = reuseMedia ? new Map(activeQueueByType) : new Map();
   const tracks = new Map();
   let selectedVideo = null;
+  let selectedVideoTrack = null;
   let selectedAudio = null;
+  let selectedAudioGroupId = null;
   let selectedSubtitle = null;
   let subtitleEventCount = 0;
   let videoDiscontinuityCount = 0;
@@ -767,11 +770,39 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   };
   const wantedVideoPacketId = parsePacketId();
 
-  const selectAudioTrack = track => {
+  const selectAudioTrack = (track, groupIdentification = null) => {
     selectedAudio = track.trackId;
     selectedAudioPacketId = track.packetId;
+    selectedAudioGroupId = groupIdentification ??
+      track.assetGroups?.[0]?.groupIdentification ?? null;
     void demuxer.selectTrack('audio', selectedAudio);
     renderAudioTracks();
+  };
+
+  const synchronizeAudioForVideoLayer = () => {
+    const targetLevel = selectionLevel(selectedVideoTrack);
+    if (targetLevel === null) return;
+    const currentTrack = [...knownAudioTracks.values()].find(
+      track => track.trackId === selectedAudio,
+    ) || preferredMseAudioTrack(knownAudioTracks, preferredAudioPacketId);
+    const corresponding = correspondingAudioTrack(
+      knownAudioTracks.values(), currentTrack, targetLevel, selectedAudioGroupId,
+    );
+    if (!corresponding || !mseAudioTrackSupported(corresponding.track)) return;
+    selectedAudioGroupId = corresponding.groupIdentification;
+    if (corresponding.track.trackId === selectedAudio) return;
+    appendLog(`階層映像 selection_level=${targetLevel} に対応する音声 ` +
+      `packet_id=0x${corresponding.track.packetId.toString(16)} を選択します`);
+    if (activeAudioSwitch) {
+      activeAudioSwitch(
+        corresponding.track.packetId, corresponding.groupIdentification,
+      ).catch(error => {
+        appendLog(`階層音声切替エラー ${error.message || error}`);
+        console.error(error);
+      });
+    } else {
+      selectAudioTrack(corresponding.track, corresponding.groupIdentification);
+    }
   };
 
   const selectSubtitleTrack = track => {
@@ -797,7 +828,9 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       if (track.kind === 'video' && selectedVideo === null &&
           (wantedVideoPacketId === undefined || track.packetId === wantedVideoPacketId)) {
         selectedVideo = track.trackId;
+        selectedVideoTrack = track;
         void demuxer.selectTrack('video', selectedVideo);
+        synchronizeAudioForVideoLayer();
       } else if (track.kind === 'audio') {
         knownAudioTracks.set(track.packetId, track);
         renderAudioTracks();
@@ -820,6 +853,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         }
         const desired = preferredAudioPacketId ?? selectedAudioPacketId;
         if (selectedAudio === null || track.packetId === desired) selectAudioTrack(track);
+        synchronizeAudioForVideoLayer();
       } else if (track.kind === 'subtitle' && track.codec === 'ttml') {
         dataBroadcast.captionTrackChanged(track);
         knownSubtitleTracks.set(track.packetId, track);
@@ -930,14 +964,17 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   await demuxer.setSubtitlePassthroughEnabled(true);
   await demuxer.setMseOutputEnabled(!suppressOutput);
   activeDemuxer = demuxer;
-  activeAudioSwitch = async packetId => {
+  activeAudioSwitch = async (packetId, groupIdentification = null) => {
     const track = [...tracks.values()].find(item => item.kind === 'audio' && item.packetId === packetId);
     if (!track) throw new Error(`音声 packet_id=0x${packetId.toString(16)} は利用できません`);
     if (!mseAudioTrackSupported(track)) {
       throw new Error(`音声 packet_id=0x${packetId.toString(16)} の ` +
         `${track.audio?.channels ?? '?'}ch は MSE 非対応です`);
     }
-    if (track.trackId === selectedAudio) return;
+    if (track.trackId === selectedAudio) {
+      if (groupIdentification !== null) selectedAudioGroupId = groupIdentification;
+      return;
+    }
     if (generation !== runGeneration) return;
     const earliest = BigInt(Math.round((elements.video.currentTime + 0.1) * 1000000));
     const boundary = await demuxer.switchAudioTrack(track.trackId, earliest);
@@ -948,6 +985,8 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     if (generation !== runGeneration) return;
     selectedAudio = track.trackId;
     selectedAudioPacketId = track.packetId;
+    selectedAudioGroupId = groupIdentification ??
+      track.assetGroups?.[0]?.groupIdentification ?? null;
     appendLog(`音声切替 packet_id=0x${packetId.toString(16)} (インプレース)`);
     renderAudioTracks();
   };

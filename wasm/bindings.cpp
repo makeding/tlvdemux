@@ -182,6 +182,17 @@ val presentation_regions_value(
     return result;
 }
 
+val asset_groups_value(const std::vector<aribtlv::AssetGroupInfo>& groups) {
+    auto result = val::array();
+    for (std::size_t index = 0; index < groups.size(); ++index) {
+        auto group = val::object();
+        group.set("groupIdentification", groups[index].group_identification);
+        group.set("selectionLevel", groups[index].selection_level);
+        result.set(index, group);
+    }
+    return result;
+}
+
 val track_info_value(const aribtlv::TrackInfo& info) {
     auto event = val::object();
     event.set("trackId", info.track_id);
@@ -192,6 +203,7 @@ val track_info_value(const aribtlv::TrackInfo& info) {
     event.set("language", info.language);
     event.set("componentTag", info.component_tag);
     event.set("timescale", info.timescale);
+    event.set("assetGroups", asset_groups_value(info.asset_groups));
     event.set("presentationRegions", presentation_regions_value(info.presentation_regions));
     return event;
 }
