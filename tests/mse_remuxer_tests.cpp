@@ -852,7 +852,7 @@ void test_layer_switch_coordinates_video_rap_and_prepared_audio() {
     remuxer.push(hevc_unit(2, 0, 0, true, true));
 
     constexpr std::int64_t frame = 1024;
-    for (std::int64_t index = 0; index < 24; ++index) {
+    for (std::int64_t index = 0; index < 120; ++index) {
         remuxer.push(audio_unit(1, index * frame));
         auto alternate = audio_unit(9, index * frame);
         alternate.discontinuity = index == 12;
@@ -867,14 +867,14 @@ void test_layer_switch_coordinates_video_rap_and_prepared_audio() {
         remuxer.push(hevc_unit(3, timestamp, timestamp, false, false));
     }
 
-    const auto expected_audio_boundary = audio_time_us(5 * frame);
+    const auto expected_audio_boundary = audio_time_us(120 * frame);
     check(sink.layer_switches.size() == 1,
           "prepared A/V layer switch did not emit completion");
     const auto& completed = sink.layer_switches.front();
     check(completed.video_track_id == 3 && completed.audio_track_id == 9 &&
               completed.video_presentation_time_us == 100000 &&
               completed.audio_presentation_time_us == expected_audio_boundary,
-          "layer-switch completion did not expose its actual A/V boundaries");
+          "layer switch did not preserve the active audio track through its real end");
     check(sink.video_splices.size() == 1 && sink.splices.size() == 1 &&
               sink.splices.front().presentation_time_us == expected_audio_boundary,
           "layer switch did not splice both SourceBuffers");
@@ -915,7 +915,7 @@ void test_layer_switch_replays_cached_target_video_from_requested_rap() {
     }
 
     constexpr std::int64_t frame = 1024;
-    for (std::int64_t index = 47; index < 90; ++index) {
+    for (std::int64_t index = 47; index < 170; ++index) {
         remuxer.push(audio_unit(9, index * frame));
     }
     const auto segment_count = sink.segments.size();
@@ -960,16 +960,16 @@ void test_layer_switch_waits_for_target_audio_after_video_rap() {
           "layer switch completed before target audio reached the video boundary");
 
     constexpr std::int64_t frame = 1024;
-    for (std::int64_t index = 0; index <= 22; ++index) {
+    for (std::int64_t index = 0; index <= 97; ++index) {
         remuxer.push(audio_unit(9, index * frame));
     }
     check(sink.video_splices.empty() && sink.layer_switches.empty(),
-          "layer switch exposed target video before audio had 400ms prepared");
-    remuxer.push(audio_unit(9, 23 * frame));
+          "layer switch exposed target video before audio had 2s prepared");
+    remuxer.push(audio_unit(9, 98 * frame));
     check(sink.layer_switches.size() == 1 &&
               sink.layer_switches.front().audio_presentation_time_us ==
                   audio_time_us(5 * frame),
-          "layer switch did not complete after target audio had 400ms prepared");
+          "layer switch did not complete after target audio had 2s prepared");
 }
 
 void test_layer_switch_retries_distant_audio_at_later_video_boundary() {
@@ -992,7 +992,7 @@ void test_layer_switch_retries_distant_audio_at_later_video_boundary() {
 
     constexpr std::int64_t frame = 1024;
     constexpr std::int64_t distant_start = 5 * 48000;
-    for (std::int64_t index = 0; index < 24; ++index) {
+    for (std::int64_t index = 0; index < 120; ++index) {
         remuxer.push(audio_unit(9, distant_start + index * frame));
     }
 

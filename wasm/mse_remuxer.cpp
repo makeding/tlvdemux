@@ -47,7 +47,7 @@ constexpr std::uint32_t kFragmentDurationDivisor = 4;
 constexpr std::uint32_t kQueueDurationBoundMultiplier = 8;
 constexpr std::int64_t kAudioHistoryDurationUs = 20000000;
 constexpr std::int64_t kLayerSwitchVideoBufferUs = 400000;
-constexpr std::int64_t kLayerSwitchAudioBufferUs = 400000;
+constexpr std::int64_t kLayerSwitchAudioBufferUs = 2000000;
 constexpr std::int64_t kLayerSwitchMaxAvGapUs = 500000;
 constexpr std::int64_t kLayerSwitchContinuityToleranceUs = 1000;
 
@@ -717,30 +717,36 @@ public:
                 scaled(first->pts, track_->timescale, 1000000)};
     }
 
-    bool has_contiguous_history_from(
+    std::optional<std::int64_t> contiguous_activation_boundary_from(
         const std::int64_t earliest_presentation_time_us,
         const std::int64_t minimum_duration_us) const {
-        if (!track_) return false;
+        if (!track_) return std::nullopt;
         const auto first = std::find_if(history_.begin(), history_.end(),
             [this, earliest_presentation_time_us](const Sample& sample) {
                 return scaled(sample.pts, track_->timescale, 1000000) >=
                     earliest_presentation_time_us;
             });
-        if (first == history_.end()) return false;
-        const auto start = first->pts;
+        if (first == history_.end()) return std::nullopt;
+        auto start = first->pts;
         auto end = first->pts + static_cast<std::int64_t>(first->duration);
+        const auto continuity_tolerance = scaled(
+            kLayerSwitchContinuityToleranceUs, 1000000, track_->timescale);
         if (scaled(end - start, track_->timescale, 1000000) >= minimum_duration_us) {
-            return true;
+            return scaled(start, track_->timescale, 1000000);
         }
         for (auto iterator = std::next(first); iterator != history_.end(); ++iterator) {
-            if (iterator->pts > end) return false;
-            end = std::max(end,
-                iterator->pts + static_cast<std::int64_t>(iterator->duration));
+            if (iterator->pts > end + continuity_tolerance) {
+                start = iterator->pts;
+                end = iterator->pts + static_cast<std::int64_t>(iterator->duration);
+            } else {
+                end = std::max(end,
+                    iterator->pts + static_cast<std::int64_t>(iterator->duration));
+            }
             if (scaled(end - start, track_->timescale, 1000000) >= minimum_duration_us) {
-                return true;
+                return scaled(start, track_->timescale, 1000000);
             }
         }
-        return false;
+        return std::nullopt;
     }
 
     void push(const aribtlv::AccessUnit& unit, const bool selected,
@@ -946,23 +952,35 @@ public:
         const auto earliest_audio = std::max(
             pending_layer->earliest_presentation_time_us,
             video_boundary);
-        if (candidate == audio.end() ||
-            !candidate->second.has_contiguous_history_from(
-                earliest_audio, kLayerSwitchAudioBufferUs)) return;
-        const auto audio_boundary = candidate->second.activation_boundary_from(earliest_audio);
-        if (!audio_boundary ||
-            *audio_boundary - video_boundary > kLayerSwitchMaxAvGapUs) {
-            pending_layer->earliest_presentation_time_us =
-                audio_boundary.value_or(earliest_audio);
+        if (candidate == audio.end()) return;
+        const auto audio_boundary = candidate->second.contiguous_activation_boundary_from(
+            earliest_audio, kLayerSwitchAudioBufferUs);
+        if (!audio_boundary) return;
+        if (*audio_boundary - video_boundary > kLayerSwitchMaxAvGapUs) {
+            pending_layer->earliest_presentation_time_us = *audio_boundary;
             pending_layer->video_boundary_us.reset();
             output.discard_staged_video();
             video.retry_staged_switch();
             return;
         }
+        std::optional<std::int64_t> output_audio_boundary;
+        if (active_audio != nullptr) {
+            active_audio->flush();
+            const auto active_end = active_audio->timeline_end();
+            const auto active_timescale = active_audio->track_timescale();
+            if (active_end.has_value() && active_timescale.has_value()) {
+                const auto active_end_us = scaled(
+                    *active_end, *active_timescale, 1000000);
+                if (active_end_us > *audio_boundary) {
+                    output_audio_boundary = active_end_us;
+                }
+            }
+        }
         const auto completed = *pending_layer;
         pending_layer.reset();
         output.commit_staged_video();
-        const auto boundary = switch_audio(completed.audio_track_id, earliest_audio);
+        const auto boundary = switch_audio(
+            completed.audio_track_id, earliest_audio, output_audio_boundary);
         if (!boundary) return;
         output.layer_switch(
             completed.video_track_id, completed.audio_track_id,

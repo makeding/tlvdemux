@@ -50,6 +50,26 @@ void test_startup_breaks_do_not_trigger_fallback() {
     }
 }
 
+void test_video_fallback_can_preserve_audio_track() {
+    VideoLayerStateMachine machine;
+    machine.configure(VideoLayerPair{1, 11, 2, 11});
+    machine.select(1);
+
+    for (std::int64_t timestamp = 0; timestamp <= 8000000; timestamp += 500000) {
+        machine.observe(video_unit(2, timestamp, timestamp % 1000000 == 0));
+        machine.observe(video_unit(1, timestamp, timestamp % 1000000 == 0));
+    }
+    machine.observe(video_unit(2, 8500000, true));
+    machine.observe(video_unit(1, 8500000, false, true));
+    machine.observe(video_unit(2, 9000000, true));
+    machine.observe(video_unit(1, 9000000, false, true));
+    machine.observe(video_unit(2, 9400000, true));
+    const auto fallback = machine.observe(video_unit(1, 9500000, false, true));
+    check(fallback.has_value(), "video-only fallback was not requested");
+    check(fallback->video_track_id == 2 && fallback->audio_track_id == 11,
+          "video-only fallback did not preserve the selected audio track");
+}
+
 void test_degraded_preferred_layer_falls_back_and_recovers() {
     VideoLayerStateMachine machine;
     machine.configure(VideoLayerPair{1, 11, 2, 22});
@@ -102,6 +122,7 @@ void test_degraded_preferred_layer_falls_back_and_recovers() {
 
 int main() {
     test_startup_breaks_do_not_trigger_fallback();
+    test_video_fallback_can_preserve_audio_track();
     test_degraded_preferred_layer_falls_back_and_recovers();
     std::cout << "video layer state machine tests passed\n";
 }

@@ -54,6 +54,31 @@ function largestGapInWindow(ranges, startUs, endUs) {
   return gapUs;
 }
 
+function largestGapDetailInWindow(ranges, startUs, endUs) {
+  const ordered = [...ranges].sort((left, right) =>
+    left.startUs === right.startUs ? 0 : left.startUs < right.startUs ? -1 : 1);
+  let coveredUs = startUs;
+  let largest = {startUs, endUs: startUs, durationUs: 0n};
+  for (const range of ordered) {
+    if (range.endUs <= startUs) continue;
+    if (range.startUs >= endUs) break;
+    const rangeStartUs = range.startUs < startUs ? startUs : range.startUs;
+    const rangeEndUs = range.endUs > endUs ? endUs : range.endUs;
+    if (rangeStartUs > coveredUs && rangeStartUs - coveredUs > largest.durationUs) {
+      largest = {
+        startUs: coveredUs,
+        endUs: rangeStartUs,
+        durationUs: rangeStartUs - coveredUs,
+      };
+    }
+    if (rangeEndUs > coveredUs) coveredUs = rangeEndUs;
+  }
+  if (coveredUs < endUs && endUs - coveredUs > largest.durationUs) {
+    largest = {startUs: coveredUs, endUs, durationUs: endUs - coveredUs};
+  }
+  return largest;
+}
+
 let demuxer;
 demuxer = new module.TlvDemuxer({
   onTrack(track) {
@@ -147,6 +172,8 @@ try {
     segmentRanges.video, videoBoundaryUs, switchWindowEndUs);
   const switchWindowAudioGapUs = largestGapInWindow(
     segmentRanges.audio, audioBoundaryUs, switchWindowEndUs);
+  const switchWindowAudioGap = largestGapDetailInWindow(
+    segmentRanges.audio, audioBoundaryUs, switchWindowEndUs);
   assert.ok(switchWindowVideoGapUs < 1000000n,
     `automatic fallback left a ${switchWindowVideoGapUs}us video gap near the switch`);
   assert.ok(switchWindowAudioGapUs < 1000000n,
@@ -167,6 +194,10 @@ try {
     largestAudioGapUs: largestAudioGapUs.toString(),
     switchWindowVideoGapUs: switchWindowVideoGapUs.toString(),
     switchWindowAudioGapUs: switchWindowAudioGapUs.toString(),
+    switchWindowAudioGap: {
+      startUs: switchWindowAudioGap.startUs.toString(),
+      endUs: switchWindowAudioGap.endUs.toString(),
+    },
     indexDurationUs: durationUs.toString(),
     seekPointCount: demuxer.seekPointCount(),
   }, null, 2));
