@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(tlvdemux VERSION 0.1.11 LANGUAGES CXX)
+project(tlvdemux VERSION 0.2.0 LANGUAGES CXX)
 
 include(CTest)
 include(GNUInstallDirs)
@@ -17,7 +17,7 @@ set(TLVDEMUX_LIBARIBTLV_GIT_REPOSITORY
     "https://github.com/makeding/libaribtlv.git" CACHE STRING
     "Git repository used to fetch libaribtlv")
 set(TLVDEMUX_LIBARIBTLV_GIT_TAG
-    "04791ee30e78d138c197e2a070b781c59872f1a7" CACHE STRING
+    "d72b3d43e61a89afe998a1dcf4c8caf101cfba36" CACHE STRING
     "Pinned libaribtlv Git revision")
 mark_as_advanced(
     TLVDEMUX_LIBARIBTLV_GIT_REPOSITORY
