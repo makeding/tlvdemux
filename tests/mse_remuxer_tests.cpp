@@ -33,10 +33,15 @@ public:
         events.push_back("splice");
         splices.push_back(splice);
     }
+    void onMseVideoSplice(const tlvdemux::MseVideoSplice& splice) override {
+        events.push_back("video-splice");
+        video_splices.push_back(splice);
+    }
 
     std::vector<tlvdemux::MseTrackInit> inits;
     std::vector<tlvdemux::MseMediaSegment> segments;
     std::vector<tlvdemux::MseAudioSplice> splices;
+    std::vector<tlvdemux::MseVideoSplice> video_splices;
     std::vector<std::string> events;
 };
 
@@ -322,7 +327,8 @@ std::vector<std::uint8_t> escape_rbsp(const std::vector<std::uint8_t>& raw) {
 
 // Matches the fields parse_sps() reads, with
 // sps_max_sub_layers_minus1 = 0 so its sub-layer loops are skipped.
-std::vector<std::uint8_t> build_sps_nalu(const std::uint32_t width, const std::uint32_t height) {
+std::vector<std::uint8_t> build_sps_nalu(const std::uint32_t width, const std::uint32_t height,
+                                         const std::uint8_t transfer = 18) {
     BitWriter writer;
     writer.bits(nal_header(33), 16);
     writer.bits(0, 4);  // sps_video_parameter_set_id
@@ -364,7 +370,7 @@ std::vector<std::uint8_t> build_sps_nalu(const std::uint32_t width, const std::u
     writer.bits(0, 1);  // video_full_range_flag: limited range
     writer.bits(1, 1);  // colour_description_present_flag
     writer.bits(9, 8);  // BT.2020 primaries
-    writer.bits(18, 8); // BT.2100 HLG transfer
+    writer.bits(transfer, 8);
     writer.bits(9, 8);  // BT.2020 non-constant matrix
     return escape_rbsp(writer.take());
 }
@@ -381,12 +387,13 @@ std::vector<std::uint8_t> annex_b_wrap(const std::vector<std::uint8_t>& nalu) {
 // access unit that carries only that marker NAL.
 std::vector<std::uint8_t> video_access_unit_data(const bool include_parameter_sets,
                                                   const std::vector<unsigned>& vcl_types,
-                                                  const std::optional<unsigned> trailing_nal = std::nullopt) {
+                                                  const std::optional<unsigned> trailing_nal = std::nullopt,
+                                                  const std::uint8_t transfer = 18) {
     std::vector<std::uint8_t> out;
     if (include_parameter_sets) {
         for (const auto& nalu : {annex_b_wrap(make_simple_nal(32, {0xab, 0xcd})),   // VPS
                                  annex_b_wrap(make_simple_nal(34, {0xab, 0xcd})),   // PPS
-                                 annex_b_wrap(build_sps_nalu(1920, 1080))}) {       // SPS
+                                 annex_b_wrap(build_sps_nalu(1920, 1080, transfer))}) { // SPS
             out.insert(out.end(), nalu.begin(), nalu.end());
         }
     }
@@ -413,6 +420,25 @@ tlvdemux::AccessUnit hevc_unit(const std::uint64_t track_id, const std::int64_t 
     unit.track_id = track_id;
     unit.codec = tlvdemux::Codec::Hevc;
     unit.data = video_access_unit_data(include_parameter_sets, keyframe);
+    unit.dts = {dts_value, timescale};
+    unit.pts = {pts_value, timescale};
+    unit.random_access = keyframe;
+    return unit;
+}
+
+tlvdemux::AccessUnit hevc_unit_with_transfer(const std::uint64_t track_id,
+                                             const std::int64_t dts_value,
+                                             const std::int64_t pts_value,
+                                             const bool keyframe,
+                                             const bool include_parameter_sets,
+                                             const std::uint8_t transfer,
+                                             const std::uint32_t timescale = 1000000) {
+    tlvdemux::AccessUnit unit;
+    unit.track_id = track_id;
+    unit.codec = tlvdemux::Codec::Hevc;
+    unit.data = video_access_unit_data(include_parameter_sets,
+                                       std::vector<unsigned>{keyframe ? 19u : 1u},
+                                       std::nullopt, transfer);
     unit.dts = {dts_value, timescale};
     unit.pts = {pts_value, timescale};
     unit.random_access = keyframe;
@@ -814,6 +840,108 @@ void test_unlimited_22_2_channel_count() {
           "AAC channel_configuration 13 was not exposed as 24 channels");
 }
 
+void test_video_configuration_change_is_a_rap_splice_boundary() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+
+    constexpr std::int64_t step = 100000;
+    remuxer.push(hevc_unit_with_transfer(2, 0, 0, true, true, 18));
+    remuxer.push(hevc_unit_with_transfer(2, step, step, false, false, 18));
+    // The replacement SPS is carried with this IDR. It must not become a sample
+    // under the old nclx entry, and the previous pending sample's duration is
+    // exactly sealed by this new decode timestamp.
+    remuxer.push(hevc_unit_with_transfer(2, 2 * step, 2 * step, true, true, 16));
+    remuxer.push(hevc_unit_with_transfer(2, 3 * step, 3 * step, false, false, 16));
+    remuxer.flush();
+
+    check(sink.inits.size() == 2, "HEVC configuration change did not emit a new video init");
+    check(video_color_information(sink.inits[0].data) ==
+              ParsedColorInformation{9, 18, 9, false},
+          "first video init lost its original HLG colour configuration");
+    check(video_color_information(sink.inits[1].data) ==
+              ParsedColorInformation{9, 16, 9, false},
+          "replacement video init did not contain the new VUI colour configuration");
+    check(sink.video_splices.size() == 1 &&
+              sink.video_splices.front().presentation_time_us == 2 * step,
+          "video splice did not use the replacement RAP presentation boundary");
+    check(sink.events == std::vector<std::string>{
+              "init:video", "segment:video", "video-splice", "init:video", "segment:video"},
+          "configuration boundary event order must be old media, splice, new init, new media");
+
+    const auto segments = segments_of(sink.segments, "video");
+    check(segments.size() == 2, "configuration change should split video media at the RAP");
+    check(segments[0].samples.size() == 2 &&
+              segments[0].samples.back().duration == step,
+          "old pending sample was not sealed with the replacement RAP DTS");
+    check(composition_timestamps({segments[0]}) == std::vector<std::int64_t>{0, step},
+          "old configuration media crossed the replacement RAP boundary");
+    check(composition_timestamps({segments[1]}) == std::vector<std::int64_t>{2 * step, 3 * step},
+          "replacement RAP was not emitted under the new configuration");
+}
+
+void test_video_track_switch_configuration_change_preserves_old_pending_media() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+
+    constexpr std::int64_t step = 100000;
+    remuxer.push(hevc_unit_with_transfer(2, 0, 0, true, true, 18));
+    remuxer.push(hevc_unit_with_transfer(2, step, step, false, false, 18));
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 3);
+    auto replacement = hevc_unit_with_transfer(3, 2 * step, 2 * step, true, true, 16);
+    replacement.discontinuity = true;  // libaribtlv marks the first selected RAP this way.
+    remuxer.push(replacement);
+    remuxer.push(hevc_unit_with_transfer(3, 3 * step, 3 * step, false, false, 16));
+    remuxer.flush();
+
+    check(sink.events == std::vector<std::string>{
+              "init:video", "segment:video", "video-splice", "init:video", "segment:video"},
+          "selected-video discontinuity discarded old media before the new configuration boundary");
+    check(sink.inits.size() == 2 &&
+              video_color_information(sink.inits[1].data) ==
+                  ParsedColorInformation{9, 16, 9, false},
+          "selected-video replacement did not emit its new VUI init segment");
+    const auto segments = segments_of(sink.segments, "video");
+    check(segments.size() == 2 && segments[0].samples.size() == 2 &&
+              segments[0].samples.back().duration == step,
+          "selected-video replacement did not seal the old pending sample at the new RAP DTS");
+    check(sink.video_splices.size() == 1 &&
+              sink.video_splices.front().presentation_time_us == 2 * step,
+          "selected-video replacement did not expose the new RAP presentation boundary");
+}
+
+void test_video_track_switch_same_configuration_is_a_splice_without_new_init() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+
+    constexpr std::int64_t step = 100000;
+    remuxer.push(hevc_unit_with_transfer(2, 0, 0, true, true, 18));
+    remuxer.push(hevc_unit_with_transfer(2, step, step, false, false, 18));
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 3);
+    auto replacement = hevc_unit_with_transfer(3, 2 * step, 2 * step, true, true, 18);
+    replacement.discontinuity = true;
+    remuxer.push(replacement);
+    remuxer.push(hevc_unit_with_transfer(3, 3 * step, 3 * step, false, false, 18));
+    remuxer.flush();
+
+    check(sink.inits.size() == 1,
+          "same-configuration video track switch unnecessarily emitted a new init");
+    check(sink.events == std::vector<std::string>{
+              "init:video", "segment:video", "video-splice", "segment:video"},
+          "same-configuration video track switch must splice old and new media at the RAP");
+    check(sink.video_splices.size() == 1 &&
+              sink.video_splices.front().presentation_time_us == 2 * step,
+          "same-configuration track switch did not expose the replacement RAP boundary");
+    const auto segments = segments_of(sink.segments, "video");
+    check(segments.size() == 2 && segments[0].samples.size() == 2 &&
+              segments[0].samples.back().duration == step,
+          "same-configuration track switch discarded the old pending media");
+    check(composition_timestamps({segments[1]}) == std::vector<std::int64_t>{2 * step, 3 * step},
+          "same-configuration track switch did not emit the replacement RAP media");
+}
+
 void test_multiplexed_output_has_two_tracks_and_global_sequences() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(
@@ -872,6 +1000,9 @@ int main() {
     test_audio_init_is_restored_when_output_is_reenabled();
     test_audio_channel_limit();
     test_unlimited_22_2_channel_count();
+    test_video_configuration_change_is_a_rap_splice_boundary();
+    test_video_track_switch_configuration_change_preserves_old_pending_media();
+    test_video_track_switch_same_configuration_is_a_splice_without_new_init();
     test_multiplexed_output_has_two_tracks_and_global_sequences();
     test_video_only_output_does_not_wait_for_audio();
     test_audio_drops_non_advancing_dts();

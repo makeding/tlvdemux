@@ -35,6 +35,10 @@ struct MseAudioSplice {
     std::int64_t presentation_time_us = 0;
 };
 
+struct MseVideoSplice {
+    std::int64_t presentation_time_us = 0;
+};
+
 struct MseVideoStart {
     int nal_type = -1;
     bool signalled_random_access = false;
@@ -60,6 +64,7 @@ public:
     virtual void onMseInit(MseTrackInit&&) = 0;
     virtual void onMseSegment(MseMediaSegment&&) = 0;
     virtual void onMseAudioSplice(const MseAudioSplice&) {}
+    virtual void onMseVideoSplice(const MseVideoSplice&) {}
     virtual void onMseVideoStart(const MseVideoStart&) {}
 };
 

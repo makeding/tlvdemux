@@ -1,6 +1,7 @@
 import { B62TTMLRenderer } from '/aribb62.js/src/index.js';
 import { DataBroadcastController } from './data-broadcast.js?v=webkit-canvas-plane-v4';
 import { correspondingAudioTrack, selectionLevel } from './asset-groups.mjs?v=asset-groups-v3';
+import { shouldRenderSubtitleTrack, subtitleTrackKind } from './subtitle-tracks.mjs?v=subtitle-planes-v1';
 import { coalesceReadableStream } from './live-stream.mjs?v=asset-groups-v3';
 import { createWorkerTlvDemuxModule } from './worker-tlvdemux.js?v=asset-groups-v3';
 import { MseAppendQueue, finalizeMseMediaSource } from '../mse-append-queue.mjs?v=asset-groups-v3';
@@ -30,7 +31,8 @@ const elements = Object.fromEntries([
   'wasmStatus', 'fileInput', 'urlInput', 'initialRange', 'maxRange',
   'videoPacketId', 'probeButton', 'cancelButton', 'clearButton',
   'probeState', 'duration', 'sourceSize', 'transferred', 'log',
-  'video', 'mediaInfo', 'liveMode', 'audioTrack', 'subtitleTrack', 'subtitleOverlay',
+  'video', 'mediaInfo', 'liveMode', 'videoTrack', 'audioTrack', 'subtitleTrack', 'subtitleOverlay',
+  'captionVisible', 'superimposeVisible',
   'broadcastViewport', 'broadcastVideoSurface', 'broadcastMediaPlane', 'broadcastFrame', 'dataRemote',
   'dataStatus', 'dataDetail', 'dataUrl',
 ].map(id => [id, document.getElementById(id)]));
@@ -61,11 +63,14 @@ let cachedProbe = null;
 let seekTimer = null;
 let internalSeekTarget = null;
 let currentLiveMode = false;
+let activeVideoSwitch = null;
 let activeAudioSwitch = null;
 let activeSubtitleSwitch = null;
 let activeSubtitleRenderer = null;
 let selectedAudioPacketId = null;
 let preferredAudioPacketId = null;
+let selectedVideoPacketId = null;
+let knownVideoTracks = new Map();
 let knownAudioTracks = new Map();
 let selectedSubtitlePacketId = null;
 let preferredSubtitlePacketId = null;
@@ -76,7 +81,7 @@ dataBroadcast.setCaptionSubscriptionListener(() => {
   const selectedTrack = [...knownSubtitleTracks.values()]
     .find(track => track.packetId === selectedSubtitlePacketId);
   if (selectedTrack && dataBroadcast.isCaptionSubscribed(selectedTrack.componentTag)) {
-    activeSubtitleRenderer?.reset();
+    activeSubtitleRenderer?.clearTrack(selectedTrack.packetId);
   }
 });
 
@@ -111,6 +116,32 @@ const BrowserMediaSource = globalThis.ManagedMediaSource || globalThis.MediaSour
 function mseAudioTrackSupported(track) {
   const channels = track.audio?.channels ?? 0;
   return channels === 0 || channels <= MSE_MAX_AUDIO_CHANNELS;
+}
+
+function videoTrackLabel(track) {
+  const level = selectionLevel(track);
+  const layer = level === 0 ? '通常' : level === 1 ? '降雨対応' : `level=${level ?? '—'}`;
+  return `${layer} · 0x${track.packetId.toString(16)}`;
+}
+
+function renderVideoTracks() {
+  elements.videoTrack.replaceChildren();
+  const automatic = document.createElement('option');
+  automatic.value = '';
+  automatic.textContent = '自動';
+  elements.videoTrack.append(automatic);
+  const sorted = [...knownVideoTracks.values()].sort((left, right) =>
+    (selectionLevel(left) ?? 0xff) - (selectionLevel(right) ?? 0xff) ||
+    left.packetId - right.packetId);
+  for (const track of sorted) {
+    const option = document.createElement('option');
+    option.value = String(track.packetId);
+    option.textContent = videoTrackLabel(track);
+    elements.videoTrack.append(option);
+  }
+  elements.videoTrack.value = selectedVideoPacketId !== null &&
+    knownVideoTracks.has(selectedVideoPacketId) ? String(selectedVideoPacketId) : '';
+  elements.videoTrack.disabled = knownVideoTracks.size < 2;
 }
 
 function preferredMseAudioTrack(tracks, preferredPacketId = null) {
@@ -156,11 +187,12 @@ function renderAudioTracks() {
 }
 
 function subtitleTrackLabel(track) {
-  const parts = [`0x${track.packetId.toString(16)}`];
+  const parts = [`字幕 · 0x${track.packetId.toString(16)}`];
   if (track.language) parts.push(track.language);
   if (track.subtitle) {
     parts.push(`mode=${track.subtitle.operationMode}`);
     parts.push(`timing=${track.subtitle.timingMode}`);
+    parts.push(`display=${track.subtitle.displayMode}`);
   }
   return parts.join(' · ');
 }
@@ -377,6 +409,8 @@ function createSubtitleRenderer(liveMode) {
     strokeWidthInPlane: 4,
     backgroundPadding: '0 0.08em',
     lineBackground: true,
+    captionVisible: elements.captionVisible.checked,
+    superimposeVisible: elements.superimposeVisible.checked,
   });
 }
 
@@ -392,6 +426,7 @@ function releaseMedia() {
   playbackQualityTimer = null;
   activeMediaSource = null;
   activeAudioSwitch = null;
+  activeVideoSwitch = null;
   activeSubtitleSwitch = null;
   activeSubtitleRenderer?.destroy();
   activeSubtitleRenderer = null;
@@ -417,6 +452,7 @@ function stopPlayback(quiet = false, preserveMedia = false) {
   activeProbe = null;
   activeDemuxer = null;
   activeAudioSwitch = null;
+  activeVideoSwitch = null;
   activeSubtitleSwitch = null;
   activeSubtitleRenderer?.reset();
   if (!preserveMedia) releaseMedia();
@@ -627,6 +663,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const tracks = new Map();
   let selectedVideo = null;
   let selectedVideoTrack = null;
+  let pendingLayerAudio = null;
   let selectedAudio = null;
   let selectedAudioGroupId = null;
   let selectedSubtitle = null;
@@ -768,6 +805,27 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       appendLog(`音声バッファ切替境界 ${boundary.toFixed(6)}s`);
     } catch (error) { callbackError = error; }
   };
+  const onMseVideoSplice = splice => {
+    try {
+      const boundary = Number(splice.presentationTimeUs) / 1000000;
+      const queue = queues.get('video');
+      if (!queue) throw new Error('映像 SourceBuffer がまだ初期化されていません');
+      queue.replaceFrom(boundary);
+      appendLog(`映像バッファ切替境界 ${boundary.toFixed(6)}s`);
+      const audio = pendingLayerAudio;
+      pendingLayerAudio = null;
+      if (audio && activeAudioSwitch) {
+        activeAudioSwitch(
+          audio.track.packetId,
+          audio.groupIdentification,
+          BigInt(splice.presentationTimeUs),
+        ).catch(error => {
+          appendLog(`階層音声切替エラー ${error.message || error}`);
+          console.error(error);
+        });
+      }
+    } catch (error) { callbackError = error; }
+  };
   const wantedVideoPacketId = parsePacketId();
 
   const selectAudioTrack = (track, groupIdentification = null) => {
@@ -806,10 +864,16 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   };
 
   const selectSubtitleTrack = track => {
+    if (subtitleTrackKind(track) !== 'caption') {
+      throw new Error('文字スーパーは字幕トラックとして選択できません');
+    }
+    const previousTrack = tracks.get(selectedSubtitle);
     selectedSubtitle = track.trackId;
     selectedSubtitlePacketId = track.packetId;
     void demuxer.selectTrack('subtitle', selectedSubtitle);
-    activeSubtitleRenderer?.reset();
+    if (previousTrack && previousTrack.trackId !== track.trackId) {
+      activeSubtitleRenderer?.clearTrack(previousTrack.packetId);
+    }
     renderSubtitleTracks();
   };
 
@@ -822,15 +886,30 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     onMseInit,
     onMseSegment,
     onMseAudioSplice,
+    onMseVideoSplice,
     onTrack(track) {
       tracks.set(track.trackId, track);
       appendLog(`トラック ${track.kind} packet_id=0x${track.packetId.toString(16)} codec=${track.codec}`);
-      if (track.kind === 'video' && selectedVideo === null &&
-          (wantedVideoPacketId === undefined || track.packetId === wantedVideoPacketId)) {
-        selectedVideo = track.trackId;
-        selectedVideoTrack = track;
-        void demuxer.selectTrack('video', selectedVideo);
-        synchronizeAudioForVideoLayer();
+      if (track.kind === 'video') {
+        knownVideoTracks.set(track.packetId, track);
+        renderVideoTracks();
+        const previousGroup = selectedVideoTrack?.assetGroups?.[0];
+        const matchingReplacement = selectedVideo === null && selectedVideoTrack &&
+          track.contextId === selectedVideoTrack.contextId &&
+          (track.componentTag === selectedVideoTrack.componentTag ||
+            track.assetGroups?.some(group =>
+              group.groupIdentification === previousGroup?.groupIdentification &&
+              group.selectionLevel === previousGroup?.selectionLevel));
+        if (selectedVideo === null &&
+            (matchingReplacement ||
+             (wantedVideoPacketId === undefined || track.packetId === wantedVideoPacketId))) {
+          selectedVideo = track.trackId;
+          selectedVideoTrack = track;
+          selectedVideoPacketId = track.packetId;
+          void demuxer.selectTrack('video', selectedVideo);
+          renderVideoTracks();
+          synchronizeAudioForVideoLayer();
+        }
       } else if (track.kind === 'audio') {
         knownAudioTracks.set(track.packetId, track);
         renderAudioTracks();
@@ -855,11 +934,33 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         if (selectedAudio === null || track.packetId === desired) selectAudioTrack(track);
         synchronizeAudioForVideoLayer();
       } else if (track.kind === 'subtitle' && track.codec === 'ttml') {
+        const trackKind = subtitleTrackKind(track);
         dataBroadcast.captionTrackChanged(track);
-        knownSubtitleTracks.set(track.packetId, track);
+        appendLog(`${trackKind === 'caption' ? '字幕' : '文字スーパー'} ` +
+          `packet_id=0x${track.packetId.toString(16)} type=${track.subtitle.type} ` +
+          `display=${track.subtitle.displayMode}`);
+        if (trackKind === 'caption') {
+          knownSubtitleTracks.set(track.packetId, track);
+          renderSubtitleTracks();
+          const desired = preferredSubtitlePacketId ?? selectedSubtitlePacketId;
+          if (selectedSubtitle === null || track.packetId === desired) selectSubtitleTrack(track);
+        }
+      }
+    },
+    onTrackRemoved(track) {
+      tracks.delete(track.trackId);
+      if (track.kind === 'video') {
+        knownVideoTracks.delete(track.packetId);
+        if (selectedVideo === track.trackId) selectedVideo = null;
+        renderVideoTracks();
+      } else if (track.kind === 'audio') {
+        knownAudioTracks.delete(track.packetId);
+        if (selectedAudio === track.trackId) selectedAudio = null;
+        renderAudioTracks();
+      } else if (track.kind === 'subtitle') {
+        knownSubtitleTracks.delete(track.packetId);
+        if (selectedSubtitle === track.trackId) selectedSubtitle = null;
         renderSubtitleTracks();
-        const desired = preferredSubtitlePacketId ?? selectedSubtitlePacketId;
-        if (selectedSubtitle === null || track.packetId === desired) selectSubtitleTrack(track);
       }
     },
     onBroadcastClock(clock) {
@@ -910,20 +1011,27 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
             appendLog(`audio discontinuity #${audioDiscontinuityCount} ` +
               `PTS=${(Number(unit.ptsValue) / unit.ptsTimescale).toFixed(6)}s`);
           }
-        } else if (unit.trackId === selectedSubtitle && !suppressOutput) {
+        } else if (unit.codec === 'ttml' && subtitleTrack?.kind === 'subtitle' &&
+            !suppressOutput) {
           const track = tracks.get(unit.trackId);
           if (!track || !activeSubtitleRenderer) return;
+          const trackKind = subtitleTrackKind(track);
+          if (!shouldRenderSubtitleTrack(track, selectedSubtitle)) return;
           if (dataBroadcast.isCaptionSubscribed(unit.componentTag)) {
-            activeSubtitleRenderer.reset();
+            activeSubtitleRenderer.clearTrack(track.packetId);
             return;
           }
-          if (unit.discontinuity) activeSubtitleRenderer.reset();
+          if (unit.discontinuity) activeSubtitleRenderer.clearTrack(track.packetId);
           const subtitleData = {
             packetId: track.packetId,
+            trackKind,
+            subtitleType: track.subtitle.type,
+            subtitleOperationMode: track.subtitle.operationMode,
             mpuSequenceNumber: unit.mpuSequenceNumber ?? undefined,
             pts: timestampMilliseconds(unit.ptsValue, unit.ptsTimescale),
             dts: timestampMilliseconds(unit.dtsValue, unit.dtsTimescale),
             subtitleTimingMode: unit.subtitleTimingMode ?? track.subtitle?.timingMode,
+            subtitleDisplayMode: track.subtitle.displayMode,
             subtitleReferenceStartMediaTime: timestampMilliseconds(
               unit.subtitleReferenceStartPtsValue,
               unit.subtitleReferenceStartPtsTimescale,
@@ -939,7 +1047,8 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
           const result = activeSubtitleRenderer.push(subtitleData);
           subtitleEventCount += 1;
           if (subtitleEventCount <= 8) {
-            appendLog(`字幕 #${subtitleEventCount} packet_id=0x${track.packetId.toString(16)}` +
+            appendLog(`${trackKind === 'caption' ? '字幕' : '文字スーパー'} ` +
+              `#${subtitleEventCount} packet_id=0x${track.packetId.toString(16)}` +
               ` cues=${result.cueCount} resources=${result.resourceCount}` +
               ` pts=${subtitleData.pts?.toFixed(3) ?? '—'}ms`);
           }
@@ -964,7 +1073,28 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   await demuxer.setSubtitlePassthroughEnabled(true);
   await demuxer.setMseOutputEnabled(!suppressOutput);
   activeDemuxer = demuxer;
-  activeAudioSwitch = async (packetId, groupIdentification = null) => {
+  activeVideoSwitch = async packetId => {
+    const track = knownVideoTracks.get(packetId);
+    if (!track) throw new Error(`映像 packet_id=0x${packetId.toString(16)} は利用できません`);
+    if (track.trackId === selectedVideo) return;
+    const currentAudio = [...knownAudioTracks.values()].find(
+      candidate => candidate.trackId === selectedAudio,
+    );
+    const corresponding = correspondingAudioTrack(
+      knownAudioTracks.values(), currentAudio, selectionLevel(track), selectedAudioGroupId,
+    );
+    if (currentAudio && !corresponding) {
+      throw new Error('切替先の映像レイヤーに対応する音声がありません');
+    }
+    pendingLayerAudio = corresponding;
+    selectedVideo = track.trackId;
+    selectedVideoTrack = track;
+    selectedVideoPacketId = track.packetId;
+    await demuxer.selectTrack('video', track.trackId);
+    appendLog(`${videoTrackLabel(track)} を次の RAP で切り替えます`);
+    renderVideoTracks();
+  };
+  activeAudioSwitch = async (packetId, groupIdentification = null, earliestUs = null) => {
     const track = [...tracks.values()].find(item => item.kind === 'audio' && item.packetId === packetId);
     if (!track) throw new Error(`音声 packet_id=0x${packetId.toString(16)} は利用できません`);
     if (!mseAudioTrackSupported(track)) {
@@ -976,7 +1106,8 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       return;
     }
     if (generation !== runGeneration) return;
-    const earliest = BigInt(Math.round((elements.video.currentTime + 0.1) * 1000000));
+    const earliest = earliestUs ??
+      BigInt(Math.round((elements.video.currentTime + 0.1) * 1000000));
     const boundary = await demuxer.switchAudioTrack(track.trackId, earliest);
     if (callbackError) throw callbackError;
     if (boundary === null) {
@@ -992,7 +1123,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   };
   activeSubtitleSwitch = packetId => {
     const track = [...tracks.values()].find(
-      item => item.kind === 'subtitle' && item.packetId === packetId,
+      item => item.kind === 'subtitle' && item.subtitle?.type === 0 && item.packetId === packetId,
     );
     if (!track) throw new Error(`字幕 packet_id=0x${packetId.toString(16)} は利用できません`);
     if (track.trackId === selectedSubtitle) return;
@@ -1113,6 +1244,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   demuxer.delete();
   activeDemuxer = null;
   activeAudioSwitch = null;
+  activeVideoSwitch = null;
   activeSubtitleSwitch = null;
   if (generation !== runGeneration) return;
   const finalized = await finalizeMseMediaSource(mediaSource, activeQueues, {
@@ -1130,6 +1262,8 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false, operationLa
   if (!reuseMedia) {
     releaseMedia();
     knownAudioTracks = new Map();
+    knownVideoTracks = new Map();
+    selectedVideoPacketId = null;
     selectedAudioPacketId = null;
     renderAudioTracks();
     knownSubtitleTracks = new Map();
@@ -1205,6 +1339,15 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false, operationLa
 elements.probeButton.addEventListener('click', () => loadAndPlay(0));
 elements.cancelButton.addEventListener('click', stopPlayback);
 elements.clearButton.addEventListener('click', () => { elements.log.textContent = ''; });
+elements.videoTrack.addEventListener('change', () => {
+  const value = elements.videoTrack.value;
+  if (value === '' || !activeVideoSwitch) return;
+  activeVideoSwitch(Number(value)).catch(error => {
+    appendLog(`映像レイヤー切替エラー ${error.message || error}`);
+    console.error(error);
+    renderVideoTracks();
+  });
+});
 elements.audioTrack.addEventListener('change', () => {
   const value = elements.audioTrack.value;
   preferredAudioPacketId = value === '' ? null : Number(value);
@@ -1238,6 +1381,12 @@ elements.subtitleTrack.addEventListener('change', () => {
       console.error(error);
     }
   }
+});
+elements.captionVisible.addEventListener('change', () => {
+  activeSubtitleRenderer?.setTrackVisibility('caption', elements.captionVisible.checked);
+});
+elements.superimposeVisible.addEventListener('change', () => {
+  activeSubtitleRenderer?.setTrackVisibility('superimpose', elements.superimposeVisible.checked);
 });
 elements.video.addEventListener('error', () => {
   const message = mediaErrorMessage();

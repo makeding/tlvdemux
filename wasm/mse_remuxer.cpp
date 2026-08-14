@@ -12,6 +12,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -72,6 +73,9 @@ public:
         : sink_(sink), mode_(mode) {}
 
     void set_enabled(const bool enabled) noexcept { enabled_ = enabled; }
+    bool supports_video_reconfiguration() const noexcept {
+        return mode_ == tlvdemux::MseOutputMode::SeparateTracks;
+    }
 
     void init(const std::string& type, const Mp4Track& track) {
         if (!enabled_) return;
@@ -122,6 +126,11 @@ public:
     void audio_splice(const std::int64_t presentation_time_us) {
         if (!enabled_) return;
         sink_.onMseAudioSplice(tlvdemux::MseAudioSplice{presentation_time_us});
+    }
+
+    void video_splice(const std::int64_t presentation_time_us) {
+        if (!enabled_) return;
+        sink_.onMseVideoSplice(tlvdemux::MseVideoSplice{presentation_time_us});
     }
 
     void video_start(const int nal_type, const bool signalled) {
@@ -196,6 +205,26 @@ protected:
         track.id = track_id_;
         track_ = std::move(track);
         if (emit) emit_init();
+    }
+
+    void replace_track(Mp4Track track) {
+        track.id = track_id_;
+        track_ = std::move(track);
+        emit_init();
+    }
+
+    void flush_at(const std::int64_t next_dts) {
+        if (pending_) {
+            const auto delta = next_dts - pending_->dts;
+            pending_->duration = delta > 0
+                ? static_cast<std::uint32_t>(delta)
+                : (last_duration_ != 0 ? last_duration_ : default_duration());
+            last_duration_ = pending_->duration;
+            ready_duration_ += pending_->duration;
+            ready_.push_back(std::move(*pending_));
+            pending_.reset();
+        }
+        emit(true);
     }
 
     void emit_init() {
@@ -296,43 +325,18 @@ public:
         no_rasl_output_ = false;
         sequence_start_ = true;
         timeline_offset_ticks_.reset();
+        input_track_id_.reset();
     }
 
     void push(const aribtlv::AccessUnit& unit, const bool output_enabled) {
-        if (unit.discontinuity) {
-            reset_samples();
-            started_ = false;
-            no_rasl_output_ = false;
-            sequence_start_ = true;
-            timeline_offset_ticks_.reset();
-        }
         const auto nalus = annex_b_views(unit.data);
+        bool has_parameter_set = false;
         for (const auto& nalu : nalus) {
             if (nalu.type >= 32 && nalu.type <= 34) {
                 parameter_sets_[nalu.type] = copy_nalu(unit.data, nalu);
+                has_parameter_set = true;
             }
         }
-        if (!track_ && parameter_sets_.count(32) != 0 &&
-            parameter_sets_.count(33) != 0 && parameter_sets_.count(34) != 0) {
-            const HevcConfiguration config = hevc_configuration(
-                parameter_sets_[32], parameter_sets_[33], parameter_sets_[34]);
-            Mp4Track track;
-            track.video = true;
-            track.width = config.width;
-            track.height = config.height;
-            track.codec = config.codec;
-            track.config = config.hvcc;
-            track.color = config.color;
-            // Adopt the stream's own timescale so DTS/PTS stay exact integers
-            // (e.g. 180000's 3003-tick frame interval is not an integer number
-            // of microseconds, and the resulting rounding drift can make a
-            // fragment's composition interval overlap the next one). A
-            // timescale of 1 means the stream never signalled one; keep the
-            // 1000000 default rather than build a 1 Hz MP4 track.
-            if (unit.dts.timescale > 1) track.timescale = unit.dts.timescale;
-            set_track(std::move(track));
-        }
-        if (!track_) return;
 
         bool has_vcl = false;
         bool only_rasl_vcl = true;
@@ -349,6 +353,61 @@ public:
                 has_eos = true;
             }
         }
+        const bool track_switch_boundary = unit.discontinuity && input_track_id_.has_value() &&
+            *input_track_id_ != unit.track_id && irap >= 0;
+        bool configuration_boundary = false;
+        if (parameter_sets_.count(32) != 0 && parameter_sets_.count(33) != 0 &&
+            parameter_sets_.count(34) != 0) {
+            const auto config = hevc_configuration(
+                parameter_sets_[32], parameter_sets_[33], parameter_sets_[34]);
+            auto candidate = video_track(config, unit);
+            if (!track_) {
+                set_track(std::move(candidate));
+            } else if (has_parameter_set && irap >= 0 && configuration_differs(candidate)) {
+                if (output_enabled && !output_.supports_video_reconfiguration()) {
+                    throw std::runtime_error(
+                        "HEVC configuration changes require SeparateTracks MSE output");
+                }
+                const auto offset = timeline_offset_ticks_.value_or(0);
+                const auto boundary_dts = scaled(unit.dts.value, unit.dts.timescale,
+                                                 track_->timescale) + offset;
+                const auto boundary_pts = scaled(unit.pts.value, unit.pts.timescale,
+                                                 track_->timescale) + offset;
+                flush_at(boundary_dts);
+                output_.video_splice(scaled(boundary_pts, track_->timescale, 1000000));
+                candidate.timescale = track_->timescale;
+                replace_track(std::move(candidate));
+                started_ = false;
+                no_rasl_output_ = false;
+                sequence_start_ = true;
+                configuration_boundary = true;
+            }
+        }
+        if (track_switch_boundary && !configuration_boundary) {
+            const auto offset = timeline_offset_ticks_.value_or(0);
+            const auto boundary_dts = scaled(unit.dts.value, unit.dts.timescale,
+                                             track_->timescale) + offset;
+            const auto boundary_pts = scaled(unit.pts.value, unit.pts.timescale,
+                                             track_->timescale) + offset;
+            flush_at(boundary_dts);
+            output_.video_splice(scaled(boundary_pts, track_->timescale, 1000000));
+            started_ = false;
+            no_rasl_output_ = false;
+            sequence_start_ = true;
+            configuration_boundary = true;
+        }
+        if (unit.discontinuity && !configuration_boundary) {
+            // A timeline discontinuity normally discards incomplete old media.
+            // When this AU also carries a new RAP configuration, the branch
+            // above has already sealed and emitted the old configuration at
+            // this RAP boundary instead.
+            reset_samples();
+            started_ = false;
+            no_rasl_output_ = false;
+            sequence_start_ = true;
+            timeline_offset_ticks_.reset();
+        }
+        if (!track_) return;
         if (!has_vcl) {
             // An EOS/EOB-only access unit carries no picture, but still ends
             // the coded video sequence for whichever IRAP follows it.
@@ -358,9 +417,12 @@ public:
         if (!started_) {
             if (irap < 0) return;
             started_ = true;
-            const auto first_dts = scaled(unit.dts.value, unit.dts.timescale, track_->timescale);
-            timeline_offset_ticks_ = std::max<std::int64_t>(0, -first_dts);
+            if (!configuration_boundary) {
+                const auto first_dts = scaled(unit.dts.value, unit.dts.timescale, track_->timescale);
+                timeline_offset_ticks_ = std::max<std::int64_t>(0, -first_dts);
+            }
             output_.video_start(irap, unit.random_access);
+            input_track_id_ = unit.track_id;
         }
         // HEVC 8.1.3: NoRaslOutputFlag is 1 for every IDR/BLA access unit, and for
         // a CRA that opens a fresh coded video sequence (the first access unit in
@@ -400,6 +462,31 @@ public:
     }
 
 private:
+    static Mp4Track video_track(const HevcConfiguration& config,
+                                const aribtlv::AccessUnit& unit) {
+        Mp4Track track;
+        track.video = true;
+        track.width = config.width;
+        track.height = config.height;
+        track.codec = config.codec;
+        track.config = config.hvcc;
+        track.color = config.color;
+        // Adopt the stream's own timescale so DTS/PTS stay exact integers
+        // (e.g. 180000's 3003-tick frame interval is not an integer number
+        // of microseconds, and the resulting rounding drift can make a
+        // fragment's composition interval overlap the next one). A
+        // timescale of 1 means the stream never signalled one; keep the
+        // 1000000 default rather than build a 1 Hz MP4 track.
+        if (unit.dts.timescale > 1) track.timescale = unit.dts.timescale;
+        return track;
+    }
+
+    bool configuration_differs(const Mp4Track& candidate) const {
+        return track_->width != candidate.width || track_->height != candidate.height ||
+            track_->codec != candidate.codec || track_->config != candidate.config ||
+            track_->color != candidate.color;
+    }
+
     static bool included_in_sample(const NaluView& nalu) noexcept {
         return nalu.type != 32 && nalu.type != 33 && nalu.type != 34 && nalu.type != 35;
     }
@@ -418,6 +505,7 @@ private:
     bool no_rasl_output_ = false;
     bool sequence_start_ = true;
     std::optional<std::int64_t> timeline_offset_ticks_;
+    std::optional<std::uint64_t> input_track_id_;
 };
 
 class AacMuxer final : public BaseMuxer {
@@ -734,6 +822,13 @@ public:
         auto event = val::object();
         event.set("presentationTimeUs", splice.presentation_time_us);
         emit("onMseAudioSplice", event);
+    }
+
+    void onMseVideoSplice(const tlvdemux::MseVideoSplice& splice) override {
+        if (!has("onMseVideoSplice")) return;
+        auto event = val::object();
+        event.set("presentationTimeUs", splice.presentation_time_us);
+        emit("onMseVideoSplice", event);
     }
 
     void onMseVideoStart(const tlvdemux::MseVideoStart& start) override {

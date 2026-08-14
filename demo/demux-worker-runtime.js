@@ -41,13 +41,95 @@ function transferAccessUnit(objectId, unit) {
   sendEvent(objectId, 'onAccessUnitView', value, transfer);
 }
 
+function trackGroup(track, groupIdentification = null, selectionLevel = null) {
+  return track?.assetGroups?.find(group =>
+    (groupIdentification === null || group.groupIdentification === groupIdentification) &&
+    (selectionLevel === null || group.selectionLevel === selectionLevel)) ?? null;
+}
+
+function rememberSelection(record, kind, track, groupIdentification = null) {
+  const group = trackGroup(track, groupIdentification);
+  record.selection[`${kind}Track`] = track.trackId;
+  record.selection[`${kind}PacketId`] = track.packetId;
+  record.selection[`${kind}Identity`] = {
+    contextId: track.contextId,
+    componentTag: track.componentTag,
+    groupIdentification: group?.groupIdentification ?? null,
+    selectionLevel: group?.selectionLevel ?? null,
+  };
+}
+
+function defaultTrack(tracks, kind, targetLevel, maxAudioChannels) {
+  let candidates = tracks.filter(track => track.kind === kind);
+  if (kind === 'audio' && maxAudioChannels > 0) {
+    candidates = candidates.filter(track =>
+      Number(track.audio?.channels || 0) <= maxAudioChannels);
+  }
+  if (targetLevel !== null) {
+    const atLevel = candidates.filter(track => trackGroup(track, null, targetLevel));
+    if (atLevel.length) candidates = atLevel;
+  }
+  const defaultTag = kind === 'video' ? 0x00 : kind === 'audio' ? 0x10 : 0x30;
+  return candidates.sort((left, right) =>
+    (left.componentTag === defaultTag ? 0 : 1) -
+      (right.componentTag === defaultTag ? 0 : 1) ||
+    left.componentTag - right.componentTag || left.packetId - right.packetId)[0] ?? null;
+}
+
+function replacementTrack(tracks, kind, identity, targetLevel, maxAudioChannels) {
+  let candidates = tracks.filter(track =>
+    track.kind === kind && track.contextId === identity.contextId);
+  if (kind === 'audio' && maxAudioChannels > 0) {
+    candidates = candidates.filter(track =>
+      Number(track.audio?.channels || 0) <= maxAudioChannels);
+  }
+  if (identity.groupIdentification !== null) {
+    const grouped = candidates.filter(track => trackGroup(
+      track, identity.groupIdentification, targetLevel));
+    if (grouped.length) candidates = grouped;
+  } else if (targetLevel !== null) {
+    const atLevel = candidates.filter(track => trackGroup(track, null, targetLevel));
+    if (atLevel.length) candidates = atLevel;
+  }
+  const exact = candidates.find(track => track.componentTag === identity.componentTag);
+  return exact ?? candidates.sort((left, right) =>
+    left.componentTag - right.componentTag || left.packetId - right.packetId)[0] ?? null;
+}
+
+function reconcileMptSelection(record, snapshot) {
+  const tracks = snapshot.tracks || [];
+  const selectedVideo = tracks.find(track =>
+    track.trackId === record.selection.videoTrack) ?? null;
+  const previousVideo = record.tracks.get(record.selection.videoTrack);
+  const videoLevel = trackGroup(selectedVideo ?? previousVideo)?.selectionLevel ?? null;
+
+  for (const kind of ['video', 'audio', 'subtitle']) {
+    const selectedId = record.selection[`${kind}Track`];
+    if (selectedId === null || tracks.some(track => track.trackId === selectedId)) continue;
+    const identity = record.selection[`${kind}Identity`];
+    const targetLevel = kind === 'video' ? identity?.selectionLevel ?? null : videoLevel;
+    const replacement = identity
+      ? replacementTrack(tracks, kind, identity, targetLevel,
+        record.selection.maxAudioChannels)
+      : null;
+    const target = replacement ?? defaultTrack(
+      tracks, kind, targetLevel, record.selection.maxAudioChannels);
+    record.instance.selectTrack(kind, target?.trackId ?? null);
+    if (target) rememberSelection(record, kind, target, identity?.groupIdentification ?? null);
+    else {
+      record.selection[`${kind}Track`] = null;
+      record.selection[`${kind}Identity`] = null;
+    }
+  }
+}
+
 function automaticSelection(record, track) {
   const selection = record.selection;
   if (track.kind === 'video') {
     if (selection.videoTrack !== null) return;
     if (selection.videoPacketId !== null && track.packetId !== selection.videoPacketId) return;
-    selection.videoTrack = track.trackId;
     record.instance.selectTrack('video', track.trackId);
+    rememberSelection(record, 'video', track);
     return;
   }
   if (track.kind === 'audio') {
@@ -57,16 +139,17 @@ function automaticSelection(record, track) {
     if (selection.audioTrack !== null && (preferred === null || track.packetId !== preferred)) {
       return;
     }
-    selection.audioTrack = track.trackId;
     record.instance.selectTrack('audio', track.trackId);
+    rememberSelection(record, 'audio', track);
     return;
   }
   if (track.kind === 'subtitle' && track.codec === 'ttml') {
+    if (track.subtitle?.type !== 0) return;
     const preferred = selection.subtitlePacketId;
     if (selection.subtitleTrack !== null &&
         (preferred === null || track.packetId !== preferred)) return;
-    selection.subtitleTrack = track.trackId;
     record.instance.selectTrack('subtitle', track.trackId);
+    rememberSelection(record, 'subtitle', track);
   }
 }
 
@@ -87,6 +170,9 @@ function createDemuxer(module, objectId, options) {
       videoTrack: null,
       audioTrack: null,
       subtitleTrack: null,
+      videoIdentity: null,
+      audioIdentity: null,
+      subtitleIdentity: null,
     },
     tracks: new Map(),
   };
@@ -96,6 +182,7 @@ function createDemuxer(module, objectId, options) {
   record.instance = new module.TlvDemuxer({
     mseMaxAudioChannels: record.selection.maxAudioChannels,
     onMseVideoStart: event('onMseVideoStart'),
+    onMseVideoSplice: event('onMseVideoSplice'),
     onMseAudioSplice: event('onMseAudioSplice'),
     onMseInit(init) {
       sendEvent(objectId, 'onMseInit', init, [init.data.buffer]);
@@ -108,6 +195,14 @@ function createDemuxer(module, objectId, options) {
       record.tracks.set(track.trackId, track);
       automaticSelection(record, track);
       sendEvent(objectId, 'onTrack', track);
+    },
+    onTrackRemoved(track) {
+      record.tracks.delete(track.trackId);
+      sendEvent(objectId, 'onTrackRemoved', track);
+    },
+    onMptSnapshot(snapshot) {
+      reconcileMptSelection(record, snapshot);
+      sendEvent(objectId, 'onMptSnapshot', snapshot);
     },
     onLayoutConfiguration: event('onLayoutConfiguration'),
     onApplicationService: event('onApplicationService'),
@@ -122,6 +217,7 @@ function createDemuxer(module, objectId, options) {
       sendEvent(objectId, 'onApplicationResourceView', { ...resource, data }, [data.buffer]);
     },
     onApplicationResourceRemoved: event('onApplicationResourceRemoved'),
+    onApplicationRemoved: event('onApplicationRemoved'),
     onApplicationState(state) {
       sendEvent(objectId, 'onApplicationState', {
         ...state,
@@ -250,11 +346,15 @@ async function invokeObject(message) {
           ? (message.args || []) : ['audio', message.args?.[0]];
         const key = `${kind}Track`;
         if (key in record.selection) {
-          record.selection[key] = trackId ?? null;
           const track = record.tracks.get(trackId);
           const packetKey = `${kind}PacketId`;
-          if (track && packetKey in record.selection) {
-            record.selection[packetKey] = track.packetId;
+          if (track) rememberSelection(record, kind, track);
+          else {
+            record.selection[key] = trackId ?? null;
+            record.selection[`${kind}Identity`] = null;
+            if (packetKey in record.selection && trackId == null) {
+              record.selection[packetKey] = null;
+            }
           }
         }
       }

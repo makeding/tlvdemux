@@ -488,6 +488,10 @@ declare namespace createTlvDemuxModule {
     presentationTimeUs: bigint;
   }
 
+  interface MseVideoSplice {
+    presentationTimeUs: bigint;
+  }
+
   interface MseVideoStart {
     nalType: number;
     signalledRandomAccess: boolean;
@@ -528,6 +532,7 @@ declare namespace createTlvDemuxModule {
     onMseInit?: (init: MseTrackInit) => void;
     onMseSegment?: (segment: MseMediaSegment) => void;
     onMseAudioSplice?: (splice: MseAudioSplice) => void;
+    onMseVideoSplice?: (splice: MseVideoSplice) => void;
     onMseVideoStart?: (start: MseVideoStart) => void;
   }
 
