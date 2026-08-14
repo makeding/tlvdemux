@@ -1,5 +1,9 @@
 const protocol = globalThis.TlvDemuxWorkerProtocol;
 
+export function workerResultValue(message) {
+  return 'value' in message ? message.value : true;
+}
+
 function remoteError(value) {
   const error = new Error(value?.message || 'tlvdemux worker failed');
   error.name = value?.name || 'Error';
@@ -35,7 +39,7 @@ class WorkerClient {
     if (!pending) return;
     this.pending.delete(message.requestId);
     if (message.type === protocol.failure) pending.reject(remoteError(message.error));
-    else pending.resolve(message.value ?? true);
+    else pending.resolve(workerResultValue(message));
   }
 
   failAll(error) {
@@ -146,6 +150,9 @@ class WorkerDemuxer extends WorkerObject {
   }
   selectService(contextId) { return this.call('selectService', [contextId]); }
   selectTrack(kind, trackId) { return this.call('selectTrack', [kind, trackId]); }
+  switchAudioTrack(trackId, earliestPresentationTimeUs) {
+    return this.call('switchAudioTrack', [trackId, earliestPresentationTimeUs]);
+  }
   setMseOutputEnabled(enabled) { return this.call('setMseOutputEnabled', [enabled]); }
   setSubtitlePassthroughEnabled(enabled) {
     return this.call('setSubtitlePassthroughEnabled', [enabled]);

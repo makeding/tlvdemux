@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <map>
 #include <optional>
@@ -46,6 +47,7 @@ constexpr std::uint32_t kFragmentDurationDivisor = 4;
 // (dom/media/mp4/MoofParser.cpp), so a fragment can only be cut where the
 // queue has a genuinely safe prefix. Bound how long we wait for one.
 constexpr std::uint32_t kQueueDurationBoundMultiplier = 8;
+constexpr std::int64_t kAudioHistoryDurationUs = 20000000;
 
 Bytes u32(const std::uint64_t value) {
     return {static_cast<std::uint8_t>(value >> 24U),
@@ -96,15 +98,30 @@ public:
         if (!enabled_) return;
         auto data = media_segment(track, samples,
             mode_ == tlvdemux::MseOutputMode::Multiplexed ? sequence_++ : sequence);
+        auto start = samples.front().pts;
+        auto end = samples.front().pts + static_cast<std::int64_t>(samples.front().duration);
+        for (const auto& sample : samples) {
+            start = std::min(start, sample.pts);
+            end = std::max(end, sample.pts + static_cast<std::int64_t>(sample.duration));
+        }
+        const auto start_us = scaled(start, track.timescale, 1000000);
+        const auto end_us = scaled(end, track.timescale, 1000000);
         if (mode_ == tlvdemux::MseOutputMode::SeparateTracks) {
-            sink_.onMseSegment(tlvdemux::MseMediaSegment{type, std::move(data)});
+            sink_.onMseSegment(
+                tlvdemux::MseMediaSegment{type, std::move(data), start_us, end_us});
             return;
         }
         if (!multiplexed_init_emitted_) {
             pending_segments_.push_back(std::move(data));
             return;
         }
-        sink_.onMseSegment(tlvdemux::MseMediaSegment{"muxed", std::move(data)});
+        sink_.onMseSegment(
+            tlvdemux::MseMediaSegment{"muxed", std::move(data), start_us, end_us});
+    }
+
+    void audio_splice(const std::int64_t presentation_time_us) {
+        if (!enabled_) return;
+        sink_.onMseAudioSplice(tlvdemux::MseAudioSplice{presentation_time_us});
     }
 
     void video_start(const int nal_type, const bool signalled) {
@@ -128,7 +145,7 @@ private:
         sink_.onMseInit(std::move(event));
         multiplexed_init_emitted_ = true;
         for (auto& data : pending_segments_) {
-            sink_.onMseSegment(tlvdemux::MseMediaSegment{"muxed", std::move(data)});
+            sink_.onMseSegment(tlvdemux::MseMediaSegment{"muxed", std::move(data), 0, 0});
         }
         pending_segments_.clear();
     }
@@ -157,8 +174,10 @@ public:
 
     void activate() {
         reset_samples();
-        if (track_) output_.init(type_, *track_);
+        emit_init();
     }
+
+    void discard() { reset_samples(); }
 
     void flush() {
         if (pending_) {
@@ -172,11 +191,15 @@ public:
 protected:
     virtual std::uint32_t default_duration() const = 0;
 
-    void set_track(Mp4Track track) {
+    void set_track(Mp4Track track, const bool emit = true) {
         if (track_) return;
         track.id = track_id_;
         track_ = std::move(track);
-        output_.init(type_, *track_);
+        if (emit) emit_init();
+    }
+
+    void emit_init() {
+        if (track_) output_.init(type_, *track_);
     }
 
     bool enqueue(Sample sample) {
@@ -400,9 +423,14 @@ private:
 class AacMuxer final : public BaseMuxer {
 public:
     explicit AacMuxer(Output& output, const std::uint32_t max_channels)
-        : BaseMuxer("audio", 2, output), max_channels_(max_channels) {}
+        : BaseMuxer("audio", 2, output), output_(output),
+          max_channels_(max_channels) {}
 
-    void discontinuity() { reset_samples(); }
+    void discontinuity() {
+        reset_samples();
+        clear_resume();
+        history_.clear();
+    }
 
     void activate() {
         clear_resume();
@@ -439,9 +467,31 @@ public:
                                   : std::nullopt;
     }
 
-    void push(const aribtlv::AccessUnit& unit, const bool enabled,
+    std::optional<std::int64_t> activate_from(
+        const std::int64_t earliest_presentation_time_us) {
+        if (!track_) return std::nullopt;
+        const auto first = std::find_if(history_.begin(), history_.end(),
+            [this, earliest_presentation_time_us](const Sample& sample) {
+                return scaled(sample.pts, track_->timescale, 1000000) >=
+                    earliest_presentation_time_us;
+            });
+        if (first == history_.end()) return std::nullopt;
+        clear_resume();
+        const auto boundary_us = scaled(first->pts, track_->timescale, 1000000);
+        output_.audio_splice(boundary_us);
+        BaseMuxer::activate();
+        for (auto iterator = first; iterator != history_.end(); ++iterator) {
+            auto sample = *iterator;
+            if (enqueue(std::move(sample))) last_enqueued_dts_ = iterator->dts;
+        }
+        flush();
+        return boundary_us;
+    }
+
+    void push(const aribtlv::AccessUnit& unit, const bool selected,
+              const bool output_enabled,
               const std::optional<std::int64_t> timeline_offset_us) {
-        if (unit.discontinuity) reset_samples();
+        if (unit.discontinuity) discontinuity();
         auto frame = parser_.parse(unit.data);
         if (max_channels_ != 0 && frame.channels > max_channels_) return;
         if (!track_) {
@@ -451,7 +501,7 @@ public:
             track.channels = frame.channels;
             track.codec = "mp4a.40." + std::to_string(frame.object);
             track.config = frame.asc;
-            set_track(std::move(track));
+            set_track(std::move(track), selected);
             if (resume_at_ticks_.has_value()) {
                 // Now that we know this track's timescale, convert the resume
                 // point (given in the previous track's timescale) into ours.
@@ -459,11 +509,10 @@ public:
                     resume_timescale_, track_->timescale);
             }
         }
-        if (!enabled || !timeline_offset_us.has_value()) return;
-        const auto shifted_us = scaled(unit.pts.value, unit.pts.timescale, 1000000) +
-            *timeline_offset_us;
-        if (shifted_us < 0) return;
-        std::int64_t timestamp = scaled(shifted_us, 1000000, track_->timescale);
+        if (!timeline_offset_us.has_value()) return;
+        std::int64_t timestamp =
+            scaled(unit.pts.value, unit.pts.timescale, track_->timescale) +
+            scaled(*timeline_offset_us, 1000000, track_->timescale);
         if (resume_offset_ticks_.has_value()) {
             // First sample after a switch anchors to the resume point; later
             // samples advance by their native inter-frame delta so the
@@ -477,7 +526,19 @@ public:
             }
         }
         if (timestamp < 0) return;
-        if (enqueue({std::move(frame.data), timestamp, timestamp, 0, true})) {
+        if (!history_.empty() && timestamp <= history_.back().pts) return;
+        Sample sample{std::move(frame.data), timestamp, timestamp,
+                      default_duration(), true};
+        history_.push_back(sample);
+        const auto history_ticks = scaled(
+            kAudioHistoryDurationUs, 1000000, track_->timescale);
+        while (!history_.empty() &&
+               timestamp - history_.front().pts > history_ticks) {
+            history_.pop_front();
+        }
+        if (!output_enabled) return;
+        sample.duration = 0;
+        if (enqueue(std::move(sample))) {
             last_enqueued_dts_ = timestamp;
         }
     }
@@ -499,6 +560,7 @@ private:
     }
 
     LatmParser parser_;
+    Output& output_;
     std::uint32_t max_channels_ = 0;
     std::optional<std::int64_t> resume_at_ticks_;
     std::uint32_t resume_timescale_ = 0;
@@ -506,6 +568,7 @@ private:
     std::optional<std::int64_t> resume_origin_ticks_;
     bool first_after_resume_ = false;
     std::optional<std::int64_t> last_enqueued_dts_;
+    std::deque<Sample> history_;
 };
 
 } // namespace
@@ -546,13 +609,39 @@ public:
         }
     }
 
+    std::optional<std::int64_t> switch_audio(
+        const std::uint64_t id, const std::int64_t earliest_presentation_time_us) {
+        if (audio_id == id && active_audio != nullptr) return std::nullopt;
+        const auto candidate = audio.find(id);
+        if (candidate == audio.end()) return std::nullopt;
+        const auto boundary = candidate->second.activate_from(
+            earliest_presentation_time_us);
+        if (!boundary.has_value()) return std::nullopt;
+        if (active_audio) active_audio->discard();
+        audio_id = id;
+        active_audio = &candidate->second;
+        return boundary;
+    }
+
     void push(const aribtlv::AccessUnit& unit) {
         if (video_id && unit.track_id == *video_id) {
-            if (unit.discontinuity && active_audio) active_audio->discontinuity();
+            if (unit.discontinuity) {
+                for (auto& entry : audio) entry.second.discontinuity();
+            }
             video.push(unit, enabled);
-        } else if (audio_id && unit.track_id == *audio_id && active_audio) {
-            active_audio->push(unit, enabled && video.started(),
-                               video.timeline_offset_us());
+            return;
+        }
+        if (unit.codec == aribtlv::Codec::AacLatm) {
+            auto [iterator, inserted] = audio.try_emplace(
+                unit.track_id, output, options.max_audio_channels);
+            if (inserted && audio_id && unit.track_id == *audio_id) {
+                active_audio = &iterator->second;
+            }
+            const bool active = audio_id && unit.track_id == *audio_id &&
+                active_audio == &iterator->second;
+            iterator->second.push(unit, active,
+                                  active && enabled && video.started(),
+                                  video.timeline_offset_us());
         }
     }
 
@@ -591,9 +680,18 @@ void tlvdemux::MseRemuxer::selectTrack(const TrackKind kind,
     impl_->select(kind, id);
 }
 
-void tlvdemux::MseRemuxer::setOutputEnabled(const bool enabled) noexcept {
+std::optional<std::int64_t> tlvdemux::MseRemuxer::switchAudioTrack(
+    const std::uint64_t id, const std::int64_t earliest_presentation_time_us) {
+    return impl_->switch_audio(id, earliest_presentation_time_us);
+}
+
+void tlvdemux::MseRemuxer::setOutputEnabled(const bool enabled) {
+    const bool was_enabled = impl_->enabled;
     impl_->enabled = enabled;
     impl_->output.set_enabled(enabled);
+    if (enabled && !was_enabled && impl_->active_audio) {
+        impl_->active_audio->activate();
+    }
 }
 
 void tlvdemux::MseRemuxer::push(const AccessUnit& unit) { impl_->push(unit); }
@@ -626,7 +724,16 @@ public:
         auto event = val::object();
         event.set("type", segment.type);
         event.set("data", copy_bytes(segment.data));
+        event.set("startTimeUs", segment.start_time_us);
+        event.set("endTimeUs", segment.end_time_us);
         emit("onMseSegment", event);
+    }
+
+    void onMseAudioSplice(const tlvdemux::MseAudioSplice& splice) override {
+        if (!has("onMseAudioSplice")) return;
+        auto event = val::object();
+        event.set("presentationTimeUs", splice.presentation_time_us);
+        emit("onMseAudioSplice", event);
     }
 
     void onMseVideoStart(const tlvdemux::MseVideoStart& start) override {
@@ -662,7 +769,12 @@ void WasmMseRemuxer::selectTrack(const aribtlv::TrackKind kind,
     impl_->remuxer().selectTrack(kind, id);
 }
 
-void WasmMseRemuxer::setOutputEnabled(const bool enabled) noexcept {
+std::optional<std::int64_t> WasmMseRemuxer::switchAudioTrack(
+    const std::uint64_t id, const std::int64_t earliest_presentation_time_us) {
+    return impl_->remuxer().switchAudioTrack(id, earliest_presentation_time_us);
+}
+
+void WasmMseRemuxer::setOutputEnabled(const bool enabled) {
     impl_->remuxer().setOutputEnabled(enabled);
 }
 

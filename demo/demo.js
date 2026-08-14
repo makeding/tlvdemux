@@ -147,7 +147,7 @@ function renderAudioTracks() {
     option.disabled = !mseAudioTrackSupported(track);
     elements.audioTrack.append(option);
   }
-  const desired = preferredAudioPacketId ?? selectedAudioPacketId;
+  const desired = selectedAudioPacketId ?? preferredAudioPacketId;
   const desiredTrack = desired === null ? undefined : knownAudioTracks.get(desired);
   elements.audioTrack.value = desiredTrack && mseAudioTrackSupported(desiredTrack)
     ? String(desired) : '';
@@ -674,17 +674,21 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   };
   for (const queue of activeQueues) queue.onUpdateEnd = maybeStartPlayback;
 
-  const appendSegment = (type, data) => {
-    const queue = queues.get(type);
+  const appendSegment = segment => {
+    const queue = queues.get(segment.type);
     if (!queue) {
-      const pending = pendingSegments.get(type);
-      pending.push(data);
-      if (pending.reduce((sum, item) => sum + item.byteLength, 0) > SOURCE_QUEUE_HIGH_BYTES) {
-        throw new Error(`${type} の初期化待ちが長すぎます`);
+      const pending = pendingSegments.get(segment.type);
+      pending.push(segment);
+      if (pending.reduce((sum, item) => sum + item.data.byteLength, 0) >
+          SOURCE_QUEUE_HIGH_BYTES) {
+        throw new Error(`${segment.type} の初期化待ちが長すぎます`);
       }
       return;
     }
-    queue.append(data);
+    queue.append(segment.data, {
+      startTimeSeconds: Number(segment.startTimeUs) / 1000000,
+      endTimeSeconds: Number(segment.endTimeUs) / 1000000,
+    });
   };
 
   const installPairedInits = () => {
@@ -715,7 +719,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       elements.mediaInfo.textContent += ` · ${type} ${details}`;
     }
     for (const type of ['video', 'audio']) {
-      for (const data of pendingSegments.get(type)) appendSegment(type, data);
+      for (const segment of pendingSegments.get(type)) appendSegment(segment);
       pendingSegments.get(type).length = 0;
     }
   };
@@ -748,9 +752,18 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
           mseSegmentTypes.add(segment.type);
           appendLog(`${segment.type} media segment 開始`);
         }
-        appendSegment(segment.type, segment.data);
+        appendSegment(segment);
       }
       catch (error) { callbackError = error; }
+  };
+  const onMseAudioSplice = splice => {
+    try {
+      const boundary = Number(splice.presentationTimeUs) / 1000000;
+      const queue = queues.get('audio');
+      if (!queue) throw new Error('音声 SourceBuffer がまだ初期化されていません');
+      queue.replaceFrom(boundary);
+      appendLog(`音声バッファ切替境界 ${boundary.toFixed(6)}s`);
+    } catch (error) { callbackError = error; }
   };
   const wantedVideoPacketId = parsePacketId();
 
@@ -777,6 +790,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     },
     onMseInit,
     onMseSegment,
+    onMseAudioSplice,
     onTrack(track) {
       tracks.set(track.trackId, track);
       appendLog(`トラック ${track.kind} packet_id=0x${track.packetId.toString(16)} codec=${track.codec}`);
@@ -925,10 +939,12 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     }
     if (track.trackId === selectedAudio) return;
     if (generation !== runGeneration) return;
-    // selectTrack seals the old audio fragment before activating the new
-    // track. Video and MediaSource stay in place; AAC supplies its own random
-    // access boundary, so changing only audio does not require a video RAP.
-    await demuxer.selectTrack('audio', track.trackId);
+    const earliest = BigInt(Math.round((elements.video.currentTime + 0.1) * 1000000));
+    const boundary = await demuxer.switchAudioTrack(track.trackId, earliest);
+    if (callbackError) throw callbackError;
+    if (boundary === null) {
+      throw new Error('切替先の音声が現在の再生位置まで準備できていません');
+    }
     if (generation !== runGeneration) return;
     selectedAudio = track.trackId;
     selectedAudioPacketId = track.packetId;
@@ -1162,6 +1178,7 @@ elements.audioTrack.addEventListener('change', () => {
     activeAudioSwitch(target.packetId).catch(error => {
       appendLog(`音声切替エラー ${error.message || error}`);
       console.error(error);
+      renderAudioTracks();
     });
   }
 });

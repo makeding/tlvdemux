@@ -576,12 +576,30 @@ public:
         if (kind == "subtitle") parsed_kind = aribtlv::TrackKind::Subtitle;
         if (!parsed_kind.has_value()) return;
         const auto selected = optional_number<std::uint64_t>(track_id);
-        demuxer_.selectTrack(*parsed_kind, selected);
+        if (mse_enabled_ && *parsed_kind == aribtlv::TrackKind::Audio) {
+            selected_audio_track_ = selected;
+            // MSE keeps a bounded compressed-frame history for the other audio
+            // tracks. Preserve the public selected-track callback contract
+            // below while allowing the remuxer to observe those access units.
+            demuxer_.selectTrack(*parsed_kind, std::nullopt);
+        } else {
+            demuxer_.selectTrack(*parsed_kind, selected);
+        }
         if (mse_enabled_) mse_remuxer_.selectTrack(*parsed_kind, selected);
         if (*parsed_kind == aribtlv::TrackKind::Video && index_active_ &&
             recording_index_.state() == aribtlv::IndexState::Building) {
             recording_index_.selectVideoTrack(selected);
         }
+    }
+
+    val switchAudioTrack(const std::uint64_t track_id,
+                         const std::int64_t earliest_presentation_time_us) {
+        if (!mse_enabled_) return val::null();
+        const auto boundary = mse_remuxer_.switchAudioTrack(
+            track_id, earliest_presentation_time_us);
+        if (!boundary.has_value()) return val::null();
+        selected_audio_track_ = track_id;
+        return val(*boundary);
     }
 
     void setMseOutputEnabled(const bool enabled) {
@@ -839,6 +857,9 @@ public:
     void onAccessUnit(aribtlv::AccessUnit&& unit) override {
         if (index_active_) recording_index_.observe(unit);
         if (mse_enabled_) mse_remuxer_.push(unit);
+        if (mse_enabled_ && unit.codec == aribtlv::Codec::AacLatm &&
+            selected_audio_track_.has_value() &&
+            unit.track_id != *selected_audio_track_) return;
         const bool playback_event = unit.codec == aribtlv::Codec::Ttml ||
             (unit.codec == aribtlv::Codec::Hevc &&
              (unit.random_access || unit.discontinuity)) ||
@@ -1175,6 +1196,7 @@ private:
     bool index_active_ = false;
     bool index_growing_ = false;
     bool mse_enabled_ = false;
+    std::optional<std::uint64_t> selected_audio_track_;
 };
 
 } // namespace
@@ -1189,6 +1211,7 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("reposition", &WasmDemuxer::reposition)
         .function("selectService", &WasmDemuxer::selectService)
         .function("selectTrack", &WasmDemuxer::selectTrack)
+        .function("switchAudioTrack", &WasmDemuxer::switchAudioTrack)
         .function("setMseOutputEnabled", &WasmDemuxer::setMseOutputEnabled)
         .function("setSubtitlePassthroughEnabled", &WasmDemuxer::setSubtitlePassthroughEnabled)
         .function("drainApplicationResources", &WasmDemuxer::drainApplicationResources)

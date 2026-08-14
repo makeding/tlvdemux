@@ -460,6 +460,12 @@ declare namespace createTlvDemuxModule {
   interface MseMediaSegment {
     type: "video" | "audio";
     data: Uint8Array;
+    startTimeUs: bigint;
+    endTimeUs: bigint;
+  }
+
+  interface MseAudioSplice {
+    presentationTimeUs: bigint;
   }
 
   interface MseVideoStart {
@@ -501,6 +507,7 @@ declare namespace createTlvDemuxModule {
     onApplicationResourcesReset?: () => void;
     onMseInit?: (init: MseTrackInit) => void;
     onMseSegment?: (segment: MseMediaSegment) => void;
+    onMseAudioSplice?: (splice: MseAudioSplice) => void;
     onMseVideoStart?: (start: MseVideoStart) => void;
   }
 
@@ -517,6 +524,7 @@ declare namespace createTlvDemuxModule {
     reposition(inputOffset: bigint, preserveTimeline: boolean): void;
     selectService(contextId?: number | null): void;
     selectTrack(kind: TrackKind, trackId?: bigint | null): void;
+    switchAudioTrack(trackId: bigint, earliestPresentationTimeUs: bigint): bigint | null;
     setMseOutputEnabled(enabled: boolean): void;
     setSubtitlePassthroughEnabled(enabled: boolean): void;
     drainApplicationResources(maxEvents: number): boolean;

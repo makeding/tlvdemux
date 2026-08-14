@@ -73,12 +73,34 @@ export class MseAppendQueue {
     });
   }
 
-  append(data) {
-    this.enqueueAppend({ data, mime: null });
+  append(data, timing = {}) {
+    this.enqueueAppend({
+      kind: 'append',
+      data,
+      mime: null,
+      startTimeSeconds: timing.startTimeSeconds ?? null,
+      endTimeSeconds: timing.endTimeSeconds ?? null,
+    });
   }
 
   appendInitialization(data, mime) {
-    this.enqueueAppend({ data, mime });
+    this.enqueueAppend({
+      kind: 'append', data, mime, startTimeSeconds: null, endTimeSeconds: null,
+    });
+  }
+
+  replaceFrom(time) {
+    if (!Number.isFinite(time) || time < 0) throw new TypeError(`invalid splice time ${time}`);
+    if (this.error) throw this.error;
+    if (this.state !== 'running') {
+      throw new DOMException(`SourceBuffer queue is ${this.state}`, 'InvalidStateError');
+    }
+    this.queue = this.queue.filter(item => item.kind !== 'append' ||
+      (item.mime === null &&
+       (item.startTimeSeconds === null || item.startTimeSeconds < time)));
+    this.queue.push({ kind: 'remove', startTimeSeconds: time });
+    this.recountQueuedBytes();
+    this.pump();
   }
 
   enqueueAppend(item) {
@@ -119,12 +141,23 @@ export class MseAppendQueue {
       }
     }
     if (!this.queue.length) return;
-    if (this.bufferedAhead() >= this.forwardBufferHighSeconds) {
+    const next = this.queue[0];
+    if (next.kind === 'append' &&
+        this.bufferedAhead() >= this.forwardBufferHighSeconds) {
       this.scheduleRetry();
       return;
     }
 
     const item = this.queue.shift();
+    if (item.kind === 'remove') {
+      const removeEnd = this.bufferedRanges().at(-1)?.end;
+      if (Number.isFinite(removeEnd) && removeEnd > item.startTimeSeconds) {
+        this.sourceBuffer.remove(item.startTimeSeconds, removeEnd);
+        return;
+      }
+      this.pump();
+      return;
+    }
     const data = item.data;
     this.currentBytes = data.byteLength;
     try {
@@ -250,7 +283,7 @@ export class MseAppendQueue {
 
   recountQueuedBytes() {
     this.queuedBytes = this.currentBytes +
-      this.queue.reduce((sum, item) => sum + item.data.byteLength, 0);
+      this.queue.reduce((sum, item) => sum + (item.data?.byteLength || 0), 0);
   }
 
   fail(error) {

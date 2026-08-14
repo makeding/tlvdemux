@@ -19,7 +19,9 @@ public:
     WasmMseRemuxer& operator=(const WasmMseRemuxer&) = delete;
 
     void selectTrack(aribtlv::TrackKind kind, std::optional<std::uint64_t> track_id);
-    void setOutputEnabled(bool enabled) noexcept;
+    std::optional<std::int64_t> switchAudioTrack(
+        std::uint64_t track_id, std::int64_t earliest_presentation_time_us);
+    void setOutputEnabled(bool enabled);
     void push(const aribtlv::AccessUnit& unit);
     void flush();
     void reset();

@@ -27,6 +27,12 @@ struct MseTrackInit {
 struct MseMediaSegment {
     std::string type;
     std::vector<std::uint8_t> data;
+    std::int64_t start_time_us = 0;
+    std::int64_t end_time_us = 0;
+};
+
+struct MseAudioSplice {
+    std::int64_t presentation_time_us = 0;
 };
 
 struct MseVideoStart {
@@ -53,6 +59,7 @@ public:
     virtual ~MseSink() = default;
     virtual void onMseInit(MseTrackInit&&) = 0;
     virtual void onMseSegment(MseMediaSegment&&) = 0;
+    virtual void onMseAudioSplice(const MseAudioSplice&) {}
     virtual void onMseVideoStart(const MseVideoStart&) {}
 };
 
@@ -64,7 +71,9 @@ public:
     MseRemuxer& operator=(const MseRemuxer&) = delete;
 
     void selectTrack(TrackKind kind, std::optional<std::uint64_t> track_id);
-    void setOutputEnabled(bool enabled) noexcept;
+    std::optional<std::int64_t> switchAudioTrack(
+        std::uint64_t track_id, std::int64_t earliest_presentation_time_us);
+    void setOutputEnabled(bool enabled);
     void push(const AccessUnit& unit);
     void flush();
     void reset();

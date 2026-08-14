@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <string>
@@ -21,14 +22,22 @@ void check(const bool condition, const std::string& message) {
 class TestSink final : public tlvdemux::MseSink {
 public:
     void onMseInit(tlvdemux::MseTrackInit&& init) override {
+        events.push_back("init:" + init.type);
         inits.push_back(std::move(init));
     }
     void onMseSegment(tlvdemux::MseMediaSegment&& segment) override {
+        events.push_back("segment:" + segment.type);
         segments.push_back(std::move(segment));
+    }
+    void onMseAudioSplice(const tlvdemux::MseAudioSplice& splice) override {
+        events.push_back("splice");
+        splices.push_back(splice);
     }
 
     std::vector<tlvdemux::MseTrackInit> inits;
     std::vector<tlvdemux::MseMediaSegment> segments;
+    std::vector<tlvdemux::MseAudioSplice> splices;
+    std::vector<std::string> events;
 };
 
 class BitWriter {
@@ -87,6 +96,16 @@ tlvdemux::AccessUnit audio_unit(const std::uint32_t channel_configuration) {
     unit.codec = tlvdemux::Codec::AacLatm;
     unit.data = loas_frame(channel_configuration);
     unit.pts = {0, 48000};
+    unit.dts = unit.pts;
+    return unit;
+}
+
+tlvdemux::AccessUnit audio_unit(const std::uint64_t track_id,
+                                const std::int64_t pts_value,
+                                const std::uint32_t channel_configuration = 2) {
+    auto unit = audio_unit(channel_configuration);
+    unit.track_id = track_id;
+    unit.pts = {pts_value, 48000};
     unit.dts = unit.pts;
     return unit;
 }
@@ -705,6 +724,75 @@ void test_radl_does_not_reopen_gate() {
           "a RADL access unit reopened the RASL drop window before the first trailing picture");
 }
 
+std::int64_t audio_time_us(const std::int64_t ticks) {
+    return (ticks * 1000000 + 24000) / 48000;
+}
+
+void test_audio_switch_uses_cached_frame_boundary_without_video_rap() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 10);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.push(hevc_unit(10, 0, 0, true, true));
+    check(!remuxer.switchAudioTrack(99, 0).has_value() && sink.splices.empty(),
+          "an unavailable target changed the active audio timeline");
+
+    constexpr std::int64_t frame = 1024;
+    for (std::int64_t index = 0; index < 30; ++index) {
+        remuxer.push(audio_unit(1, index * frame));
+        remuxer.push(audio_unit(2, index * frame));
+    }
+    const auto segment_count_before = sink.segments.size();
+    const auto first_boundary = remuxer.switchAudioTrack(
+        2, audio_time_us(8 * frame));
+    check(first_boundary == audio_time_us(8 * frame),
+          "audio switch did not choose the first cached AAC frame at the requested boundary");
+    check(sink.splices.size() == 1 &&
+              sink.splices.front().presentation_time_us == *first_boundary,
+          "audio switch did not announce the SourceBuffer replacement boundary");
+    check(sink.segments.size() > segment_count_before,
+          "prepared target audio was not emitted during the switch");
+    const auto first_target = parse_segment(sink.segments[segment_count_before].data);
+    check(first_target.tfdt == std::uint64_t(8 * frame),
+          "target audio did not retain its broadcast timeline at the splice");
+    check(sink.segments[segment_count_before].start_time_us == *first_boundary,
+          "audio media metadata does not match the fragment tfdt");
+    const auto splice_event = std::find(sink.events.begin(), sink.events.end(), "splice");
+    check(splice_event != sink.events.end() &&
+              std::next(splice_event) != sink.events.end() &&
+              *std::next(splice_event) == "init:audio",
+          "audio splice must be delivered before the replacement init segment");
+
+    for (std::int64_t index = 30; index < 40; ++index) {
+        remuxer.push(audio_unit(1, index * frame));
+        remuxer.push(audio_unit(2, index * frame));
+    }
+    const auto second_segment_count = sink.segments.size();
+    const auto second_boundary = remuxer.switchAudioTrack(
+        1, audio_time_us(32 * frame));
+    check(second_boundary == audio_time_us(32 * frame),
+          "switching back reused stale resume state instead of cached timestamps");
+    check(sink.segments.size() > second_segment_count,
+          "switching back did not emit cached audio");
+    check(parse_segment(sink.segments[second_segment_count].data).tfdt ==
+              std::uint64_t(32 * frame),
+          "switching back did not begin at the requested AAC frame");
+}
+
+void test_audio_init_is_restored_when_output_is_reenabled() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.setOutputEnabled(false);
+    remuxer.push(audio_unit(1, 0));
+    check(sink.inits.empty(), "disabled MSE output leaked an audio init");
+    remuxer.setOutputEnabled(true);
+    check(sink.inits.size() == 1 && sink.inits.front().type == "audio",
+          "reenabling MSE output did not restore the selected audio init");
+    check(sink.segments.empty(),
+          "reenabling MSE output replayed probe audio instead of awaiting playback data");
+}
+
 void test_audio_channel_limit() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink, tlvdemux::MseOptions{6});
@@ -780,6 +868,8 @@ void test_video_only_output_does_not_wait_for_audio() {
 } // namespace
 
 int main() {
+    test_audio_switch_uses_cached_frame_boundary_without_video_rap();
+    test_audio_init_is_restored_when_output_is_reenabled();
     test_audio_channel_limit();
     test_unlimited_22_2_channel_count();
     test_multiplexed_output_has_two_tracks_and_global_sequences();

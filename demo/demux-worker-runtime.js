@@ -96,6 +96,7 @@ function createDemuxer(module, objectId, options) {
   record.instance = new module.TlvDemuxer({
     mseMaxAudioChannels: record.selection.maxAudioChannels,
     onMseVideoStart: event('onMseVideoStart'),
+    onMseAudioSplice: event('onMseAudioSplice'),
     onMseInit(init) {
       sendEvent(objectId, 'onMseInit', init, [init.data.buffer]);
     },
@@ -242,8 +243,11 @@ async function invokeObject(message) {
         throw new Error(`unknown ${record.type} method: ${message.method}`);
       }
       value = method.apply(record.instance, message.args || []);
-      if (record.type === 'demuxer' && message.method === 'selectTrack') {
-        const [kind, trackId] = message.args || [];
+      if (record.type === 'demuxer' &&
+          (message.method === 'selectTrack' ||
+           (message.method === 'switchAudioTrack' && value !== null))) {
+        const [kind, trackId] = message.method === 'selectTrack'
+          ? (message.args || []) : ['audio', message.args?.[0]];
         const key = `${kind}Track`;
         if (key in record.selection) {
           record.selection[key] = trackId ?? null;

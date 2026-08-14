@@ -63,7 +63,7 @@
     "build:package": "cmake -E make_directory dist && cmake -E copy_if_different build-wasm/tlvdemux.js dist/tlvdemux.js",
     "build": "npm run build:wasm && npm run build:package",
     "benchmark:wasm": "node tests/wasm_benchmark.mjs",
-    "test": "node tests/live_stream_coalescing.mjs && node tests/mse_append_queue.mjs && node tests/wasm_smoke.mjs dist/tlvdemux.js",
+    "test": "node tests/live_stream_coalescing.mjs && node tests/mse_append_queue.mjs && node tests/worker_result_value.mjs && node tests/wasm_smoke.mjs dist/tlvdemux.js",
     "prepack": "npm run build && npm test"
   }
 }

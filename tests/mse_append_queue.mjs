@@ -31,6 +31,7 @@ class FakeSourceBuffer extends EventTarget {
   remove(start, end) {
     if (!(end > start)) throw new TypeError(`invalid remove range ${start}..${end}`);
     this.removeCalls.push([start, end]);
+    this.operations.push(['remove', start, end]);
     this.updating = true;
   }
   complete() {
@@ -58,6 +59,36 @@ const {MseAppendQueue, finalizeMseMediaSource} = await import('../mse-append-que
 
 async function tick() {
   await new Promise(resolve => setTimeout(resolve, 5));
+}
+
+{
+  const sourceBuffer = new FakeSourceBuffer([[0, 20]]);
+  const mediaSource = new FakeMediaSource(sourceBuffer);
+  const media = {currentTime: 1, error: null, buffered: sourceBuffer.buffered};
+  const queue = new MseAppendQueue(mediaSource, media, 'audio/mp4; codecs="mp4a.40.2"', null, {
+    forwardBufferHighSeconds: Infinity,
+  });
+  queue.append(new Uint8Array([1]), {startTimeSeconds: 0, endTimeSeconds: 5});
+  queue.append(new Uint8Array([2]), {startTimeSeconds: 5, endTimeSeconds: 10});
+  queue.append(new Uint8Array([3]), {startTimeSeconds: 10, endTimeSeconds: 15});
+  queue.replaceFrom(7);
+  queue.appendInitialization(new Uint8Array([4]), 'audio/mp4; codecs="mp4a.40.5"');
+  queue.append(new Uint8Array([5]), {startTimeSeconds: 7, endTimeSeconds: 12});
+
+  sourceBuffer.complete();
+  assert.deepEqual(sourceBuffer.operations.at(-1), ['append', 2]);
+  sourceBuffer.complete();
+  assert.deepEqual(sourceBuffer.operations.at(-1), ['remove', 7, 20]);
+  sourceBuffer.complete();
+  assert.deepEqual(sourceBuffer.operations.slice(-2), [
+    ['changeType', 'audio/mp4; codecs="mp4a.40.5"'],
+    ['append', 4],
+  ]);
+  sourceBuffer.complete();
+  assert.deepEqual(sourceBuffer.operations.at(-1), ['append', 5]);
+  sourceBuffer.complete();
+  await queue.waitIdle();
+  assert.equal(queue.queuedBytes, 0);
 }
 
 {
