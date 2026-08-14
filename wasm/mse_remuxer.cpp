@@ -42,6 +42,7 @@ constexpr std::uint32_t kFragmentDurationDivisor = 4;
 constexpr std::uint32_t kQueueDurationBoundMultiplier = 8;
 constexpr std::int64_t kAudioHistoryDurationUs = 20000000;
 constexpr std::int64_t kLayerSwitchAudioBufferUs = 400000;
+constexpr std::int64_t kLayerSwitchMaxAvGapUs = 2000000;
 
 Bytes u32(const std::uint64_t value) {
     return {static_cast<std::uint8_t>(value >> 24U),
@@ -643,6 +644,20 @@ public:
         return boundary_us;
     }
 
+    std::optional<std::int64_t> activation_boundary_from(
+        const std::int64_t earliest_presentation_time_us) const {
+        if (!track_) return std::nullopt;
+        const auto first = std::find_if(history_.begin(), history_.end(),
+            [this, earliest_presentation_time_us](const Sample& sample) {
+                return scaled(sample.pts, track_->timescale, 1000000) >=
+                    earliest_presentation_time_us;
+            });
+        return first == history_.end()
+            ? std::nullopt
+            : std::optional<std::int64_t>{
+                scaled(first->pts, track_->timescale, 1000000)};
+    }
+
     bool has_contiguous_history_from(
         const std::int64_t earliest_presentation_time_us,
         const std::int64_t minimum_duration_us) const {
@@ -847,6 +862,12 @@ public:
         if (candidate == audio.end() ||
             !candidate->second.has_contiguous_history_from(
                 earliest_audio, kLayerSwitchAudioBufferUs)) return;
+        const auto audio_boundary = candidate->second.activation_boundary_from(earliest_audio);
+        if (!audio_boundary ||
+            *audio_boundary - *pending_layer->video_boundary_us > kLayerSwitchMaxAvGapUs) {
+            cancel_layer(MseLayerSwitchCancelReason::TimestampMismatch);
+            return;
+        }
         const auto completed = *pending_layer;
         pending_layer.reset();
         video.flush();

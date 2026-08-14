@@ -257,6 +257,9 @@ declare namespace createTlvDemuxModule {
     codec: Codec;
     componentTag: number;
     subtitleTimingMode: number | null;
+    subtitleOperationMode: number | null;
+    subtitleDisplayMode: number | null;
+    subtitleCompressionType: number | null;
     data: Uint8Array;
     ptsValue: bigint;
     ptsTimescale: number;
@@ -512,7 +515,8 @@ declare namespace createTlvDemuxModule {
     audioTrackId: bigint;
     previousVideoTrackId: bigint;
     previousAudioTrackId: bigint;
-    reason: "end-of-input" | "reset" | "reposition" | "selection-changed";
+    reason: "end-of-input" | "reset" | "reposition" | "selection-changed" |
+      "timestamp-mismatch";
   }
 
   interface MseVideoStart {

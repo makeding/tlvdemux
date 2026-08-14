@@ -29,6 +29,8 @@ const char* cancel_reason_name(
     case tlvdemux::MseLayerSwitchCancelReason::Reposition: return "reposition";
     case tlvdemux::MseLayerSwitchCancelReason::SelectionChanged:
         return "selection-changed";
+    case tlvdemux::MseLayerSwitchCancelReason::TimestampMismatch:
+        return "timestamp-mismatch";
     }
     return "end-of-input";
 }
@@ -37,9 +39,11 @@ const char* cancel_reason_name(
 
 class WasmMseRemuxer::Impl final : public tlvdemux::MseSink {
 public:
-    explicit Impl(val callbacks, const std::uint32_t max_audio_channels)
+    explicit Impl(val callbacks, const std::uint32_t max_audio_channels,
+                  WasmMseRemuxer::LayerSwitchCancellationHandler cancellation_handler)
         : callbacks_(std::move(callbacks)),
-          remuxer_(*this, tlvdemux::MseOptions{max_audio_channels}) {}
+          remuxer_(*this, tlvdemux::MseOptions{max_audio_channels}),
+          cancellation_handler_(std::move(cancellation_handler)) {}
 
     void onMseInit(tlvdemux::MseTrackInit&& init) override {
         if (!has("onMseInit")) return;
@@ -90,6 +94,7 @@ public:
 
     void onMseLayerSwitchCancelled(
         const tlvdemux::MseLayerSwitchCancelled& cancelled) override {
+        if (cancellation_handler_) cancellation_handler_(cancelled);
         if (!has("onMseLayerSwitchCancelled")) return;
         auto event = val::object();
         event.set("videoTrackId", cancelled.video_track_id);
@@ -121,11 +126,14 @@ private:
 
     val callbacks_;
     tlvdemux::MseRemuxer remuxer_;
+    WasmMseRemuxer::LayerSwitchCancellationHandler cancellation_handler_;
 };
 
 WasmMseRemuxer::WasmMseRemuxer(val callbacks,
-                               const std::uint32_t max_audio_channels)
-    : impl_(std::make_unique<Impl>(std::move(callbacks), max_audio_channels)) {}
+                               const std::uint32_t max_audio_channels,
+                               LayerSwitchCancellationHandler cancellation_handler)
+    : impl_(std::make_unique<Impl>(std::move(callbacks), max_audio_channels,
+                                  std::move(cancellation_handler))) {}
 WasmMseRemuxer::~WasmMseRemuxer() = default;
 
 std::optional<tlvdemux::MseLayerSwitchCancelled> WasmMseRemuxer::selectTrack(

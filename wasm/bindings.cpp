@@ -546,7 +546,10 @@ public:
     explicit WasmDemuxer(val callbacks)
         : callbacks_(std::move(callbacks)), application_assembler_(*this),
           demuxer_(*this, media_limits()),
-          mse_remuxer_(callbacks_, mse_max_audio_channels(callbacks_)) {
+          mse_remuxer_(callbacks_, mse_max_audio_channels(callbacks_),
+                       [this](const tlvdemux::MseLayerSwitchCancelled& cancelled) {
+                           restoreLayerSelectionState(cancelled);
+                       }) {
         mse_enabled_ = has_callback("onMseInit") || has_callback("onMseSegment");
     }
 
@@ -605,17 +608,22 @@ public:
         if (kind == "subtitle") parsed_kind = aribtlv::TrackKind::Subtitle;
         if (!parsed_kind.has_value()) return;
         const auto selected = optional_number<std::uint64_t>(track_id);
-        if (*parsed_kind == aribtlv::TrackKind::Video) selected_video_track_ = selected;
         if (mse_enabled_ && *parsed_kind == aribtlv::TrackKind::Audio) {
-            selected_audio_track_ = selected;
             // MSE keeps a bounded compressed-frame history for the other audio
             // tracks. Preserve the public selected-track callback contract
             // below while allowing the remuxer to observe those access units.
+            demuxer_.selectTrack(*parsed_kind, std::nullopt);
+        } else if (mse_enabled_ && *parsed_kind == aribtlv::TrackKind::Video) {
+            // Let the MSE layer observe all video candidates so the caller can
+            // detect a later RAP on another asset layer. MseRemuxer still
+            // filters output to selected_video_track_.
             demuxer_.selectTrack(*parsed_kind, std::nullopt);
         } else {
             demuxer_.selectTrack(*parsed_kind, selected);
         }
         if (mse_enabled_) mse_remuxer_.selectTrack(*parsed_kind, selected);
+        if (*parsed_kind == aribtlv::TrackKind::Video) selected_video_track_ = selected;
+        if (*parsed_kind == aribtlv::TrackKind::Audio) selected_audio_track_ = selected;
         if (*parsed_kind == aribtlv::TrackKind::Video && index_active_ &&
             recording_index_.state() == aribtlv::IndexState::Building) {
             recording_index_.selectVideoTrack(selected);
@@ -640,7 +648,7 @@ public:
                 earliest_presentation_time_us)) return false;
         selected_audio_track_ = audio_track_id;
         selected_video_track_ = video_track_id;
-        demuxer_.selectTrack(aribtlv::TrackKind::Video, video_track_id);
+        demuxer_.selectTrack(aribtlv::TrackKind::Video, std::nullopt);
         if (index_active_ && recording_index_.state() == aribtlv::IndexState::Building) {
             recording_index_.switchVideoTrack(video_track_id);
         }
@@ -919,13 +927,11 @@ public:
     void onAccessUnit(aribtlv::AccessUnit&& unit) override {
         if (index_active_) recording_index_.observe(unit);
         if (mse_enabled_) mse_remuxer_.push(unit);
-        if (mse_enabled_ && unit.codec == aribtlv::Codec::AacLatm &&
-            selected_audio_track_.has_value() &&
-            unit.track_id != *selected_audio_track_) return;
         const bool playback_event = unit.codec == aribtlv::Codec::Ttml ||
             (unit.codec == aribtlv::Codec::Hevc &&
              (unit.random_access || unit.discontinuity)) ||
-            (unit.codec == aribtlv::Codec::AacLatm && unit.discontinuity);
+            (unit.codec == aribtlv::Codec::AacLatm &&
+             (mse_enabled_ || unit.discontinuity));
         if (has_callback("onPlaybackAccessUnitView") && playback_event) {
             const auto data = unit.codec == aribtlv::Codec::Ttml
                 ? view_bytes(unit.data)
@@ -934,6 +940,9 @@ public:
             event.set("dataLifetime", std::string("callback"));
             emit("onPlaybackAccessUnitView", event);
         }
+        if (mse_enabled_ && unit.codec == aribtlv::Codec::AacLatm &&
+            selected_audio_track_.has_value() &&
+            unit.track_id != *selected_audio_track_) return;
         if (has_callback("onAccessUnitView")) {
             auto event = access_unit_event(unit, view_bytes(unit.data));
             event.set("dataLifetime", std::string("callback"));
@@ -1083,6 +1092,15 @@ private:
         event.set("subtitleTimingMode", unit.subtitle_timing_mode.has_value()
                                             ? val(*unit.subtitle_timing_mode)
                                             : val::null());
+        event.set("subtitleOperationMode", unit.subtitle_operation_mode.has_value()
+                                               ? val(*unit.subtitle_operation_mode)
+                                               : val::null());
+        event.set("subtitleDisplayMode", unit.subtitle_display_mode.has_value()
+                                              ? val(*unit.subtitle_display_mode)
+                                              : val::null());
+        event.set("subtitleCompressionType", unit.subtitle_compression_type.has_value()
+                                                  ? val(*unit.subtitle_compression_type)
+                                                  : val::null());
         event.set("data", data);
         event.set("ptsValue", unit.pts.value);
         event.set("ptsTimescale", unit.pts.timescale);
@@ -1251,13 +1269,18 @@ private:
     void restoreLayerSelection(
         const std::optional<tlvdemux::MseLayerSwitchCancelled>& cancelled) {
         if (!cancelled) return;
-        selected_video_track_ = cancelled->previous_video_track_id == 0
+        restoreLayerSelectionState(*cancelled);
+        demuxer_.selectTrack(aribtlv::TrackKind::Video, std::nullopt);
+    }
+
+    void restoreLayerSelectionState(
+        const tlvdemux::MseLayerSwitchCancelled& cancelled) {
+        selected_video_track_ = cancelled.previous_video_track_id == 0
             ? std::nullopt
-            : std::optional<std::uint64_t>{cancelled->previous_video_track_id};
-        selected_audio_track_ = cancelled->previous_audio_track_id == 0
+            : std::optional<std::uint64_t>{cancelled.previous_video_track_id};
+        selected_audio_track_ = cancelled.previous_audio_track_id == 0
             ? std::nullopt
-            : std::optional<std::uint64_t>{cancelled->previous_audio_track_id};
-        demuxer_.selectTrack(aribtlv::TrackKind::Video, selected_video_track_);
+            : std::optional<std::uint64_t>{cancelled.previous_audio_track_id};
         if (index_active_ && recording_index_.state() == aribtlv::IndexState::Building) {
             recording_index_.selectVideoTrack(selected_video_track_);
         }

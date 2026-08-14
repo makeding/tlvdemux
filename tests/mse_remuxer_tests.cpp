@@ -914,6 +914,35 @@ void test_layer_switch_waits_for_target_audio_after_video_rap() {
           "layer switch did not complete after target audio had 400ms prepared");
 }
 
+void test_layer_switch_rejects_distant_audio_boundary() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.push(hevc_unit(2, 0, 0, true, true));
+    remuxer.push(audio_unit(1, 0));
+
+    check(remuxer.switchLayer(3, 9, 0),
+          "timestamp mismatch test could not request a layer switch");
+    auto replacement = hevc_unit(3, 100000, 100000, true, true);
+    replacement.discontinuity = true;
+    remuxer.push(replacement);
+
+    constexpr std::int64_t frame = 1024;
+    constexpr std::int64_t distant_start = 3 * 48000;
+    for (std::int64_t index = 0; index < 24; ++index) {
+        remuxer.push(audio_unit(9, distant_start + index * frame));
+    }
+
+    check(sink.layer_switches.empty() && sink.video_splices.empty() &&
+              sink.splices.empty(),
+          "timestamp-mismatched layer switch reached an MSE splice");
+    check(sink.layer_switch_cancellations.size() == 1 &&
+              sink.layer_switch_cancellations.front().reason ==
+                  tlvdemux::MseLayerSwitchCancelReason::TimestampMismatch,
+          "timestamp-mismatched layer switch was not cancelled explicitly");
+}
+
 void test_layer_switch_cancels_once_at_end_of_input() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
@@ -1164,6 +1193,7 @@ int main() {
     test_video_track_switch_preserves_prepared_alternate_audio();
     test_layer_switch_coordinates_video_rap_and_prepared_audio();
     test_layer_switch_waits_for_target_audio_after_video_rap();
+    test_layer_switch_rejects_distant_audio_boundary();
     test_layer_switch_cancels_once_at_end_of_input();
     test_layer_switch_cancels_on_reposition_and_explicit_selection();
     test_audio_init_is_restored_when_output_is_reenabled();

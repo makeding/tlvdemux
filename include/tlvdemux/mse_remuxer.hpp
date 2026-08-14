@@ -51,6 +51,7 @@ enum class MseLayerSwitchCancelReason {
     Reset,
     Reposition,
     SelectionChanged,
+    TimestampMismatch,
 };
 
 struct MseLayerSwitchCancelled {

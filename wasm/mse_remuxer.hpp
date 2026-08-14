@@ -5,6 +5,7 @@
 #include <tlvdemux/mse_remuxer.hpp>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 
@@ -12,8 +13,12 @@
 
 class WasmMseRemuxer {
 public:
+    using LayerSwitchCancellationHandler =
+        std::function<void(const tlvdemux::MseLayerSwitchCancelled&)>;
+
     explicit WasmMseRemuxer(emscripten::val callbacks,
-                            std::uint32_t max_audio_channels = 0);
+                            std::uint32_t max_audio_channels = 0,
+                            LayerSwitchCancellationHandler cancellation_handler = {});
     ~WasmMseRemuxer();
     WasmMseRemuxer(const WasmMseRemuxer&) = delete;
     WasmMseRemuxer& operator=(const WasmMseRemuxer&) = delete;
