@@ -515,8 +515,7 @@ declare namespace createTlvDemuxModule {
     audioTrackId: bigint;
     previousVideoTrackId: bigint;
     previousAudioTrackId: bigint;
-    reason: "end-of-input" | "reset" | "reposition" | "selection-changed" |
-      "timestamp-mismatch";
+    reason: "end-of-input" | "reset" | "reposition" | "selection-changed";
   }
 
   interface MseVideoStart {

@@ -1,11 +1,12 @@
 import { B62TTMLRenderer } from '/aribb62.js/src/index.js';
 import { DataBroadcastController } from './data-broadcast.js?v=webkit-canvas-plane-v4';
 import {
+  automaticLayerSwitchEligible,
   audioTrackChoices,
   correspondingAudioTrack,
   sameVideoLayerGroup,
   selectionLevel,
-} from './asset-groups.mjs?v=layer-switch-v2';
+} from './asset-groups.mjs?v=layer-switch-v3';
 import { shouldRenderSubtitleTrack, subtitleTrackKind } from './subtitle-tracks.mjs?v=subtitle-planes-v1';
 import { coalesceReadableStream } from './live-stream.mjs?v=asset-groups-v3';
 import { createWorkerTlvDemuxModule } from './worker-tlvdemux.js?v=layer-duration-v2';
@@ -884,7 +885,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         reset: '再生状態がリセットされました',
         reposition: '再生位置が変更されました',
         'selection-changed': '別のトラックが選択されました',
-        'timestamp-mismatch': '切替先の映像と音声の時刻が一致しませんでした',
       }[cancelled.reason] ?? '切替を完了できませんでした';
       appendLog(`${videoTrackLabel(pending.video)} への切替を中止: ${reason}`);
     } catch (error) { callbackError = error; }
@@ -1198,22 +1198,24 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const maybeSwitchLayer = async () => {
     if (liveMode || wantedVideoPacketId !== undefined ||
         automaticLayerSwitchInFlight || pendingLayerSwitch || selectedVideoTrack === null) return;
-    if (effectiveVideoPacketId === null || selectedVideoTrack.packetId === effectiveVideoPacketId) return;
     const current = videoProgress.get(selectedVideo);
     if (current?.lastPtsUs === undefined) return;
     const candidates = [...knownVideoTracks.values()]
       .filter(track => track.trackId !== selectedVideo &&
         sameVideoLayerGroup(selectedVideoTrack, track))
       .map(track => ({track, progress: videoProgress.get(track.trackId)}))
-      .filter(candidate => candidate.progress?.lastRandomAccessPtsUs !== undefined &&
-        candidate.progress.lastRandomAccessPtsUs >
-          current.lastPtsUs + AUTOMATIC_LAYER_SWITCH_LAG_US)
+      .filter(candidate => automaticLayerSwitchEligible(
+        selectedVideoTrack, current.lastPtsUs, candidate.track,
+        candidate.progress?.lastRandomAccessPtsUs, AUTOMATIC_LAYER_SWITCH_LAG_US,
+      ))
       .sort((left, right) => {
+        const levelDifference = (selectionLevel(left.track) ?? 0xff) -
+          (selectionLevel(right.track) ?? 0xff);
+        if (levelDifference !== 0) return levelDifference;
         if (right.progress.lastRandomAccessPtsUs !== left.progress.lastRandomAccessPtsUs) {
           return right.progress.lastRandomAccessPtsUs > left.progress.lastRandomAccessPtsUs ? 1 : -1;
         }
-        return (selectionLevel(left.track) ?? 0xff) - (selectionLevel(right.track) ?? 0xff) ||
-          left.track.packetId - right.track.packetId;
+        return left.track.packetId - right.track.packetId;
       });
     const currentAudioTrack = [...knownAudioTracks.values()].find(
       track => track.trackId === selectedAudio,

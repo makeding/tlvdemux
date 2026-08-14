@@ -856,7 +856,6 @@ void test_layer_switch_coordinates_video_rap_and_prepared_audio() {
     check(remuxer.switchLayer(3, 9, audio_time_us(4 * frame)),
           "valid layer switch request was rejected");
     auto replacement = hevc_unit(3, 100000, 100000, true, true);
-    replacement.discontinuity = true;
     remuxer.push(replacement);
 
     const auto expected_audio_boundary = audio_time_us(5 * frame);
@@ -914,7 +913,7 @@ void test_layer_switch_waits_for_target_audio_after_video_rap() {
           "layer switch did not complete after target audio had 400ms prepared");
 }
 
-void test_layer_switch_rejects_distant_audio_boundary() {
+void test_layer_switch_retries_distant_audio_at_later_video_boundary() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
     remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
@@ -923,7 +922,7 @@ void test_layer_switch_rejects_distant_audio_boundary() {
     remuxer.push(audio_unit(1, 0));
 
     check(remuxer.switchLayer(3, 9, 0),
-          "timestamp mismatch test could not request a layer switch");
+          "timestamp retry test could not request a layer switch");
     auto replacement = hevc_unit(3, 100000, 100000, true, true);
     replacement.discontinuity = true;
     remuxer.push(replacement);
@@ -935,12 +934,40 @@ void test_layer_switch_rejects_distant_audio_boundary() {
     }
 
     check(sink.layer_switches.empty() && sink.video_splices.empty() &&
-              sink.splices.empty(),
-          "timestamp-mismatched layer switch reached an MSE splice");
-    check(sink.layer_switch_cancellations.size() == 1 &&
-              sink.layer_switch_cancellations.front().reason ==
-                  tlvdemux::MseLayerSwitchCancelReason::TimestampMismatch,
-          "timestamp-mismatched layer switch was not cancelled explicitly");
+              sink.splices.empty() && sink.layer_switch_cancellations.empty(),
+          "distant audio boundary was committed or cancelled before a later RAP");
+
+    auto aligned_replacement = hevc_unit(3, 3100000, 3100000, true, false);
+    aligned_replacement.discontinuity = true;
+    remuxer.push(aligned_replacement);
+    check(sink.layer_switches.size() == 1 &&
+              sink.layer_switches.front().video_presentation_time_us == 3100000 &&
+              sink.layer_switches.front().audio_presentation_time_us >= 3100000 &&
+              sink.layer_switches.front().audio_presentation_time_us <= 5100000,
+          "layer switch did not retry at an A/V-aligned video RAP");
+}
+
+void test_unspecified_media_timescale_is_not_remuxed() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.push(hevc_unit(2, 0, 0, true, true));
+    remuxer.push(audio_unit(1, 0));
+
+    auto invalid_video = hevc_unit(2, 84181, 90187, false, false, 1);
+    auto invalid_audio = audio_unit(1, 7776);
+    invalid_audio.pts.timescale = 1;
+    invalid_audio.dts.timescale = 1;
+    remuxer.push(invalid_video);
+    remuxer.push(invalid_audio);
+    remuxer.flush();
+
+    check(std::all_of(sink.segments.begin(), sink.segments.end(),
+              [](const tlvdemux::MseMediaSegment& segment) {
+                  return segment.start_time_us < 1000000 && segment.end_time_us < 1000000;
+              }),
+          "timescale-1 media access unit expanded an MSE segment");
 }
 
 void test_layer_switch_cancels_once_at_end_of_input() {
@@ -1193,7 +1220,8 @@ int main() {
     test_video_track_switch_preserves_prepared_alternate_audio();
     test_layer_switch_coordinates_video_rap_and_prepared_audio();
     test_layer_switch_waits_for_target_audio_after_video_rap();
-    test_layer_switch_rejects_distant_audio_boundary();
+    test_layer_switch_retries_distant_audio_at_later_video_boundary();
+    test_unspecified_media_timescale_is_not_remuxed();
     test_layer_switch_cancels_once_at_end_of_input();
     test_layer_switch_cancels_on_reposition_and_explicit_selection();
     test_audio_init_is_restored_when_output_is_reenabled();

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  automaticLayerSwitchEligible,
   audioSelectionIdentity,
   audioTrackChoices,
   correspondingAudioTrack,
@@ -32,6 +33,13 @@ assert.equal(selectionLevel({}), null);
 assert.equal(sameVideoLayerGroup(videoBase, videoLow), true);
 assert.equal(sameVideoLayerGroup(videoHigh, videoLow), true);
 assert.equal(sameVideoLayerGroup(videoBase, {...videoBase, packetId: 0xf303}), false);
+const lag = 2000000n;
+assert.equal(automaticLayerSwitchEligible(videoHigh, 10000000n, videoLow, 12000001n, lag), true);
+assert.equal(automaticLayerSwitchEligible(videoHigh, 10000000n, videoLow, 12000000n, lag), false);
+assert.equal(automaticLayerSwitchEligible(videoLow, 10000000n, videoHigh, 8000000n, lag), true);
+assert.equal(automaticLayerSwitchEligible(videoLow, 10000000n, videoHigh, 7999999n, lag), false);
+assert.equal(automaticLayerSwitchEligible(videoLow, 10000000n,
+  {...videoHigh, contextId: 2}, 10000000n, lag), false);
 
 const ordinaryTracks = [audioMainHigh, audioSubHigh, audioMainLow, audioSubLow];
 assert.deepEqual(correspondingAudioTrack(

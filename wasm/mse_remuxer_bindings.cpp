@@ -29,8 +29,6 @@ const char* cancel_reason_name(
     case tlvdemux::MseLayerSwitchCancelReason::Reposition: return "reposition";
     case tlvdemux::MseLayerSwitchCancelReason::SelectionChanged:
         return "selection-changed";
-    case tlvdemux::MseLayerSwitchCancelReason::TimestampMismatch:
-        return "timestamp-mismatch";
     }
     return "end-of-input";
 }

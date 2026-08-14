@@ -25,6 +25,18 @@ export function sameVideoLayerGroup(left, right) {
       leftGroup.groupIdentification === rightGroup.groupIdentification));
 }
 
+export function automaticLayerSwitchEligible(
+  currentTrack, currentPtsUs, candidateTrack, candidateRapPtsUs, lagUs,
+) {
+  if (currentPtsUs === undefined || candidateRapPtsUs === undefined ||
+      !sameVideoLayerGroup(currentTrack, candidateTrack)) return false;
+  const currentLevel = selectionLevel(currentTrack) ?? 0xff;
+  const candidateLevel = selectionLevel(candidateTrack) ?? 0xff;
+  return candidateLevel < currentLevel
+    ? candidateRapPtsUs + lagUs >= currentPtsUs
+    : candidateRapPtsUs > currentPtsUs + lagUs;
+}
+
 export function correspondingAudioTrack(tracks, currentTrack, targetLevel, activeGroupId = null) {
   if (!currentTrack || targetLevel === null) return null;
   const currentGroups = currentTrack.assetGroups || [];

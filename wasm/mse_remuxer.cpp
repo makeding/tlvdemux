@@ -363,6 +363,14 @@ public:
     }
     void stage_next_switch() noexcept { stage_next_switch_ = true; }
     void cancel_staged_switch() noexcept { stage_next_switch_ = false; }
+    void retry_staged_switch() noexcept {
+        reset_samples();
+        started_ = false;
+        no_rasl_output_ = false;
+        sequence_start_ = true;
+        splice_boundary_us_.reset();
+        stage_next_switch_ = true;
+    }
     // AacMuxer has its own (sample-rate) track timescale, so it needs this
     // shared offset in microseconds regardless of the video track timescale.
     std::optional<std::int64_t> timeline_offset_us() const noexcept {
@@ -409,8 +417,10 @@ public:
                 has_eos = true;
             }
         }
-        const bool track_switch_boundary = unit.discontinuity && input_track_id_.has_value() &&
+        const bool track_switch_boundary = input_track_id_.has_value() &&
             *input_track_id_ != unit.track_id && irap >= 0;
+        const bool requested_switch_boundary =
+            stage_next_switch_ && unit.discontinuity && irap >= 0;
         bool configuration_boundary = false;
         if (parameter_sets_.count(32) != 0 && parameter_sets_.count(33) != 0 &&
             parameter_sets_.count(34) != 0) {
@@ -424,9 +434,13 @@ public:
                     throw std::runtime_error(
                         "HEVC configuration changes require SeparateTracks MSE output");
                 }
-                const auto offset = timeline_offset_ticks_.value_or(0);
-                const auto boundary_dts = scaled(unit.dts.value, unit.dts.timescale,
-                                                 track_->timescale) + offset;
+                const auto input_boundary_dts = scaled(
+                    unit.dts.value, unit.dts.timescale, track_->timescale);
+                if (!timeline_offset_ticks_) {
+                    timeline_offset_ticks_ = std::max<std::int64_t>(0, -input_boundary_dts);
+                }
+                const auto offset = *timeline_offset_ticks_;
+                const auto boundary_dts = input_boundary_dts + offset;
                 const auto boundary_pts = scaled(unit.pts.value, unit.pts.timescale,
                                                  track_->timescale) + offset;
                 flush_at(boundary_dts);
@@ -444,10 +458,15 @@ public:
                 configuration_boundary = true;
             }
         }
-        if (track_switch_boundary && !configuration_boundary) {
-            const auto offset = timeline_offset_ticks_.value_or(0);
-            const auto boundary_dts = scaled(unit.dts.value, unit.dts.timescale,
-                                             track_->timescale) + offset;
+        if ((track_switch_boundary || requested_switch_boundary) &&
+            !configuration_boundary) {
+            const auto input_boundary_dts = scaled(
+                unit.dts.value, unit.dts.timescale, track_->timescale);
+            if (!timeline_offset_ticks_) {
+                timeline_offset_ticks_ = std::max<std::int64_t>(0, -input_boundary_dts);
+            }
+            const auto offset = *timeline_offset_ticks_;
+            const auto boundary_dts = input_boundary_dts + offset;
             const auto boundary_pts = scaled(unit.pts.value, unit.pts.timescale,
                                              track_->timescale) + offset;
             flush_at(boundary_dts);
@@ -865,7 +884,11 @@ public:
         const auto audio_boundary = candidate->second.activation_boundary_from(earliest_audio);
         if (!audio_boundary ||
             *audio_boundary - *pending_layer->video_boundary_us > kLayerSwitchMaxAvGapUs) {
-            cancel_layer(MseLayerSwitchCancelReason::TimestampMismatch);
+            pending_layer->earliest_presentation_time_us =
+                audio_boundary.value_or(earliest_audio);
+            pending_layer->video_boundary_us.reset();
+            output.discard_staged_video();
+            video.retry_staged_switch();
             return;
         }
         const auto completed = *pending_layer;
@@ -881,8 +904,12 @@ public:
     }
 
     void push(const aribtlv::AccessUnit& unit) {
+        if ((unit.codec == aribtlv::Codec::Hevc ||
+             unit.codec == aribtlv::Codec::AacLatm) &&
+            (unit.pts.timescale <= 1 || unit.dts.timescale <= 1)) return;
         if (video_id && unit.track_id == *video_id) {
-            if (unit.discontinuity && !video.is_input_track_switch(unit)) {
+            if (unit.discontinuity && !video.is_input_track_switch(unit) &&
+                !(pending_layer && unit.track_id == pending_layer->video_track_id)) {
                 for (auto& entry : audio) entry.second.discontinuity();
             }
             video.push(unit, enabled);
