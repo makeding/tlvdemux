@@ -10,7 +10,9 @@
 namespace {
 
 void usage(std::ostream& output) {
-    output << "usage: tlvdemux <command> [options]\n"
+    output << "tlvdemux by huggy version " TLVDEMUX_VERSION "\n"
+              "\n"
+              "usage: tlvdemux <command> [options]\n"
               "\n"
               "commands:\n"
               "  pipe     remux HEVC and AAC-LATM to fragmented MP4 on stdout\n"
@@ -36,7 +38,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (command == "-V" || command == "--version") {
-        std::cout << "tlvdemux " << TLVDEMUX_VERSION << '\n';
+        std::cout << "tlvdemux by huggy version " << TLVDEMUX_VERSION << '\n';
         return 0;
     }
     if (command == "pipe") return tlvdemux_cli::run_pipe(argc - 1, argv + 1);
