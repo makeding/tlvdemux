@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <iosfwd>
+#include <optional>
 #include <string>
 
 namespace tlvdemux::tools {
@@ -17,8 +18,14 @@ struct RecordingTimeSeek {
     std::size_t seek_point_count = 0;
 };
 
+struct RecordingTimeSeekOptions {
+    std::optional<std::uint32_t> service_context_id;
+    std::optional<std::uint16_t> video_packet_id;
+};
+
 RecordingTimeSeek locate_recording_time(const std::string& path,
                                         double seconds_from_start,
-                                        std::ostream& diagnostics);
+                                        std::ostream& diagnostics,
+                                        RecordingTimeSeekOptions options = {});
 
 } // namespace tlvdemux::tools

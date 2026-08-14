@@ -17,7 +17,7 @@ set(TLVDEMUX_LIBARIBTLV_GIT_REPOSITORY
     "https://github.com/makeding/libaribtlv.git" CACHE STRING
     "Git repository used to fetch libaribtlv")
 set(TLVDEMUX_LIBARIBTLV_GIT_TAG
-    "128e97dbba5c4a8e2e874ad927c73acc52ce0ba2" CACHE STRING
+    "b253188e2f81ed3a283abcd04a65ced68c2902dd" CACHE STRING
     "Pinned libaribtlv Git revision")
 mark_as_advanced(
     TLVDEMUX_LIBARIBTLV_GIT_REPOSITORY

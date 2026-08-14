@@ -37,9 +37,11 @@ public:
     Probe(const std::size_t maximum_access_units, const bool skip_leading_rasl,
           const double playback_rate, const std::size_t inflight_frames,
           const bool prepend_parameter_sets_on_irap, const bool mse_pipeline,
-          const bool timeline_only, const std::optional<std::uint16_t> audio_packet_id,
+          const bool timeline_only, const std::optional<std::uint16_t> video_packet_id,
+          const std::optional<std::uint16_t> audio_packet_id,
           const bool require_hardware)
-        : wanted_audio_packet_id_(audio_packet_id),
+        : wanted_video_packet_id_(video_packet_id),
+          wanted_audio_packet_id_(audio_packet_id),
           maximum_access_units_(maximum_access_units),
           skip_leading_rasl_(skip_leading_rasl),
           playback_rate_(playback_rate),
@@ -59,7 +61,8 @@ public:
 
     void onTrack(const aribtlv::TrackInfo& track) override {
         if (!video_track_.has_value() && track.kind == aribtlv::TrackKind::Video &&
-            track.codec == aribtlv::Codec::Hevc) {
+            track.codec == aribtlv::Codec::Hevc &&
+            (!wanted_video_packet_id_ || track.packet_id == *wanted_video_packet_id_)) {
             video_track_ = track.track_id;
             if (mse_pipeline_) mse_remuxer_.selectTrack(aribtlv::TrackKind::Video,
                                                         track.track_id);
@@ -743,6 +746,7 @@ private:
 
     std::optional<std::uint64_t> video_track_;
     std::optional<std::uint64_t> audio_track_;
+    std::optional<std::uint16_t> wanted_video_packet_id_;
     std::optional<std::uint16_t> wanted_audio_packet_id_;
     std::array<std::vector<std::uint8_t>, 3> parameter_sets_;
     std::array<std::vector<std::uint8_t>, 3> decoder_parameter_sets_;
@@ -794,6 +798,8 @@ struct Options {
     bool mse_pipeline = false;
     bool timeline_only = false;
     bool require_hardware = true;
+    std::optional<std::uint32_t> service_context_id;
+    std::optional<std::uint16_t> video_packet_id;
     std::optional<std::uint16_t> audio_packet_id;
     std::size_t random_seeks = 0;
     std::uint64_t seed = 0x544c564d5345ULL;
@@ -820,6 +826,12 @@ Options parse_options(const int argc, char** argv) {
             options.timeline_only = true;
         } else if (argument == "--allow-software") {
             options.require_hardware = false;
+        } else if (argument == "--service") {
+            options.service_context_id = static_cast<std::uint32_t>(
+                std::strtoul(value("--service").c_str(), nullptr, 0));
+        } else if (argument == "--video-packet-id") {
+            options.video_packet_id = static_cast<std::uint16_t>(
+                std::strtoul(value("--video-packet-id").c_str(), nullptr, 0));
         } else if (argument == "--audio-packet-id") {
             options.audio_packet_id = static_cast<std::uint16_t>(
                 std::strtoul(value("--audio-packet-id").c_str(), nullptr, 0));
@@ -863,7 +875,8 @@ Options parse_options(const int argc, char** argv) {
                      "[--max-au N] [--offset BYTES] [--rate X] "
                      "[--inflight N] [--skip-leading-rasl] "
                      "[--prepend-parameter-sets-on-irap] [--mse] "
-                     "[--timeline-only] [--audio-packet-id ID] [--allow-software] "
+                     "[--timeline-only] [--service ID] [--video-packet-id ID] "
+                     "[--audio-packet-id ID] [--allow-software] "
                      "[--random-seeks N] [--seed N] [--target-seconds N]\n";
         std::exit(2);
     }
@@ -892,11 +905,13 @@ bool run_probe(const Options& options, const std::uint64_t offset,
     Probe probe(options.maximum_access_units, options.skip_leading_rasl,
                 options.playback_rate, options.inflight_frames,
                 options.prepend_parameter_sets_on_irap, options.mse_pipeline,
-                options.timeline_only, options.audio_packet_id,
+                options.timeline_only, options.video_packet_id,
+                options.audio_packet_id,
                 options.require_hardware);
     auto limits = aribtlv::Limits{};
     limits.collect_application_resources = false;
     aribtlv::Demuxer demuxer(probe, limits);
+    demuxer.selectService(options.service_context_id);
     if (offset != 0) {
         demuxer.reposition(aribtlv::RepositionOptions{offset, false});
         input.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
@@ -945,7 +960,8 @@ int main(int argc, char** argv) {
     if (options.target_seconds.has_value()) {
         try {
             const auto target = tlvdemux::tools::locate_recording_time(
-                options.path, *options.target_seconds, std::cerr);
+                options.path, *options.target_seconds, std::cerr,
+                {options.service_context_id, options.video_packet_id});
             std::cerr << "target-seconds=" << *options.target_seconds
                       << " first-pts-us=" << target.first_pts_us
                       << " target-pts-us=" << target.target_pts_us
