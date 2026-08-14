@@ -351,4 +351,3 @@ std::optional<tlvdemux::MseLayerSwitchCancelled>
 tlvdemux::MseRemuxer::reset() { return impl_->reset(); }
 std::optional<tlvdemux::MseLayerSwitchCancelled>
 tlvdemux::MseRemuxer::reposition() { return impl_->reposition(); }
-

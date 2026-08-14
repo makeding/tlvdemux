@@ -44,6 +44,7 @@ else()
 endif()
 
 add_library(tlvdemux
+    src/mse/chromium_coded_frame_policy.cpp
     src/mse/hevc_parser.cpp
     src/mse/latm_parser.cpp
     src/mse/mp4_builder.cpp
@@ -126,6 +127,7 @@ if(TLVDEMUX_BUILD_TOOLS)
         enable_language(OBJCXX)
         add_executable(tlvdemux-videotoolbox-probe
             tools/tlvdemux-videotoolbox-probe.cpp
+            tools/videotoolbox_probe_main.cpp
             tools/mac_display_hdr.mm
             tools/recording_time_seek.cpp
             tools/videotoolbox_probe_parsing.cpp
@@ -138,6 +140,8 @@ if(TLVDEMUX_BUILD_TOOLS)
             "-framework AppKit"
             "-framework VideoToolbox"
         )
+        target_include_directories(tlvdemux-videotoolbox-probe PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
         target_compile_options(tlvdemux-videotoolbox-probe PRIVATE
             -Wall -Wextra -Wpedantic)
     endif()
@@ -243,7 +247,23 @@ if(BUILD_TESTING)
             -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME tlvdemux-video-layer-state-tests
-             COMMAND tlvdemux-video-layer-state-tests)
+        COMMAND tlvdemux-video-layer-state-tests)
+
+    add_executable(tlvdemux-chromium-coded-frame-policy-tests
+        tests/chromium_coded_frame_policy_tests.cpp)
+    target_link_libraries(tlvdemux-chromium-coded-frame-policy-tests PRIVATE
+        tlvdemux::tlvdemux)
+    target_include_directories(tlvdemux-chromium-coded-frame-policy-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    if(MSVC)
+        target_compile_options(tlvdemux-chromium-coded-frame-policy-tests PRIVATE
+            /W4 /permissive-)
+    else()
+        target_compile_options(tlvdemux-chromium-coded-frame-policy-tests PRIVATE
+            -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME tlvdemux-chromium-coded-frame-policy-tests
+        COMMAND tlvdemux-chromium-coded-frame-policy-tests)
 
     if(TLVDEMUX_BUILD_WASM_BINDINGS)
         find_program(NODE_EXECUTABLE node)

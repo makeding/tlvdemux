@@ -844,6 +844,42 @@ void test_video_track_switch_preserves_prepared_alternate_audio() {
           "alternate-audio switch did not retain its cached boundary after video-layer switch");
 }
 
+void test_alternate_audio_keeps_warming_while_selected_video_has_no_timeline() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.push(hevc_unit(2, 0, 0, true, true));
+
+    constexpr std::int64_t frame = 1024;
+    for (std::int64_t index = 0; index < 48; ++index) {
+        remuxer.push(audio_unit(9, index * frame));
+    }
+
+    auto damaged_selected_video = hevc_unit(2, 50000, 50000, false, false);
+    damaged_selected_video.discontinuity = true;
+    remuxer.push(damaged_selected_video);
+    for (std::int64_t index = 48; index < 120; ++index) {
+        remuxer.push(audio_unit(9, index * frame));
+    }
+
+    check(remuxer.switchLayer(3, 9, 0),
+          "layer switch after selected-video damage was rejected");
+    auto replacement = hevc_unit(3, 100000, 100000, true, true);
+    replacement.discontinuity = true;
+    remuxer.push(replacement);
+    for (std::int64_t index = 1; index <= 20; ++index) {
+        const auto timestamp = 100000 + index * 33367;
+        remuxer.push(hevc_unit(3, timestamp, timestamp, false, false));
+    }
+
+    check(sink.layer_switches.size() == 1,
+          "alternate audio stopped warming while selected video lacked a timeline offset");
+    check(sink.layer_switches.front().audio_presentation_time_us ==
+              audio_time_us(5 * frame),
+          "alternate audio lost its established timeline while selected video recovered");
+}
+
 void test_layer_switch_coordinates_video_rap_and_prepared_audio() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
@@ -1313,6 +1349,7 @@ void test_video_only_output_does_not_wait_for_audio() {
 int main() {
     test_audio_switch_uses_cached_frame_boundary_without_video_rap();
     test_video_track_switch_preserves_prepared_alternate_audio();
+    test_alternate_audio_keeps_warming_while_selected_video_has_no_timeline();
     test_layer_switch_coordinates_video_rap_and_prepared_audio();
     test_layer_switch_replays_cached_target_video_from_requested_rap();
     test_layer_switch_waits_for_target_audio_after_video_rap();

@@ -3,7 +3,9 @@
 
 #include "recording_time_seek.hpp"
 #include "mac_display_hdr.hpp"
+#include "mse/chromium_coded_frame_policy.hpp"
 #include "videotoolbox_probe_parsing.hpp"
+#include "videotoolbox_probe.hpp"
 
 #include <CoreMedia/CoreMedia.h>
 #include <VideoToolbox/VideoToolbox.h>
@@ -12,6 +14,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -21,11 +24,9 @@
 #include <limits>
 #include <map>
 #include <optional>
-#include <random>
 #include <set>
 #include <string>
 #include <thread>
-#include <tuple>
 #include <vector>
 
 namespace {
@@ -34,21 +35,18 @@ using namespace tlvdemux::tools::vt_probe;
 
 class Probe final : public aribtlv::Sink, public tlvdemux::MseSink {
 public:
-    Probe(const std::size_t maximum_access_units, const bool skip_leading_rasl,
-          const double playback_rate, const std::size_t inflight_frames,
-          const bool prepend_parameter_sets_on_irap, const bool mse_pipeline,
-          const bool timeline_only, const std::optional<std::uint16_t> video_packet_id,
-          const std::optional<std::uint16_t> audio_packet_id,
-          const bool require_hardware)
-        : wanted_video_packet_id_(video_packet_id),
-          wanted_audio_packet_id_(audio_packet_id),
-          maximum_access_units_(maximum_access_units),
-          skip_leading_rasl_(skip_leading_rasl),
-          playback_rate_(playback_rate),
-          inflight_frames_(inflight_frames),
-          prepend_parameter_sets_on_irap_(prepend_parameter_sets_on_irap),
-          mse_pipeline_(mse_pipeline), timeline_only_(timeline_only),
-          require_hardware_(require_hardware),
+    explicit Probe(const Options& options)
+        : wanted_video_packet_id_(options.video_packet_id),
+          wanted_audio_packet_id_(options.audio_packet_id),
+          wanted_fallback_video_packet_id_(options.fallback_video_packet_id),
+          wanted_fallback_audio_packet_id_(options.fallback_audio_packet_id),
+          maximum_access_units_(options.maximum_access_units),
+          skip_leading_rasl_(options.skip_leading_rasl),
+          playback_rate_(options.playback_rate),
+          inflight_frames_(options.inflight_frames),
+          prepend_parameter_sets_on_irap_(options.prepend_parameter_sets_on_irap),
+          mse_pipeline_(options.mse_pipeline), timeline_only_(options.timeline_only),
+          require_hardware_(options.require_hardware),
           mse_remuxer_(*this) {}
 
     ~Probe() override {
@@ -60,12 +58,19 @@ public:
     void onService(const aribtlv::ServiceInfo&) override {}
 
     void onTrack(const aribtlv::TrackInfo& track) override {
-        if (!video_track_.has_value() && track.kind == aribtlv::TrackKind::Video &&
-            track.codec == aribtlv::Codec::Hevc &&
-            (!wanted_video_packet_id_ || track.packet_id == *wanted_video_packet_id_)) {
-            video_track_ = track.track_id;
-            if (mse_pipeline_) mse_remuxer_.selectTrack(aribtlv::TrackKind::Video,
-                                                        track.track_id);
+        if (track.kind == aribtlv::TrackKind::Video &&
+            track.codec == aribtlv::Codec::Hevc) {
+            if (!video_track_.has_value() &&
+                (!wanted_video_packet_id_ || track.packet_id == *wanted_video_packet_id_)) {
+                video_track_ = track.track_id;
+                if (mse_pipeline_) {
+                    mse_remuxer_.selectTrack(aribtlv::TrackKind::Video, track.track_id);
+                }
+            }
+            if (wanted_fallback_video_packet_id_ &&
+                track.packet_id == *wanted_fallback_video_packet_id_) {
+                fallback_video_track_ = track.track_id;
+            }
             std::cerr << "video track packet_id=0x" << std::hex << track.packet_id << std::dec
                       << " timescale=" << track.timescale;
             if (track.video.has_value()) {
@@ -83,39 +88,51 @@ public:
                 }
             }
             std::cerr << '\n';
-        } else if (mse_pipeline_ && !audio_track_.has_value() &&
-                   track.kind == aribtlv::TrackKind::Audio && track.audio.has_value() &&
-                   aribtlv::audio_channel_count(track.audio->channel_layout) <= 6 &&
-                   (!wanted_audio_packet_id_.has_value() ||
-                    track.packet_id == *wanted_audio_packet_id_)) {
-            audio_track_ = track.track_id;
-            mse_remuxer_.selectTrack(aribtlv::TrackKind::Audio, track.track_id);
+        } else if (mse_pipeline_ && track.kind == aribtlv::TrackKind::Audio &&
+                   track.audio.has_value() &&
+                   aribtlv::audio_channel_count(track.audio->channel_layout) <= 6) {
+            if (!audio_track_.has_value() &&
+                (!wanted_audio_packet_id_.has_value() ||
+                 track.packet_id == *wanted_audio_packet_id_)) {
+                audio_track_ = track.track_id;
+                mse_remuxer_.selectTrack(aribtlv::TrackKind::Audio, track.track_id);
+            }
+            if (wanted_fallback_audio_packet_id_ &&
+                track.packet_id == *wanted_fallback_audio_packet_id_) {
+                fallback_audio_track_ = track.track_id;
+            }
             std::cerr << "audio track packet_id=0x" << std::hex << track.packet_id << std::dec
                       << " timescale=" << track.timescale << '\n';
         }
+        configure_automatic_layer_switch();
     }
 
     void onAccessUnit(aribtlv::AccessUnit&& unit) override {
         if (done_) return;
-        if (mse_pipeline_ && audio_track_.has_value() && unit.track_id == *audio_track_ &&
-            unit.codec == aribtlv::Codec::AacLatm) {
-            mse_remuxer_.push(unit);
-            return;
-        }
-        if (!video_track_.has_value() || unit.track_id != *video_track_ ||
-            unit.codec != aribtlv::Codec::Hevc) return;
-
-        if (unit.discontinuity) {
+        if (unit.codec == aribtlv::Codec::Hevc && unit.discontinuity) {
             std::cerr << "video discontinuity pts=" << seconds(unit.pts)
                       << " dts=" << seconds(unit.dts)
                       << " rap=" << (unit.random_access ? 1 : 0)
                       << " input_offset=" << unit.input_offset << '\n';
         }
 
-        if (mse_pipeline_) {
-            mse_remuxer_.push(unit);
+        if (mse_pipeline_ && (unit.codec == aribtlv::Codec::Hevc ||
+                             unit.codec == aribtlv::Codec::AacLatm)) {
+            const auto request = mse_remuxer_.push(unit);
+            if (request.has_value()) {
+                std::cerr << "automatic layer request video=" << request->video_track_id
+                          << " audio=" << request->audio_track_id
+                          << " earliest=" << request->earliest_presentation_time_us << '\n';
+                if (!mse_remuxer_.switchLayer(
+                        request->video_track_id, request->audio_track_id,
+                        request->earliest_presentation_time_us)) {
+                    fail_pipeline("automatic layer switch request was rejected");
+                }
+            }
             return;
         }
+        if (!video_track_.has_value() || unit.track_id != *video_track_ ||
+            unit.codec != aribtlv::Codec::Hevc) return;
 
         const auto nals = split_annex_b(unit.data);
         remember_parameter_sets(nals);
@@ -173,11 +190,23 @@ public:
     void onMseInit(tlvdemux::MseTrackInit&& init) override {
         if (init.type == "audio") {
             audio_timescale_ = init.sample_rate;
+            chromium_audio_policy_.reset();
             std::cerr << "mse init " << init.mime << " sample_rate=" << init.sample_rate
                       << " channels=" << init.channels << '\n';
             return;
         }
         if (init.type != "video") return;
+        chromium_video_policy_.reset();
+        const auto mdhd = find_box_signature(init.data, "mdhd");
+        if (!mdhd || mdhd->payload + 16 > mdhd->offset + mdhd->size) {
+            fail_pipeline("video init segment has no valid mdhd");
+            return;
+        }
+        video_timescale_ = be32(init.data.data() + mdhd->payload + 12);
+        if (video_timescale_ == 0) {
+            fail_pipeline("video init segment has a zero timescale");
+            return;
+        }
         const auto hvcc = find_box_signature(init.data, "hvcC");
         if (!hvcc || hvcc->payload + 23 > hvcc->offset + hvcc->size) {
             fail_pipeline("video init segment has no valid hvcC");
@@ -258,9 +287,41 @@ public:
                   << " signalled_rap=" << (start.signalled_random_access ? 1 : 0) << '\n';
     }
 
+    void onMseLayerSwitch(const tlvdemux::MseLayerSwitch& layer) override {
+        layer_switch_completed_ = true;
+        std::cerr << "mse layer switch video=" << layer.video_track_id
+                  << " audio=" << layer.audio_track_id
+                  << " video_pts=" << layer.video_presentation_time_us
+                  << " audio_pts=" << layer.audio_presentation_time_us << '\n';
+    }
+
+    void onMseLayerSwitchCancelled(
+        const tlvdemux::MseLayerSwitchCancelled& cancelled) override {
+        std::cerr << "mse layer switch cancelled video=" << cancelled.video_track_id
+                  << " audio=" << cancelled.audio_track_id
+                  << " reason=" << static_cast<int>(cancelled.reason) << '\n';
+    }
+
+    void onMseVideoSplice(const tlvdemux::MseVideoSplice& splice) override {
+        std::cerr << "mse video splice pts=" << splice.presentation_time_us << '\n';
+        // MSE removes the old presentation-time tail before appending the new
+        // coded frame group. HEVC decode timestamps may legitimately begin
+        // before this PTS because of reordered leading pictures, so there is
+        // no cross-splice DTS lower bound to preserve here.
+        previous_mse_decode_end_.reset();
+    }
+
+    void onMseAudioSplice(const tlvdemux::MseAudioSplice& splice) override {
+        if (audio_timescale_ != 0) {
+            previous_audio_decode_end_ = scale_from_us(
+                splice.presentation_time_us, audio_timescale_);
+        }
+    }
+
     bool done() const { return done_; }
     bool ok() const {
         return pipeline_ok_ && callback_status_.load() == noErr &&
+            (!automatic_layer_configured_ || layer_switch_completed_) &&
             (timeline_only_ ? access_unit_count_ != 0 : decoded_count_.load() != 0);
     }
     OSStatus callback_status() const { return callback_status_.load(); }
@@ -276,12 +337,35 @@ public:
     void finish() {
         if (mse_pipeline_ && !mse_flushed_) {
             mse_flushed_ = true;
-            mse_remuxer_.flush();
+            mse_remuxer_.endOfStream();
         }
         if (session_ != nullptr) VTDecompressionSessionWaitForAsynchronousFrames(session_);
     }
 
 private:
+    static std::uint64_t scale_from_us(const std::int64_t value,
+                                       const std::uint32_t timescale) {
+        return static_cast<std::uint64_t>(std::llround(
+            static_cast<double>(value) * timescale / 1000000.0));
+    }
+
+    static std::uint64_t scale_to_us(const std::uint64_t value,
+                                     const std::uint32_t timescale) {
+        return static_cast<std::uint64_t>(std::llround(
+            static_cast<double>(value) * 1000000.0 / timescale));
+    }
+
+    void configure_automatic_layer_switch() {
+        if (automatic_layer_configured_ || !video_track_ || !audio_track_ ||
+            !fallback_video_track_ || !fallback_audio_track_) return;
+        mse_remuxer_.configureAutomaticLayerSwitch({
+            *video_track_, *audio_track_, *fallback_video_track_, *fallback_audio_track_});
+        automatic_layer_configured_ = true;
+        std::cerr << "automatic layer pair video=" << *video_track_ << '/' 
+                  << *fallback_video_track_ << " audio=" << *audio_track_ << '/'
+                  << *fallback_audio_track_ << '\n';
+    }
+
     static double seconds(const aribtlv::Timestamp timestamp) {
         if (timestamp.timescale == 0) return 0.0;
         return static_cast<double>(timestamp.value) / static_cast<double>(timestamp.timescale);
@@ -549,12 +633,13 @@ private:
         if (previous_mse_decode_end_.has_value() && dts > *previous_mse_decode_end_) {
             const auto gap = dts - *previous_mse_decode_end_;
             ++timeline_gap_count_;
-            largest_timeline_gap_us_ = std::max(largest_timeline_gap_us_, gap);
+            const auto gap_us = scale_to_us(gap, video_timescale_);
+            largest_timeline_gap_us_ = std::max(largest_timeline_gap_us_, gap_us);
             std::cerr << "mse timeline gap fragment=" << (mse_fragment_count_ + 1)
                       << " previous_end="
-                      << (static_cast<double>(*previous_mse_decode_end_) / 1000000.0)
-                      << " next_dts=" << (static_cast<double>(dts) / 1000000.0)
-                      << " gap=" << (static_cast<double>(gap) / 1000000.0) << '\n';
+                      << (static_cast<double>(*previous_mse_decode_end_) / video_timescale_)
+                      << " next_dts=" << (static_cast<double>(dts) / video_timescale_)
+                      << " gap=" << (static_cast<double>(gap) / video_timescale_) << '\n';
         }
         ++mse_fragment_count_;
         for (std::uint32_t sample_index = 0; sample_index < sample_count; ++sample_index) {
@@ -583,7 +668,7 @@ private:
                 if (inserted) {
                     std::cerr << "mse pps variant=" << mse_pps_variants_.size()
                               << " first_dts="
-                              << (static_cast<double>(dts) / 1000000.0)
+                              << (static_cast<double>(dts) / video_timescale_)
                               << " size=" << nal.size << '\n';
                 }
             }
@@ -599,6 +684,16 @@ private:
                           << " sample=" << sample_index
                           << " metadata=" << (metadata_keyframe ? 1 : 0)
                           << " bitstream=" << (bitstream_keyframe ? 1 : 0) << '\n';
+            }
+            if (dts > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+                throw std::runtime_error("MSE decode timestamp exceeds validator range");
+            }
+            const auto chromium_decision = chromium_video_policy_.process({
+                static_cast<std::int64_t>(dts), duration, bitstream_keyframe});
+            if (!chromium_decision.append) {
+                throw std::runtime_error(
+                    "Chromium coded-frame policy would drop video sample at dts=" +
+                    std::to_string(dts));
             }
 
             if (timeline_only_) {
@@ -647,15 +742,17 @@ private:
 
             const auto pts_signed = static_cast<std::int64_t>(dts) + composition_offset;
             if (pts_signed < 0) throw std::runtime_error("negative MSE presentation timestamp");
-            pace_seconds(static_cast<double>(dts) / 1000000.0);
+            pace_seconds(static_cast<double>(dts) / video_timescale_);
             ++access_unit_count_;
             const auto status = submit_sample(
-                vt_sample, CMTimeMake(pts_signed, 1000000), CMTimeMake(dts, 1000000),
+                vt_sample,
+                CMTimeMake(pts_signed, static_cast<std::int32_t>(video_timescale_)),
+                CMTimeMake(dts, static_cast<std::int32_t>(video_timescale_)),
                 bitstream_keyframe);
             std::cerr << "mse au=" << access_unit_count_
                       << " fragment=" << mse_fragment_count_
-                      << " dts=" << (static_cast<double>(dts) / 1000000.0)
-                      << " pts=" << (static_cast<double>(pts_signed) / 1000000.0)
+                      << " dts=" << (static_cast<double>(dts) / video_timescale_)
+                      << " pts=" << (static_cast<double>(pts_signed) / video_timescale_)
                       << " metadata_key=" << (metadata_keyframe ? 1 : 0)
                       << " bitstream_key=" << (bitstream_keyframe ? 1 : 0)
                       << " nal=" << nal_types(nals) << " submit=" << status << '\n';
@@ -727,6 +824,13 @@ private:
             if (duration == 0 || size == 0) {
                 throw std::runtime_error("invalid audio sample duration or size");
             }
+            if (dts > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
+                !chromium_audio_policy_.process({
+                    static_cast<std::int64_t>(dts), duration, true}).append) {
+                throw std::runtime_error(
+                    "Chromium coded-frame policy rejected audio sample at dts=" +
+                    std::to_string(dts));
+            }
             entry += 16;
             dts += duration;
             ++audio_sample_count_;
@@ -746,8 +850,12 @@ private:
 
     std::optional<std::uint64_t> video_track_;
     std::optional<std::uint64_t> audio_track_;
+    std::optional<std::uint64_t> fallback_video_track_;
+    std::optional<std::uint64_t> fallback_audio_track_;
     std::optional<std::uint16_t> wanted_video_packet_id_;
     std::optional<std::uint16_t> wanted_audio_packet_id_;
+    std::optional<std::uint16_t> wanted_fallback_video_packet_id_;
+    std::optional<std::uint16_t> wanted_fallback_audio_packet_id_;
     std::array<std::vector<std::uint8_t>, 3> parameter_sets_;
     std::array<std::vector<std::uint8_t>, 3> decoder_parameter_sets_;
     CMVideoFormatDescriptionRef format_ = nullptr;
@@ -772,6 +880,8 @@ private:
     std::uint8_t mse_nal_length_size_ = 4;
     std::array<std::vector<std::uint8_t>, 3> mse_config_parameter_sets_;
     std::optional<std::uint64_t> previous_mse_decode_end_;
+    std::uint32_t video_timescale_ = 0;
+    tlvdemux::detail::mse::ChromiumCodedFramePolicy chromium_video_policy_;
     std::size_t mse_fragment_count_ = 0;
     std::size_t timeline_gap_count_ = 0;
     std::uint64_t largest_timeline_gap_us_ = 0;
@@ -779,122 +889,20 @@ private:
     std::set<std::vector<std::uint8_t>> mse_pps_variants_;
     std::uint32_t audio_timescale_ = 0;
     std::optional<std::uint64_t> previous_audio_decode_end_;
+    tlvdemux::detail::mse::ChromiumCodedFramePolicy chromium_audio_policy_;
     std::size_t audio_fragment_count_ = 0;
     std::size_t audio_sample_count_ = 0;
     std::size_t audio_timeline_gap_count_ = 0;
     std::uint64_t largest_audio_timeline_gap_ = 0;
     tlvdemux::MseRemuxer mse_remuxer_;
+    bool automatic_layer_configured_ = false;
+    bool layer_switch_completed_ = false;
     bool done_ = false;
 };
 
-struct Options {
-    std::string path;
-    std::size_t maximum_access_units = 300;
-    std::uint64_t offset = 0;
-    double playback_rate = 0.0;
-    std::size_t inflight_frames = 1;
-    bool prepend_parameter_sets_on_irap = false;
-    bool skip_leading_rasl = false;
-    bool mse_pipeline = false;
-    bool timeline_only = false;
-    bool require_hardware = true;
-    std::optional<std::uint32_t> service_context_id;
-    std::optional<std::uint16_t> video_packet_id;
-    std::optional<std::uint16_t> audio_packet_id;
-    std::size_t random_seeks = 0;
-    std::uint64_t seed = 0x544c564d5345ULL;
-    std::optional<double> target_seconds;
-};
-
-Options parse_options(const int argc, char** argv) {
-    Options options;
-    bool legacy_maximum_seen = false;
-    for (int index = 1; index < argc; ++index) {
-        const std::string argument = argv[index];
-        const auto value = [&](const char* name) -> std::string {
-            if (++index >= argc) {
-                std::cerr << "missing value for " << name << '\n';
-                std::exit(2);
-            }
-            return argv[index];
-        };
-        if (argument == "--skip-leading-rasl") {
-            options.skip_leading_rasl = true;
-        } else if (argument == "--mse") {
-            options.mse_pipeline = true;
-        } else if (argument == "--timeline-only") {
-            options.timeline_only = true;
-        } else if (argument == "--allow-software") {
-            options.require_hardware = false;
-        } else if (argument == "--service") {
-            options.service_context_id = static_cast<std::uint32_t>(
-                std::strtoul(value("--service").c_str(), nullptr, 0));
-        } else if (argument == "--video-packet-id") {
-            options.video_packet_id = static_cast<std::uint16_t>(
-                std::strtoul(value("--video-packet-id").c_str(), nullptr, 0));
-        } else if (argument == "--audio-packet-id") {
-            options.audio_packet_id = static_cast<std::uint16_t>(
-                std::strtoul(value("--audio-packet-id").c_str(), nullptr, 0));
-        } else if (argument == "--random-seeks") {
-            options.random_seeks = static_cast<std::size_t>(
-                std::strtoull(value("--random-seeks").c_str(), nullptr, 0));
-        } else if (argument == "--seed") {
-            options.seed = std::strtoull(value("--seed").c_str(), nullptr, 0);
-        } else if (argument == "--target-seconds") {
-            options.target_seconds = std::strtod(value("--target-seconds").c_str(), nullptr);
-        } else if (argument == "--prepend-parameter-sets-on-irap") {
-            options.prepend_parameter_sets_on_irap = true;
-        } else if (argument == "--max-au") {
-            options.maximum_access_units = static_cast<std::size_t>(
-                std::strtoull(value("--max-au").c_str(), nullptr, 0));
-        } else if (argument == "--offset") {
-            options.offset = std::strtoull(value("--offset").c_str(), nullptr, 0);
-        } else if (argument == "--rate") {
-            options.playback_rate = std::strtod(value("--rate").c_str(), nullptr);
-        } else if (argument == "--inflight") {
-            options.inflight_frames = static_cast<std::size_t>(
-                std::strtoull(value("--inflight").c_str(), nullptr, 0));
-        } else if (!argument.empty() && argument[0] == '-') {
-            std::cerr << "unknown option: " << argument << '\n';
-            std::exit(2);
-        } else if (options.path.empty()) {
-            options.path = argument;
-        } else if (!legacy_maximum_seen) {
-            options.maximum_access_units = static_cast<std::size_t>(
-                std::strtoull(argument.c_str(), nullptr, 0));
-            legacy_maximum_seen = true;
-        } else {
-            std::cerr << "unexpected argument: " << argument << '\n';
-            std::exit(2);
-        }
-    }
-    if (options.path.empty() || options.maximum_access_units == 0 ||
-        options.inflight_frames == 0 ||
-        options.playback_rate < 0.0) {
-        std::cerr << "usage: tlvdemux-videotoolbox-probe FILE.mmts [MAX_AU] "
-                     "[--max-au N] [--offset BYTES] [--rate X] "
-                     "[--inflight N] [--skip-leading-rasl] "
-                     "[--prepend-parameter-sets-on-irap] [--mse] "
-                     "[--timeline-only] [--service ID] [--video-packet-id ID] "
-                     "[--audio-packet-id ID] [--allow-software] "
-                     "[--random-seeks N] [--seed N] [--target-seconds N]\n";
-        std::exit(2);
-    }
-    if (options.timeline_only && !options.mse_pipeline) {
-        std::cerr << "--timeline-only requires --mse\n";
-        std::exit(2);
-    }
-    if (options.target_seconds.has_value() &&
-        (options.offset != 0 || options.random_seeks != 0)) {
-        std::cerr << "--target-seconds cannot be combined with --offset or --random-seeks\n";
-        std::exit(2);
-    }
-    return options;
-}
-
 } // namespace
 
-bool run_probe(const Options& options, const std::uint64_t offset,
+bool tlvdemux::tools::vt_probe::run_probe(const Options& options, const std::uint64_t offset,
                const std::size_t case_index) {
     std::ifstream input(options.path, std::ios::binary);
     if (!input) {
@@ -902,12 +910,7 @@ bool run_probe(const Options& options, const std::uint64_t offset,
         return false;
     }
 
-    Probe probe(options.maximum_access_units, options.skip_leading_rasl,
-                options.playback_rate, options.inflight_frames,
-                options.prepend_parameter_sets_on_irap, options.mse_pipeline,
-                options.timeline_only, options.video_packet_id,
-                options.audio_packet_id,
-                options.require_hardware);
+    Probe probe(options);
     auto limits = aribtlv::Limits{};
     limits.collect_application_resources = false;
     aribtlv::Demuxer demuxer(probe, limits);
@@ -940,56 +943,4 @@ bool run_probe(const Options& options, const std::uint64_t offset,
               << " pps_samples=" << probe.mse_pps_sample_count()
               << " pps_variants=" << probe.mse_pps_variant_count() << '\n';
     return probe.ok();
-}
-
-int main(int argc, char** argv) {
-    const auto options = parse_options(argc, argv);
-    tlvdemux::tools::log_mac_display_hdr(std::cerr);
-    std::ifstream size_input(options.path, std::ios::binary | std::ios::ate);
-    if (!size_input) {
-        std::cerr << "cannot open " << options.path << '\n';
-        return 2;
-    }
-    const auto end = size_input.tellg();
-    if (end <= 0) {
-        std::cerr << "empty input " << options.path << '\n';
-        return 2;
-    }
-    const auto file_size = static_cast<std::uint64_t>(end);
-    std::vector<std::uint64_t> offsets;
-    if (options.target_seconds.has_value()) {
-        try {
-            const auto target = tlvdemux::tools::locate_recording_time(
-                options.path, *options.target_seconds, std::cerr,
-                {options.service_context_id, options.video_packet_id});
-            std::cerr << "target-seconds=" << *options.target_seconds
-                      << " first-pts-us=" << target.first_pts_us
-                      << " target-pts-us=" << target.target_pts_us
-                      << " sync-pts-us=" << target.point.presentation_time.value
-                      << " signalling-offset=" << target.point.signalling_offset
-                      << " random-access-offset=" << target.point.random_access_offset
-                      << " seek-points=" << target.seek_point_count << '\n';
-            offsets.push_back(target.point.signalling_offset);
-        } catch (const std::exception& error) {
-            std::cerr << "target lookup failed: " << error.what() << '\n';
-            return 2;
-        }
-    } else {
-        offsets.push_back(options.offset);
-    }
-    std::mt19937_64 random(options.seed);
-    // Keep at least 4 MiB after a landing point so a short tail does not turn
-    // into a false decoder failure merely because it contains no following RAP.
-    const auto random_limit = file_size > 4U * 1024U * 1024U
-        ? file_size - 4U * 1024U * 1024U : file_size - 1;
-    for (std::size_t index = 0; index < options.random_seeks; ++index) {
-        offsets.push_back(std::uniform_int_distribution<std::uint64_t>(0, random_limit)(random));
-    }
-    bool passed = true;
-    for (std::size_t index = 0; index < offsets.size(); ++index) {
-        if (!run_probe(options, offsets[index], index)) passed = false;
-    }
-    std::cerr << "cocktail cases=" << offsets.size() << " result="
-              << (passed ? "PASS" : "FAIL") << '\n';
-    return passed ? 0 : 1;
 }

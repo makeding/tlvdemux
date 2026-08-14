@@ -774,8 +774,8 @@ public:
                     resume_timescale_, track_->timescale);
             }
         }
-        if (!timeline_offset_us.has_value()) return;
         if (!timeline_offset_us_.has_value()) {
+            if (!timeline_offset_us.has_value()) return;
             timeline_offset_us_ = *timeline_offset_us;
         }
         std::int64_t timestamp =
@@ -799,6 +799,7 @@ public:
             // A recoverable packet-loss marker keeps the current mapping when
             // PTS remains monotonic. A genuine backwards epoch starts a new
             // mapping from the selected video's current output timeline.
+            if (!timeline_offset_us.has_value()) return;
             history_.clear();
             timeline_offset_us_ = *timeline_offset_us;
             timestamp =
