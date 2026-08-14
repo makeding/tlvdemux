@@ -4,6 +4,7 @@ import {
   audioSelectionIdentity,
   audioTrackChoices,
   correspondingAudioTrack,
+  preferredSeekVideoRap,
   resolveAudioSelection,
   sameVideoLayerGroup,
   selectionLevel,
@@ -42,6 +43,16 @@ assert.equal(automaticLayerSwitchEligible(
 assert.equal(automaticLayerSwitchEligible(videoLow, 10000000n, videoHigh, 7999999n, lag), false);
 assert.equal(automaticLayerSwitchEligible(videoLow, 10000000n,
   {...videoHigh, contextId: 2}, 10000000n, lag), false);
+
+assert.equal(preferredSeekVideoRap([
+  {track: videoHigh, rap: {ptsUs: 33000000n}},
+  {track: videoLow, rap: {ptsUs: 33200000n}},
+], 500000n).track, videoHigh);
+assert.equal(preferredSeekVideoRap([
+  {track: videoHigh, rap: {ptsUs: 190000000n}},
+  {track: videoLow, rap: {ptsUs: 237000000n}},
+], 500000n).track, videoLow);
+assert.equal(preferredSeekVideoRap([], 500000n), null);
 
 const ordinaryTracks = [audioMainHigh, audioSubHigh, audioMainLow, audioSubLow];
 assert.deepEqual(correspondingAudioTrack(

@@ -44,7 +44,7 @@ constexpr std::uint32_t kFragmentDurationDivisor = 4;
 constexpr std::uint32_t kQueueDurationBoundMultiplier = 8;
 constexpr std::int64_t kAudioHistoryDurationUs = 20000000;
 constexpr std::int64_t kLayerSwitchAudioBufferUs = 400000;
-constexpr std::int64_t kLayerSwitchMaxAvGapUs = 2000000;
+constexpr std::int64_t kLayerSwitchMaxAvGapUs = 3500000;
 
 Bytes u32(const std::uint64_t value) {
     return {static_cast<std::uint8_t>(value >> 24U),

@@ -894,11 +894,15 @@ void test_layer_switch_replays_cached_target_video_from_requested_rap() {
     remuxer.push(hevc_unit(
         3, 800000, 800000, std::vector<unsigned>{}, true));
     remuxer.push(hevc_unit(3, 850000, 850000, true, false));
-    remuxer.push(hevc_unit(3, 1000000, 1000000, true, false));
+    remuxer.push(hevc_unit(
+        3, 1000000, 1000000, std::vector<unsigned>{21}, false));
     remuxer.push(hevc_unit(3, 1033367, 1033367, false, false));
+    remuxer.push(hevc_unit(
+        3, 1200000, 1200000, std::vector<unsigned>{19}, false));
+    remuxer.push(hevc_unit(3, 1233367, 1233367, false, false));
 
     constexpr std::int64_t frame = 1024;
-    for (std::int64_t index = 47; index < 72; ++index) {
+    for (std::int64_t index = 47; index < 90; ++index) {
         remuxer.push(audio_unit(9, index * frame));
     }
     const auto segment_count = sink.segments.size();
@@ -907,8 +911,8 @@ void test_layer_switch_replays_cached_target_video_from_requested_rap() {
 
     check(sink.layer_switches.size() == 1,
           "cached target video was not replayed synchronously");
-    check(sink.layer_switches.front().video_presentation_time_us == 1000000,
-          "cached switch ignored the requested earliest RAP");
+    check(sink.layer_switches.front().video_presentation_time_us == 1200000,
+          "cached switch did not prefer a nearby closed IRAP over CRA");
     check(sink.layer_switches.front().audio_presentation_time_us == 900000,
           "cached video replay did not align prepared target audio");
     check(std::any_of(sink.segments.begin(), sink.segments.end(),
@@ -963,7 +967,7 @@ void test_layer_switch_retries_distant_audio_at_later_video_boundary() {
     remuxer.push(replacement);
 
     constexpr std::int64_t frame = 1024;
-    constexpr std::int64_t distant_start = 3 * 48000;
+    constexpr std::int64_t distant_start = 5 * 48000;
     for (std::int64_t index = 0; index < 24; ++index) {
         remuxer.push(audio_unit(9, distant_start + index * frame));
     }
@@ -972,12 +976,12 @@ void test_layer_switch_retries_distant_audio_at_later_video_boundary() {
               sink.splices.empty() && sink.layer_switch_cancellations.empty(),
           "distant audio boundary was committed or cancelled before a later RAP");
 
-    auto aligned_replacement = hevc_unit(3, 3100000, 3100000, true, false);
+    auto aligned_replacement = hevc_unit(3, 5100000, 5100000, true, false);
     aligned_replacement.discontinuity = true;
     remuxer.push(aligned_replacement);
     check(sink.layer_switches.size() == 1 &&
-              sink.layer_switches.front().video_presentation_time_us == 3100000 &&
-              sink.layer_switches.front().audio_presentation_time_us == 3000000,
+              sink.layer_switches.front().video_presentation_time_us == 5100000 &&
+              sink.layer_switches.front().audio_presentation_time_us == 5000000,
           "layer switch did not retry at an A/V-aligned video RAP");
 }
 

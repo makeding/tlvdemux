@@ -15,6 +15,7 @@ namespace {
 
 constexpr std::int64_t kHistoryDurationUs = 20000000;
 constexpr std::size_t kHistoryBytesPerTrack = 64U * 1024U * 1024U;
+constexpr std::int64_t kClosedIrapPreferenceWindowUs = 3000000;
 
 std::int64_t presentation_time_us(const aribtlv::AccessUnit& unit) {
     return unit.pts.value * 1000000 / static_cast<std::int64_t>(unit.pts.timescale);
@@ -31,13 +32,15 @@ void VideoAccessUnitHistory::push(const aribtlv::AccessUnit& unit) {
     if (unit.codec != aribtlv::Codec::Hevc || unit.pts.timescale <= 1 ||
         unit.dts.timescale <= 1) return;
     const auto nalus = annex_b_views(unit.data);
-    const bool irap = std::any_of(nalus.begin(), nalus.end(), [](const NaluView& nalu) {
+    const auto irap = std::find_if(nalus.begin(), nalus.end(), [](const NaluView& nalu) {
         return nalu.type >= 16 && nalu.type <= 21;
     });
     auto& history = tracks_[unit.track_id];
     const auto timestamp = presentation_time_us(unit);
     history.bytes += unit.data.size();
-    history.units.push_back(CachedUnit{unit, timestamp, irap});
+    history.units.push_back(CachedUnit{
+        unit, timestamp, irap == nalus.end() ? -1 : irap->type,
+    });
     while (!history.units.empty() &&
            (timestamp - history.units.front().presentation_time_us > kHistoryDurationUs ||
             history.bytes > kHistoryBytesPerTrack)) {
@@ -52,12 +55,20 @@ std::vector<aribtlv::AccessUnit> VideoAccessUnitHistory::take_from(
     if (track == tracks_.end()) return {};
     auto history = std::move(track->second);
     tracks_.erase(track);
-    const auto first = std::find_if(history.units.begin(), history.units.end(),
+    auto first = std::find_if(history.units.begin(), history.units.end(),
         [earliest_presentation_time_us](const CachedUnit& cached) {
-            return cached.irap &&
+            return cached.irap_type >= 0 &&
                 cached.presentation_time_us >= earliest_presentation_time_us;
         });
     if (first == history.units.end()) return {};
+    const auto closed_irap_limit = first->presentation_time_us +
+        kClosedIrapPreferenceWindowUs;
+    const auto closed = std::find_if(first, history.units.end(),
+        [closed_irap_limit](const CachedUnit& cached) {
+            return cached.presentation_time_us <= closed_irap_limit &&
+                cached.irap_type >= 16 && cached.irap_type <= 20;
+        });
+    if (closed != history.units.end()) first = closed;
 
     std::map<int, Bytes> parameter_sets;
     for (auto iterator = history.units.begin(); iterator != std::next(first); ++iterator) {

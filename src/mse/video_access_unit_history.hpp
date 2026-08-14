@@ -21,7 +21,7 @@ private:
     struct CachedUnit {
         aribtlv::AccessUnit unit;
         std::int64_t presentation_time_us = 0;
-        bool irap = false;
+        int irap_type = -1;
     };
 
     struct TrackHistory {
