@@ -195,6 +195,7 @@ function createDemuxer(module, objectId, options) {
   record.instance = new module.TlvDemuxer({
     mseMaxAudioChannels: record.selection.maxAudioChannels,
     onMseVideoStart: event('onMseVideoStart'),
+    onPlaybackDamage: event('onPlaybackDamage'),
     onMseVideoSplice: event('onMseVideoSplice'),
     onMseAudioSplice: event('onMseAudioSplice'),
     onMseLayerSwitch(layer) {
@@ -213,6 +214,7 @@ function createDemuxer(module, objectId, options) {
       sendEvent(objectId, 'onMseSegment', segment, [segment.data.buffer]);
     },
     onService: event('onService'),
+    onDamage: event('onDamage'),
     onTrack(track) {
       record.tracks.set(track.trackId, track);
       automaticSelection(record, track);

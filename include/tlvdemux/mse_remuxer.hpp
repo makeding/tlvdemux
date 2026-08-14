@@ -1,6 +1,7 @@
 #pragma once
 
 #include <aribtlv/types.hpp>
+#include <tlvdemux/playback_damage.hpp>
 
 #include <cstdint>
 #include <memory>
@@ -103,6 +104,7 @@ public:
     virtual void onMseLayerSwitch(const MseLayerSwitch&) {}
     virtual void onMseLayerSwitchCancelled(const MseLayerSwitchCancelled&) {}
     virtual void onMseVideoStart(const MseVideoStart&) {}
+    virtual void onPlaybackDamage(const PlaybackDamage&) {}
 };
 
 class MseRemuxer {
@@ -122,6 +124,7 @@ public:
     void clearAutomaticLayerSwitch();
     void setOutputEnabled(bool enabled);
     std::optional<MseAutomaticLayerSwitchRequest> push(const AccessUnit& unit);
+    void observeDamage(const aribtlv::DamageSpan& damage);
     void flush();
     std::optional<MseLayerSwitchCancelled> endOfStream();
     std::optional<MseLayerSwitchCancelled> reset();

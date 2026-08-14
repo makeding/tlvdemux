@@ -33,6 +33,25 @@ const char* cancel_reason_name(
     return "end-of-input";
 }
 
+const char* damage_severity_name(
+    const tlvdemux::PlaybackDamageSeverity severity) noexcept {
+    switch (severity) {
+    case tlvdemux::PlaybackDamageSeverity::Warning: return "warning";
+    case tlvdemux::PlaybackDamageSeverity::Severe: return "severe";
+    }
+    return "warning";
+}
+
+const char* recovery_action_name(
+    const tlvdemux::PlaybackRecoveryAction action) noexcept {
+    switch (action) {
+    case tlvdemux::PlaybackRecoveryAction::None: return "none";
+    case tlvdemux::PlaybackRecoveryAction::Seek: return "seek";
+    case tlvdemux::PlaybackRecoveryAction::WaitForRecovery: return "wait-for-recovery";
+    }
+    return "none";
+}
+
 } // namespace
 
 class WasmMseRemuxer::Impl final : public tlvdemux::MseSink {
@@ -111,6 +130,25 @@ public:
         emit("onMseVideoStart", event);
     }
 
+    void onPlaybackDamage(const tlvdemux::PlaybackDamage& damage) override {
+        if (!has("onPlaybackDamage")) return;
+        auto event = val::object();
+        event.set("code", std::string("TLV_SOURCE_DAMAGE"));
+        event.set("videoTrackId", damage.video_track_id);
+        event.set("startTimeUs", damage.start_time_us.has_value()
+            ? val(*damage.start_time_us) : val::null());
+        event.set("endTimeUs", damage.end_time_us);
+        event.set("recoveryTimeUs", damage.recovery_time_us.has_value()
+            ? val(*damage.recovery_time_us) : val::null());
+        event.set("startInputOffset", damage.start_input_offset);
+        event.set("endInputOffset", damage.end_input_offset);
+        event.set("recoveryInputOffset", damage.recovery_input_offset);
+        event.set("recoveryRestartOffset", damage.recovery_restart_offset);
+        event.set("severity", std::string(damage_severity_name(damage.severity)));
+        event.set("action", std::string(recovery_action_name(damage.action)));
+        emit("onPlaybackDamage", event);
+    }
+
     tlvdemux::MseRemuxer& remuxer() noexcept { return remuxer_; }
 
 private:
@@ -167,6 +205,9 @@ void WasmMseRemuxer::setOutputEnabled(const bool enabled) {
 std::optional<tlvdemux::MseAutomaticLayerSwitchRequest>
 WasmMseRemuxer::push(const aribtlv::AccessUnit& unit) {
     return impl_->remuxer().push(unit);
+}
+void WasmMseRemuxer::observeDamage(const aribtlv::DamageSpan& damage) {
+    impl_->remuxer().observeDamage(damage);
 }
 void WasmMseRemuxer::flush() { impl_->remuxer().flush(); }
 std::optional<tlvdemux::MseLayerSwitchCancelled> WasmMseRemuxer::endOfStream() {

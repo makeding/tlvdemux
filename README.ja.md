@@ -23,7 +23,7 @@ ctest --test-dir build --output-on-failure
 ```
 
 プロトコル実装と Zlib 依存は `libaribtlv` が所有します。デフォルトでは HTTPS
-リポジトリの固定 revision `a0d96b0a0577e59f98f400c92c5c6a639cd83dac` を CMake が
+リポジトリの固定 revision `04791ee30e78d138c197e2a070b781c59872f1a7` を CMake が
 取得します。オフライン開発では `TLVDEMUX_LIBARIBTLV_SOURCE_DIR` にローカル
 checkout を指定します。インストール済み package を使う場合は
 `TLVDEMUX_USE_SYSTEM_LIBARIBTLV=ON` と `CMAKE_PREFIX_PATH` を指定してください。
@@ -92,6 +92,12 @@ cmake --install build --prefix /desired/prefix
 共有または静的ライブラリ、公開ヘッダー、CMake パッケージターゲット
 `tlvdemux::tlvdemux`、有効な場合は `tlvdemux` 実行ファイル、および MIT ライセンスが
 インストールされます。
+
+`MseRemuxer` は `libaribtlv` が通知する入力損傷区間を、選択中の映像トラック向けの
+`PlaybackDamage` に変換します。復旧点のある重大な損傷は、安定した WASM code
+`TLV_SOURCE_DAMAGE` と action `seek` で通知されます。復旧点がまだない場合の action は
+`wait-for-recovery` です。実際の `HTMLMediaElement` の seek は、現在の
+`MediaSource` timeline を所有する player 側が実行します。
 
 ## ライブラリの使い方
 

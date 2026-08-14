@@ -17,7 +17,7 @@ set(TLVDEMUX_LIBARIBTLV_GIT_REPOSITORY
     "https://github.com/makeding/libaribtlv.git" CACHE STRING
     "Git repository used to fetch libaribtlv")
 set(TLVDEMUX_LIBARIBTLV_GIT_TAG
-    "a0d96b0a0577e59f98f400c92c5c6a639cd83dac" CACHE STRING
+    "04791ee30e78d138c197e2a070b781c59872f1a7" CACHE STRING
     "Pinned libaribtlv Git revision")
 mark_as_advanced(
     TLVDEMUX_LIBARIBTLV_GIT_REPOSITORY
@@ -44,6 +44,7 @@ else()
 endif()
 
 add_library(tlvdemux
+    src/playback_damage.cpp
     src/mse/chromium_coded_frame_policy.cpp
     src/mse/hevc_parser.cpp
     src/mse/latm_parser.cpp
@@ -214,6 +215,18 @@ if(BUILD_TESTING)
             -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME tlvdemux-playback-tests COMMAND tlvdemux-playback-tests)
+
+    add_executable(tlvdemux-playback-damage-tests
+        tests/playback_damage_tests.cpp)
+    target_link_libraries(tlvdemux-playback-damage-tests PRIVATE tlvdemux::tlvdemux)
+    if(MSVC)
+        target_compile_options(tlvdemux-playback-damage-tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(tlvdemux-playback-damage-tests PRIVATE
+            -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME tlvdemux-playback-damage-tests
+        COMMAND tlvdemux-playback-damage-tests)
 
     add_executable(tlvdemux-package-api-tests tests/package/main.cpp)
     target_link_libraries(tlvdemux-package-api-tests PRIVATE tlvdemux::tlvdemux)

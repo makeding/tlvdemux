@@ -1006,6 +1006,33 @@ public:
         emit("onError", event);
     }
 
+    void onDamage(const aribtlv::DamageSpan& damage) override {
+        mse_remuxer_.observeDamage(damage);
+        if (!has_callback("onDamage")) return;
+        auto event = val::object();
+        event.set("trackId", damage.track_id);
+        event.set("kind", std::string(track_kind_name(damage.kind)));
+        event.set("codec", std::string(codec_name(damage.codec)));
+        event.set("startPtsValue", damage.start_time.has_value()
+            ? val(damage.start_time->value) : val::null());
+        event.set("startPtsTimescale", damage.start_time.has_value()
+            ? val(damage.start_time->timescale) : val::null());
+        event.set("endPtsValue", damage.end_time.value);
+        event.set("endPtsTimescale", damage.end_time.timescale);
+        event.set("recoveryPtsValue", damage.recovery_time.has_value()
+            ? val(damage.recovery_time->value) : val::null());
+        event.set("recoveryPtsTimescale", damage.recovery_time.has_value()
+            ? val(damage.recovery_time->timescale) : val::null());
+        event.set("startInputOffset", damage.start_input_offset);
+        event.set("endInputOffset", damage.end_input_offset);
+        event.set("recoveryInputOffset", damage.recovery_input_offset);
+        event.set("recoveryRestartOffset", damage.recovery_restart_offset);
+        event.set("reasons", static_cast<std::uint32_t>(damage.reasons));
+        event.set("recovered", damage.recovered);
+        event.set("recoveryRandomAccess", damage.recovery_random_access);
+        emit("onDamage", event);
+    }
+
     void onBroadcastClock(const aribtlv::BroadcastClock& clock) override {
         emit("onBroadcastClock", broadcast_clock_value(clock));
     }
@@ -1157,6 +1184,8 @@ private:
         event.set("inputOffset", unit.input_offset);
         event.set("randomAccess", unit.random_access);
         event.set("discontinuity", unit.discontinuity);
+        event.set("discontinuityReasons",
+                  static_cast<std::uint32_t>(unit.discontinuity_reasons));
         return event;
     }
 

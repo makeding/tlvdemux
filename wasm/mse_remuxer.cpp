@@ -40,6 +40,7 @@ public:
             output.discard_staged_video();
             video_history.clear();
             video_id = id;
+            damage_advisor.selectVideoTrack(id);
             automatic_layers.select(id);
             return cancelled;
         }
@@ -125,6 +126,7 @@ public:
                 video_boundary, video_boundary);
             pending_layer.reset();
             automatic_layers.switchCompleted(completed_video_id);
+            damage_advisor.selectVideoTrack(completed_video_id);
             return;
         }
         const auto candidate = audio.find(pending_layer->audio_track_id);
@@ -165,6 +167,7 @@ public:
             completed.video_track_id, completed.audio_track_id,
             video_boundary, *boundary);
         automatic_layers.switchCompleted(completed.video_track_id);
+        damage_advisor.selectVideoTrack(completed.video_track_id);
     }
 
     std::optional<tlvdemux::MseAutomaticLayerSwitchRequest> push(
@@ -202,6 +205,11 @@ public:
             }
         }
         return std::nullopt;
+    }
+
+    void observe_damage(const aribtlv::DamageSpan& damage) {
+        const auto playback_damage = damage_advisor.observe(damage);
+        if (playback_damage) sink.onPlaybackDamage(*playback_damage);
     }
 
     void flush() {
@@ -288,6 +296,7 @@ public:
     HevcMuxer video;
     VideoAccessUnitHistory video_history;
     VideoLayerStateMachine automatic_layers;
+    PlaybackDamageAdvisor damage_advisor;
     std::map<std::uint64_t, AacMuxer> audio;
     AacMuxer* active_audio = nullptr;
     MseOptions options;
@@ -344,6 +353,9 @@ void tlvdemux::MseRemuxer::setOutputEnabled(const bool enabled) {
 
 std::optional<tlvdemux::MseAutomaticLayerSwitchRequest>
 tlvdemux::MseRemuxer::push(const AccessUnit& unit) { return impl_->push(unit); }
+void tlvdemux::MseRemuxer::observeDamage(const aribtlv::DamageSpan& damage) {
+    impl_->observe_damage(damage);
+}
 void tlvdemux::MseRemuxer::flush() { impl_->flush(); }
 std::optional<tlvdemux::MseLayerSwitchCancelled>
 tlvdemux::MseRemuxer::endOfStream() { return impl_->end_of_stream(); }

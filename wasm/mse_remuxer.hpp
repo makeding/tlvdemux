@@ -34,6 +34,7 @@ public:
     void setOutputEnabled(bool enabled);
     std::optional<tlvdemux::MseAutomaticLayerSwitchRequest> push(
         const aribtlv::AccessUnit& unit);
+    void observeDamage(const aribtlv::DamageSpan& damage);
     void flush();
     std::optional<tlvdemux::MseLayerSwitchCancelled> endOfStream();
     std::optional<tlvdemux::MseLayerSwitchCancelled> reset();

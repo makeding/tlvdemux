@@ -24,7 +24,7 @@ ctest --test-dir build --output-on-failure
 
 `libaribtlv` owns the protocol and Zlib dependency. By default CMake fetches its
 HTTPS repository at the pinned revision
-`a0d96b0a0577e59f98f400c92c5c6a639cd83dac`. Point
+`04791ee30e78d138c197e2a070b781c59872f1a7`. Point
 `TLVDEMUX_LIBARIBTLV_SOURCE_DIR` at a local checkout for offline development, or
 set `TLVDEMUX_USE_SYSTEM_LIBARIBTLV=ON` and add an installed package prefix to
 `CMAKE_PREFIX_PATH`. The local source directory takes precedence over both.
@@ -95,6 +95,13 @@ cmake --install build --prefix /desired/prefix
 The install includes the playback/MSE library, public headers, the
 `tlvdemux::tlvdemux` CMake package target, the `tlvdemux` executable when enabled,
 and the MIT license. Its CMake package requires an installed `aribtlv` package.
+
+`MseRemuxer` converts source-damage spans from `libaribtlv` into
+`PlaybackDamage` advice for the selected video track. A severe recovered span
+uses the stable WASM code `TLV_SOURCE_DAMAGE` with action `seek`; an unrecovered
+span uses action `wait-for-recovery`. Players remain responsible for applying
+the seek to their `HTMLMediaElement`, because only the browser owns the active
+`MediaSource` timeline.
 
 ## Library usage
 

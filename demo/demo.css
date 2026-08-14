@@ -210,6 +210,16 @@ h2 { font-size: 15px; }
   white-space: nowrap;
 }
 
+.playback-notice {
+  margin: 0 13px 9px;
+  padding: 9px 11px;
+  border: 1px solid #b87927;
+  border-radius: 8px;
+  color: #5a3607;
+  background: #fff1d6;
+  font-size: 12px;
+}
+
 .source-panel {
   display: grid;
   grid-template-columns: auto minmax(180px, .8fr) auto auto minmax(280px, 1.4fr);

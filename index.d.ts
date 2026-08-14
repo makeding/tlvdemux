@@ -273,7 +273,29 @@ declare namespace createTlvDemuxModule {
     inputOffset: bigint;
     randomAccess: boolean;
     discontinuity: boolean;
+    /** Bitmask of libaribtlv discontinuity reasons. */
+    discontinuityReasons: number;
     dataLifetime?: "callback";
+  }
+
+  interface DamageSpan {
+    trackId: bigint;
+    kind: TrackKind;
+    codec: Codec;
+    startPtsValue: bigint | null;
+    startPtsTimescale: number | null;
+    endPtsValue: bigint;
+    endPtsTimescale: number;
+    recoveryPtsValue: bigint | null;
+    recoveryPtsTimescale: number | null;
+    startInputOffset: bigint;
+    endInputOffset: bigint;
+    recoveryInputOffset: bigint;
+    recoveryRestartOffset: bigint;
+    /** Bitmask of libaribtlv discontinuity reasons. */
+    reasons: number;
+    recovered: boolean;
+    recoveryRandomAccess: boolean;
   }
 
   interface DemuxError {
@@ -523,6 +545,20 @@ declare namespace createTlvDemuxModule {
     signalledRandomAccess: boolean;
   }
 
+  interface PlaybackDamage {
+    code: "TLV_SOURCE_DAMAGE";
+    videoTrackId: bigint;
+    startTimeUs: bigint | null;
+    endTimeUs: bigint;
+    recoveryTimeUs: bigint | null;
+    startInputOffset: bigint;
+    endInputOffset: bigint;
+    recoveryInputOffset: bigint;
+    recoveryRestartOffset: bigint;
+    severity: "warning" | "severe";
+    action: "none" | "seek" | "wait-for-recovery";
+  }
+
   interface TlvDemuxCallbacks {
     onService?: (service: ServiceInfo) => void;
     onTrack?: (track: TrackInfo) => void;
@@ -542,6 +578,8 @@ declare namespace createTlvDemuxModule {
      */
     onPlaybackAccessUnitView?: (unit: AccessUnit) => void;
     onError?: (error: DemuxError) => void;
+    /** Raw source damage, before selected-track playback policy is applied. */
+    onDamage?: (damage: DamageSpan) => void;
     onBroadcastClock?: (clock: BroadcastClock) => void;
     onEventInfo?: (event: EventInfo) => void;
     onMhSdtSnapshot?: (snapshot: MhSdtSnapshot) => void;
@@ -562,6 +600,8 @@ declare namespace createTlvDemuxModule {
     onMseLayerSwitch?: (layer: MseLayerSwitch) => void;
     onMseLayerSwitchCancelled?: (cancelled: MseLayerSwitchCancelled) => void;
     onMseVideoStart?: (start: MseVideoStart) => void;
+    /** Selected-video recovery advice with a stable user-facing error code. */
+    onPlaybackDamage?: (damage: PlaybackDamage) => void;
   }
 
   interface TlvDemuxOptions extends TlvDemuxCallbacks {

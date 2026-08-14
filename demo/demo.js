@@ -12,7 +12,7 @@ import { coalesceReadableStream } from './live-stream.mjs?v=asset-groups-v3';
 import {
   commonBufferedRanges,
   createMseGapRecovery,
-} from './mse-gap-recovery.mjs?v=gap-recovery-v2';
+} from './mse-gap-recovery.mjs?v=damage-recovery-v1';
 import { createWorkerTlvDemuxModule } from './worker-tlvdemux.js?v=cpp-layer-state-v1';
 import {
   MseAppendQueue,
@@ -53,6 +53,7 @@ const elements = Object.fromEntries([
   'videoPacketId', 'probeButton', 'cancelButton', 'clearButton',
   'probeState', 'duration', 'sourceSize', 'transferred', 'log',
   'video', 'mediaInfo', 'liveMode', 'videoTrack', 'audioTrack', 'subtitleTrack', 'subtitleOverlay',
+  'playbackNotice',
   'captionVisible', 'superimposeVisible',
   'broadcastViewport', 'broadcastVideoSurface', 'broadcastMediaPlane', 'broadcastFrame', 'dataRemote',
   'dataStatus', 'dataDetail', 'dataUrl',
@@ -720,6 +721,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const pendingInits = new Map();
   const pendingSegments = new Map([['video', []], ['audio', []]]);
   const mseSegmentTypes = new Set();
+  const reportedDamage = new Set();
   const externalDurationUs = liveMode ? null : BigInt(Math.round(
      durationSeconds(probeResult.duration) * 1000000));
 
@@ -912,6 +914,35 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         `への切替を中止: ${reason}`);
     } catch (error) { callbackError = error; }
   };
+  const onPlaybackDamage = damage => {
+    try {
+      gapRecovery.reportDamage(damage);
+      if (damage.severity !== 'severe') return;
+      const start = Number(damage.startTimeUs ?? damage.endTimeUs) / 1000000;
+      const recovery = damage.recoveryTimeUs === null
+        ? null : Number(damage.recoveryTimeUs) / 1000000;
+      const key = `${damage.videoTrackId}:${damage.startInputOffset}:${damage.endInputOffset}`;
+      if (reportedDamage.has(key)) return;
+      reportedDamage.add(key);
+      if (recovery !== null) {
+        const skipped = Math.max(0, recovery - start);
+        elements.playbackNotice.textContent =
+          `録画データの一部が破損しているため、再生が止まった場合は ` +
+          `${skipped.toFixed(1)}秒先の復旧点へ自動的に移動します。` +
+          ` [${damage.code}]`;
+        appendLog(`映像損傷 ${start.toFixed(3)}s -> ${recovery.toFixed(3)}s、` +
+          `停止時に復旧点へスキップします [${damage.code}]`);
+      } else {
+        elements.playbackNotice.textContent = liveMode
+          ? `受信データの破損により映像を復号できません。次の復旧点を待っています。 ` +
+            `[${damage.code}]`
+          : `録画末尾の破損により、これ以降の映像を復号できません。 ` +
+            `[${damage.code}]`;
+        appendLog(`映像損傷 復旧点なし [${damage.code}]`);
+      }
+      elements.playbackNotice.hidden = false;
+    } catch (error) { callbackError = error; }
+  };
   const wantedVideoPacketId = parsePacketId();
   const initialVideoPacketId = wantedVideoPacketId;
 
@@ -1030,6 +1061,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     onMseVideoSplice,
     onMseLayerSwitch,
     onMseLayerSwitchCancelled,
+    onPlaybackDamage,
     onTrack(track) {
       tracks.set(track.trackId, track);
       appendLog(`トラック ${track.kind} packet_id=0x${track.packetId.toString(16)} codec=${track.codec}`);
@@ -1525,6 +1557,8 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false, operationLa
   elements.transferred.textContent = '—';
   elements.probeState.textContent = '入力情報を確認中';
   elements.mediaInfo.textContent = '準備中';
+  elements.playbackNotice.hidden = true;
+  elements.playbackNotice.textContent = '';
   elements.log.textContent = '';
   if (operationLabel) appendLog(operationLabel);
   try {

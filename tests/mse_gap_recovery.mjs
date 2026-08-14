@@ -70,6 +70,58 @@ const media = currentTime => ({
 }
 
 {
+  const sourceQueues = queues(
+    [{start: 0, end: 375.63}],
+    [{start: 0, end: 375.22}],
+  );
+  const player = media(298.0);
+  const jumps = [];
+  const recovery = createMseGapRecovery({
+    media: player,
+    queues: sourceQueues,
+    seek: (target, previous) => {
+      jumps.push({target, previous});
+      player.currentTime = target;
+    },
+  });
+  recovery.reportDamage({
+    action: 'seek',
+    startTimeUs: 298000000,
+    endTimeUs: 334901211,
+    recoveryTimeUs: 334901211,
+  });
+  recovery.notifyWaiting();
+  assert.deepEqual(jumps, [{target: 334.901211, previous: 298.0}],
+    'known source damage did not override Chromium\'s optimistic continuous range');
+}
+
+{
+  const sourceQueues = queues(
+    [{start: 0, end: 375.63}],
+    [{start: 0, end: 375.22}],
+  );
+  const player = media(306.108);
+  const jumps = [];
+  const recovery = createMseGapRecovery({
+    media: player,
+    queues: sourceQueues,
+    seek: (target, previous) => {
+      jumps.push({target, previous});
+      player.currentTime = target;
+    },
+  });
+  recovery.reportDamage({
+    action: 'seek',
+    startTimeUs: 307407077,
+    endTimeUs: 334901211,
+    recoveryTimeUs: 334901211,
+  });
+  recovery.notifyWaiting();
+  assert.deepEqual(jumps, [{target: 334.901211, previous: 306.108}],
+    'source-damage lead tolerance did not cover the last decodable sample boundary');
+}
+
+{
   let videoRanges = [
     {start: 0, end: 10},
     {start: 20, end: 20.2},

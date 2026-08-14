@@ -17,6 +17,7 @@ let selected = false;
 let automaticConfigured = false;
 let completedLayer = null;
 let cancelledLayer = null;
+const playbackDamage = [];
 let lastVideoEndUs = null;
 let lastAudioEndUs = null;
 const segmentRanges = {video: [], audio: []};
@@ -119,6 +120,9 @@ demuxer = new module.TlvDemuxer({
   onMseLayerSwitchCancelled(layer) {
     cancelledLayer = layer;
   },
+  onPlaybackDamage(damage) {
+    playbackDamage.push(damage);
+  },
   onError(error) {
     if (!error.recoverable) throw new Error(error.message);
   },
@@ -184,6 +188,14 @@ try {
   assert.ok(durationUs >= minimumEndUs,
     'recording index duration stopped at the retired high-quality layer');
   assert.ok(demuxer.seekPointCount() > 0, 'switched recording index has no RAP entries');
+  const severeDamage = playbackDamage.find(damage =>
+    damage.severity === 'severe' && damage.action === 'seek' &&
+    damage.recoveryTimeUs !== null &&
+    BigInt(damage.recoveryTimeUs) - BigInt(damage.startTimeUs ?? damage.endTimeUs) >
+      20_000_000n);
+  assert.ok(severeDamage,
+    `large damaged interval did not expose a seek recovery event: ${JSON.stringify(
+      playbackDamage, (_, value) => typeof value === 'bigint' ? value.toString() : value)}`);
 
   console.log(JSON.stringify({
     videoBoundaryUs: videoBoundaryUs.toString(),
@@ -200,7 +212,8 @@ try {
     },
     indexDurationUs: durationUs.toString(),
     seekPointCount: demuxer.seekPointCount(),
-  }, null, 2));
+    severeDamage,
+  }, (_, value) => typeof value === 'bigint' ? value.toString() : value, 2));
 } finally {
   await input.close();
   demuxer.delete();
