@@ -302,7 +302,7 @@ export class MseAppendQueue {
   }
 }
 
-function intersectBufferedRanges(left, right) {
+export function intersectBufferedRanges(left, right) {
   const result = [];
   let leftIndex = 0;
   let rightIndex = 0;
@@ -314,6 +314,13 @@ function intersectBufferedRanges(left, right) {
     else rightIndex += 1;
   }
   return result;
+}
+
+export function nextBufferedRange(ranges, time, minimumDuration = 0, tolerance = 0.05) {
+  if (ranges.some(range =>
+    range.start <= time + tolerance && range.end > time + tolerance)) return null;
+  return ranges.find(range =>
+    range.start > time + tolerance && range.end - range.start >= minimumDuration) ?? null;
 }
 
 /** Waits for all queues and closes a MediaSource on a stable A/V boundary. */

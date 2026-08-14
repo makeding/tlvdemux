@@ -4,13 +4,23 @@ import {
   audioTrackChoices,
   correspondingAudioTrack,
   preferredSeekVideoRap,
+  qualityUpgradeReady,
+  restartVideoTrackQualityWindow,
   sameVideoLayerGroup,
   selectionLevel,
-} from './asset-groups.mjs?v=layer-switch-v4';
+  updateVideoTrackProgress,
+} from './asset-groups.mjs?v=layer-switch-v5';
 import { shouldRenderSubtitleTrack, subtitleTrackKind } from './subtitle-tracks.mjs?v=subtitle-planes-v1';
 import { coalesceReadableStream } from './live-stream.mjs?v=asset-groups-v3';
+import {
+  commonBufferedRanges,
+  createMseGapRecovery,
+} from './mse-gap-recovery.mjs?v=gap-recovery-v1';
 import { createWorkerTlvDemuxModule } from './worker-tlvdemux.js?v=layer-duration-v2';
-import { MseAppendQueue, finalizeMseMediaSource } from '../mse-append-queue.mjs?v=asset-groups-v3';
+import {
+  MseAppendQueue,
+  finalizeMseMediaSource,
+} from '../mse-append-queue.mjs?v=gap-recovery-v1';
 
 const b62RendererClass = import('/aribb62.js/dist/aribb62.js')
   .then(module => module.B62TTMLRenderer)
@@ -34,6 +44,8 @@ const SEEK_PREROLL_US = 8000000n;
 const SEEK_PROBE_BYTES = 64n * MiB;
 const MAX_SEEK_PROBE_ATTEMPTS = 5;
 const LAYER_HEALTH_CRITICAL_LAG_US = 500000n;
+const LAYER_QUALITY_CONTINUITY_GAP_US = 500000n;
+const LAYER_QUALITY_RECOVERY_US = 2000000n;
 const LAYER_SWITCH_MAX_AV_GAP_US = 2000000n;
 const VIDEO_OUTPUT_STALL_US = 1000000n;
 const VIDEO_SEGMENT_CONTIGUITY_US = 100000n;
@@ -85,6 +97,7 @@ let activeVideoSwitch = null;
 let activeAudioSwitch = null;
 let activeSubtitleSwitch = null;
 let activeSubtitleRenderer = null;
+let activeGapRecovery = null;
 let subtitleRendererRequest = 0;
 let selectedAudioPacketId = null;
 let selectedAudioGroupId = null;
@@ -391,20 +404,6 @@ async function selectedSource(signal, liveMode) {
   throw new Error('ローカル MMTS ファイルまたは HTTP URL を指定してください');
 }
 
-function intersectBufferedRanges(left, right) {
-  const result = [];
-  let leftIndex = 0;
-  let rightIndex = 0;
-  while (leftIndex < left.length && rightIndex < right.length) {
-    const start = Math.max(left[leftIndex].start, right[rightIndex].start);
-    const end = Math.min(left[leftIndex].end, right[rightIndex].end);
-    if (end > start) result.push({ start, end });
-    if (left[leftIndex].end < right[rightIndex].end) leftIndex += 1;
-    else rightIndex += 1;
-  }
-  return result;
-}
-
 function once(target, event) {
   return new Promise((resolve, reject) => {
     const done = () => { cleanup(); resolve(); };
@@ -472,6 +471,7 @@ function releaseMedia() {
   activeAudioSwitch = null;
   activeVideoSwitch = null;
   activeSubtitleSwitch = null;
+  activeGapRecovery = null;
   activeSubtitleRenderer?.destroy();
   activeSubtitleRenderer = null;
   internalSeekTarget = null;
@@ -498,6 +498,7 @@ function stopPlayback(quiet = false, preserveMedia = false) {
   activeAudioSwitch = null;
   activeVideoSwitch = null;
   activeSubtitleSwitch = null;
+  activeGapRecovery = null;
   activeSubtitleRenderer?.reset();
   if (!preserveMedia) releaseMedia();
   setRunning(false);
@@ -709,12 +710,9 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   let selectedVideo = null;
   let selectedVideoTrack = null;
   let pendingLayerSwitch = null;
-  const effectiveVideoPacketId = probeResult.videoPacketId ?? null;
   const videoProgress = new Map();
   const audioProgress = new Map();
   let automaticLayerSwitchInFlight = false;
-  let automaticQualityUpgradeAllowed = startTimeSeconds === 0;
-  const retiredVideoPacketIds = new Set();
   let selectedAudio = null;
   let selectedSubtitle = null;
   let subtitleEventCount = 0;
@@ -737,17 +735,26 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const externalDurationUs = liveMode ? null : BigInt(Math.round(
      durationSeconds(probeResult.duration) * 1000000));
 
+  const gapRecovery = createMseGapRecovery({
+    media: elements.video,
+    queues,
+    liveMode,
+    liveStartupBufferSeconds: LIVE_STARTUP_BUFFER_SECONDS,
+    isActive: () => generation === runGeneration,
+    seek: (target, previousTime) => {
+      internalSeekTarget = target;
+      elements.video.currentTime = target;
+      appendLog(`${liveMode ? 'Live 復帰' : '再生不能区間をスキップ'} ` +
+        `${previousTime.toFixed(3)}s -> ${target.toFixed(3)}s`);
+    },
+  });
+  activeGapRecovery = gapRecovery;
+
   const maybeStartPlayback = () => {
     if (generation !== runGeneration || queues.size < 2) return;
     if (played) return;
-    let commonRanges = null;
-    for (const queue of queues.values()) {
-      const ranges = queue.bufferedRanges();
-      if (!ranges.length) return;
-      commonRanges = commonRanges === null
-        ? ranges : intersectBufferedRanges(commonRanges, ranges);
-      if (!commonRanges.length) return;
-    }
+    const commonRanges = commonBufferedRanges(queues);
+    if (!commonRanges.length) return;
     const currentTime = elements.video.currentTime;
     const range = commonRanges.find(item => item.end > currentTime + 0.001);
     if (!range) return;
@@ -766,7 +773,11 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       appendLog('自動再生がブロックされました。再生ボタンを押してください');
     });
   };
-  for (const queue of activeQueues) queue.onUpdateEnd = maybeStartPlayback;
+  const onMseUpdateEnd = () => {
+    maybeStartPlayback();
+    gapRecovery.update();
+  };
+  for (const queue of activeQueues) queue.onUpdateEnd = onMseUpdateEnd;
 
   const appendSegment = segment => {
     const queue = queues.get(segment.type);
@@ -794,7 +805,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         throw new Error(`シーク中に ${type} codec が変化しました: ${queue.mime} -> ${init.mime}`);
       }
       if (!queue) {
-        queue = new MseAppendQueue(mediaSource, elements.video, init.mime, maybeStartPlayback, {
+        queue = new MseAppendQueue(mediaSource, elements.video, init.mime, onMseUpdateEnd, {
           backBufferSeconds: BACK_BUFFER_SECONDS,
           forwardBufferHighSeconds: FORWARD_BUFFER_HIGH_SECONDS,
           getMediaError: media => mediaErrorMessage(media.error),
@@ -941,6 +952,9 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       new Map(availableAudioTracks.map(track => [track.packetId, track])),
       preferredAudioPacketId,
     );
+    // A coordinated layer switch chooses its audio explicitly. Do not race it
+    // with an independent audio switch merely because track metadata repeated.
+    if (pendingLayerSwitch) return;
     const corresponding = correspondingAudioTrack(
       availableAudioTracks, currentTrack, targetLevel, selectedAudioGroupId,
     );
@@ -991,9 +1005,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       tracks.set(track.trackId, track);
       appendLog(`トラック ${track.kind} packet_id=0x${track.packetId.toString(16)} codec=${track.codec}`);
       if (track.kind === 'video') {
-        if (retiredVideoPacketIds.delete(track.packetId)) {
-          automaticQualityUpgradeAllowed = true;
-        }
         knownVideoTracks.set(track.packetId, track);
         renderVideoTracks();
         const previousGroup = selectedVideoTrack?.assetGroups?.[0];
@@ -1064,12 +1075,43 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       }
     },
     onTrackRemoved(track) {
+      if (pendingLayerSwitch &&
+          (track.trackId === pendingLayerSwitch.video.trackId ||
+           track.trackId === pendingLayerSwitch.audio.trackId)) {
+        appendLog(`${videoTrackLabel(pendingLayerSwitch.video)} への切替先が消えたため中止します`);
+        void demuxer.selectTrack('video', selectedVideo).catch(error => {
+          appendLog(`レイヤー切替中止エラー ${error.message || error}`);
+        });
+      }
       tracks.delete(track.trackId);
       if (track.kind === 'video') {
-        retiredVideoPacketIds.add(track.packetId);
+        const removedSelectedVideo = selectedVideo === track.trackId;
         knownVideoTracks.delete(track.packetId);
-        if (selectedVideo === track.trackId) selectedVideo = null;
+        if (removedSelectedVideo) selectedVideo = null;
         renderVideoTracks();
+        if (removedSelectedVideo && !pendingLayerSwitch &&
+            !automaticLayerSwitchInFlight && activeVideoSwitch) {
+          const replacement = preferredSeekVideoRap(
+            [...knownVideoTracks.values()]
+              .filter(candidate => sameVideoLayerGroup(selectedVideoTrack, candidate))
+              .map(candidate => ({
+                track: candidate,
+                rap: videoProgress.get(candidate.trackId)?.lastRandomAccessPtsUs === undefined
+                  ? null : {ptsUs: videoProgress.get(candidate.trackId).lastRandomAccessPtsUs},
+              })),
+            LAYER_HEALTH_CRITICAL_LAG_US,
+          )?.track;
+          if (replacement) {
+            automaticLayerSwitchInFlight = true;
+            activeVideoSwitch(replacement.packetId).then(() => {
+              appendLog(`${videoTrackLabel(track)} が終了したため ` +
+                `${videoTrackLabel(replacement)} へ切り替えます`);
+            }).catch(error => {
+              automaticLayerSwitchInFlight = false;
+              appendLog(`消失した映像レイヤーから復帰できません: ${error.message || error}`);
+            });
+          }
+        }
       } else if (track.kind === 'audio') {
         knownAudioTracks.delete(track.packetId);
         if (selectedAudio === track.trackId) selectedAudio = null;
@@ -1106,9 +1148,14 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     onAccessUnitView(unit) {
       try {
         if (unit.codec === 'hevc') {
-          const progress = videoProgress.get(unit.trackId) || {};
-          progress.lastPtsUs = timestampMicroseconds(unit.ptsValue, unit.ptsTimescale);
-          if (unit.randomAccess) progress.lastRandomAccessPtsUs = progress.lastPtsUs;
+          const progress = updateVideoTrackProgress(
+            videoProgress.get(unit.trackId) || {},
+            timestampMicroseconds(unit.ptsValue, unit.ptsTimescale),
+            timestampMicroseconds(unit.dtsValue, unit.dtsTimescale),
+            unit.randomAccess,
+            unit.discontinuity,
+            LAYER_QUALITY_CONTINUITY_GAP_US,
+          );
           videoProgress.set(unit.trackId, progress);
           if (seekProbeActive && unit.randomAccess &&
               progress.lastPtsUs <= seekProbeTargetUs + 50000n) {
@@ -1247,10 +1294,17 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       .map(track => ({track, progress: videoProgress.get(track.trackId)}))
       .filter(candidate => {
         const rap = candidate.progress?.lastRandomAccessPtsUs;
+        const currentLevel = selectionLevel(selectedVideoTrack) ?? 0xff;
+        const candidateLevel = selectionLevel(candidate.track) ?? 0xff;
+        const allowQualityUpgrade = candidateLevel >= currentLevel ||
+          qualityUpgradeReady(
+            candidate.progress, current.lastPtsUs,
+            LAYER_HEALTH_CRITICAL_LAG_US, LAYER_QUALITY_RECOVERY_US,
+          );
         return (outputStalled && rap !== undefined && rap > selectedVideoOutputEndUs) ||
           automaticLayerSwitchEligible(
             selectedVideoTrack, current.lastPtsUs, candidate.track,
-            rap, LAYER_HEALTH_CRITICAL_LAG_US, automaticQualityUpgradeAllowed,
+            rap, LAYER_HEALTH_CRITICAL_LAG_US, allowQualityUpgrade,
           );
       })
       .sort((left, right) => {
@@ -1285,9 +1339,14 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     automaticLayerSwitchInFlight = true;
     const currentLevel = selectionLevel(selectedVideoTrack) ?? 0xff;
     const targetLevel = selectionLevel(target) ?? 0xff;
-    const disablesQualityUpgrade = targetLevel > currentLevel;
-    const previousQualityUpgradeAllowed = automaticQualityUpgradeAllowed;
-    if (disablesQualityUpgrade) automaticQualityUpgradeAllowed = false;
+    if (targetLevel > currentLevel) {
+      for (const [trackId, progress] of videoProgress) {
+        const track = tracks.get(trackId);
+        if ((selectionLevel(track) ?? 0xff) < targetLevel) {
+          videoProgress.set(trackId, restartVideoTrackQualityWindow(progress));
+        }
+      }
+    }
     try {
       const earliest = !liveMode && targetLevel > currentLevel &&
           selectedVideoOutputEndUs !== null
@@ -1297,7 +1356,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       await activeVideoSwitch(target.packetId, earliest);
       appendLog(`${videoTrackLabel(target)} へ自動切替します`);
     } catch (error) {
-      automaticQualityUpgradeAllowed = previousQualityUpgradeAllowed;
       automaticLayerSwitchInFlight = false;
       appendLog(`自動レイヤー切替に失敗: ${error.message || error}`);
     }
@@ -1412,7 +1470,11 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
           (latest, rap) => latest === null || rap.ptsUs > latest.ptsUs ? rap : latest,
           null,
         );
-        if (latestRap && targetUs - latestRap.ptsUs <= LAYER_HEALTH_CRITICAL_LAG_US) break;
+        const videoTracks = [...tracks.values()].filter(track =>
+          track.kind === 'video' &&
+          (track.trackId === selectedVideo || sameVideoLayerGroup(selectedVideoTrack, track)));
+        if (latestRap && targetUs - latestRap.ptsUs <= LAYER_HEALTH_CRITICAL_LAG_US &&
+            videoTracks.every(track => seekProbeRaps.has(track.trackId))) break;
       }
       seekProbeActive = false;
       const chosen = preferredSeekVideoRap(
@@ -1666,6 +1728,12 @@ elements.video.addEventListener('error', () => {
   elements.probeState.textContent = 'デコード失敗';
   elements.mediaInfo.textContent = message || 'MediaElement エラー';
   activeController?.abort();
+});
+elements.video.addEventListener('waiting', () => {
+  activeGapRecovery?.notifyWaiting();
+});
+elements.video.addEventListener('play', () => {
+  activeGapRecovery?.update();
 });
 elements.video.addEventListener('seeking', () => {
   if (currentLiveMode || !activeMediaSource) return;

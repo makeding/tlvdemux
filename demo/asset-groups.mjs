@@ -39,6 +39,39 @@ export function automaticLayerSwitchEligible(
     : candidateRapPtsUs > currentPtsUs + lagUs;
 }
 
+export function updateVideoTrackProgress(
+  previous, ptsUs, dtsUs, randomAccess, discontinuity, maximumContinuousGapUs,
+) {
+  const progress = {...previous};
+  if (progress.lastDtsUs === undefined || discontinuity ||
+      dtsUs <= progress.lastDtsUs ||
+      dtsUs - progress.lastDtsUs > maximumContinuousGapUs) {
+    progress.continuousSinceDtsUs = dtsUs;
+  }
+  progress.lastDtsUs = dtsUs;
+  if (progress.lastPtsUs === undefined || ptsUs > progress.lastPtsUs) {
+    progress.lastPtsUs = ptsUs;
+  }
+  if (randomAccess) progress.lastRandomAccessPtsUs = ptsUs;
+  return progress;
+}
+
+export function qualityUpgradeReady(
+  progress, currentPtsUs, maximumLagUs, minimumContinuousDurationUs,
+) {
+  if (progress?.lastPtsUs === undefined ||
+      progress.lastDtsUs === undefined ||
+      progress.lastRandomAccessPtsUs === undefined ||
+      progress.continuousSinceDtsUs === undefined) return false;
+  return progress.lastRandomAccessPtsUs + maximumLagUs >= currentPtsUs &&
+    progress.lastDtsUs - progress.continuousSinceDtsUs >= minimumContinuousDurationUs;
+}
+
+export function restartVideoTrackQualityWindow(progress) {
+  if (progress?.lastDtsUs === undefined) return progress;
+  return {...progress, continuousSinceDtsUs: progress.lastDtsUs};
+}
+
 export function preferredSeekVideoRap(candidates, maximumLagUs) {
   const video = [...candidates].filter(candidate =>
     candidate.track?.kind === 'video' && candidate.rap?.ptsUs !== undefined);

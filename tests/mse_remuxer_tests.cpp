@@ -827,6 +827,9 @@ void test_video_track_switch_preserves_prepared_alternate_audio() {
     for (std::int64_t index = 0; index < 12; ++index) {
         remuxer.push(audio_unit(9, index * frame));
     }
+    auto damaged_selected_video = hevc_unit(2, 50000, 50000, false, false);
+    damaged_selected_video.discontinuity = true;
+    remuxer.push(damaged_selected_video);
     remuxer.selectTrack(tlvdemux::TrackKind::Video, 3);
     auto replacement = hevc_unit(3, 100000, 100000, true, true);
     replacement.discontinuity = true;
@@ -851,14 +854,20 @@ void test_layer_switch_coordinates_video_rap_and_prepared_audio() {
     constexpr std::int64_t frame = 1024;
     for (std::int64_t index = 0; index < 24; ++index) {
         remuxer.push(audio_unit(1, index * frame));
-        remuxer.push(audio_unit(9, index * frame));
+        auto alternate = audio_unit(9, index * frame);
+        alternate.discontinuity = index == 12;
+        remuxer.push(alternate);
     }
     check(remuxer.switchLayer(3, 9, audio_time_us(4 * frame)),
           "valid layer switch request was rejected");
     auto replacement = hevc_unit(3, 100000, 100000, true, true);
     remuxer.push(replacement);
+    for (std::int64_t index = 1; index <= 20; ++index) {
+        const auto timestamp = 100000 + index * 33367;
+        remuxer.push(hevc_unit(3, timestamp, timestamp, false, false));
+    }
 
-    const auto expected_audio_boundary = audio_time_us(4 * frame);
+    const auto expected_audio_boundary = audio_time_us(5 * frame);
     check(sink.layer_switches.size() == 1,
           "prepared A/V layer switch did not emit completion");
     const auto& completed = sink.layer_switches.front();
@@ -900,6 +909,10 @@ void test_layer_switch_replays_cached_target_video_from_requested_rap() {
     remuxer.push(hevc_unit(
         3, 1200000, 1200000, std::vector<unsigned>{19}, false));
     remuxer.push(hevc_unit(3, 1233367, 1233367, false, false));
+    for (std::int64_t index = 2; index <= 20; ++index) {
+        const auto timestamp = 1200000 + index * 33367;
+        remuxer.push(hevc_unit(3, timestamp, timestamp, false, false));
+    }
 
     constexpr std::int64_t frame = 1024;
     for (std::int64_t index = 47; index < 90; ++index) {
@@ -913,13 +926,15 @@ void test_layer_switch_replays_cached_target_video_from_requested_rap() {
           "cached target video was not replayed synchronously");
     check(sink.layer_switches.front().video_presentation_time_us == 1200000,
           "cached switch did not prefer a nearby closed IRAP over CRA");
-    check(sink.layer_switches.front().audio_presentation_time_us == 900000,
+    const auto expected_audio_boundary = audio_time_us(57 * frame);
+    check(sink.layer_switches.front().audio_presentation_time_us == expected_audio_boundary,
           "cached video replay did not align prepared target audio");
     check(std::any_of(sink.segments.begin(), sink.segments.end(),
-              [](const tlvdemux::MseMediaSegment& segment) {
-                  return segment.type == "audio" && segment.start_time_us == 900000;
+              [expected_audio_boundary](const tlvdemux::MseMediaSegment& segment) {
+                  return segment.type == "audio" &&
+                      segment.start_time_us == expected_audio_boundary;
               }),
-          "cached layer switch did not rebase replacement audio media");
+          "cached layer switch did not preserve replacement audio time");
     check(sink.segments.size() > segment_count,
           "cached video replay did not emit replacement media");
 }
@@ -937,6 +952,10 @@ void test_layer_switch_waits_for_target_audio_after_video_rap() {
     auto replacement = hevc_unit(3, 100000, 100000, true, true);
     replacement.discontinuity = true;
     remuxer.push(replacement);
+    for (std::int64_t index = 1; index <= 20; ++index) {
+        const auto timestamp = 100000 + index * 33367;
+        remuxer.push(hevc_unit(3, timestamp, timestamp, false, false));
+    }
     check(sink.layer_switches.empty(),
           "layer switch completed before target audio reached the video boundary");
 
@@ -948,7 +967,8 @@ void test_layer_switch_waits_for_target_audio_after_video_rap() {
           "layer switch exposed target video before audio had 400ms prepared");
     remuxer.push(audio_unit(9, 23 * frame));
     check(sink.layer_switches.size() == 1 &&
-              sink.layer_switches.front().audio_presentation_time_us == 0,
+              sink.layer_switches.front().audio_presentation_time_us ==
+                  audio_time_us(5 * frame),
           "layer switch did not complete after target audio had 400ms prepared");
 }
 
@@ -965,6 +985,10 @@ void test_layer_switch_retries_distant_audio_at_later_video_boundary() {
     auto replacement = hevc_unit(3, 100000, 100000, true, true);
     replacement.discontinuity = true;
     remuxer.push(replacement);
+    for (std::int64_t index = 1; index <= 20; ++index) {
+        const auto timestamp = 100000 + index * 33367;
+        remuxer.push(hevc_unit(3, timestamp, timestamp, false, false));
+    }
 
     constexpr std::int64_t frame = 1024;
     constexpr std::int64_t distant_start = 5 * 48000;
@@ -979,10 +1003,43 @@ void test_layer_switch_retries_distant_audio_at_later_video_boundary() {
     auto aligned_replacement = hevc_unit(3, 5100000, 5100000, true, false);
     aligned_replacement.discontinuity = true;
     remuxer.push(aligned_replacement);
+    for (std::int64_t index = 1; index <= 20; ++index) {
+        const auto timestamp = 5100000 + index * 33367;
+        remuxer.push(hevc_unit(3, timestamp, timestamp, false, false));
+    }
+    const auto expected_audio_boundary =
+        5000000 + audio_time_us(5 * frame);
     check(sink.layer_switches.size() == 1 &&
               sink.layer_switches.front().video_presentation_time_us == 5100000 &&
-              sink.layer_switches.front().audio_presentation_time_us == 5000000,
+              sink.layer_switches.front().audio_presentation_time_us ==
+                  expected_audio_boundary,
           "layer switch did not retry at an A/V-aligned video RAP");
+}
+
+void test_layer_switch_uses_first_replacement_presentation_time() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.push(hevc_unit(2, 0, 0, true, true));
+    remuxer.push(audio_unit(1, 0));
+
+    check(remuxer.switchLayer(3, 1, 0),
+          "same-audio layer switch request was rejected");
+    remuxer.push(hevc_unit(3, 100000, 133367, std::vector<unsigned>{19}, true));
+    remuxer.push(hevc_unit(3, 133367, 100000, std::vector<unsigned>{6}, false));
+    for (std::int64_t index = 2; index <= 20; ++index) {
+        const auto timestamp = 100000 + index * 33367;
+        remuxer.push(hevc_unit(3, timestamp, timestamp, false, false));
+    }
+
+    check(sink.layer_switches.size() == 1 && sink.video_splices.size() == 1,
+          "reordered replacement video did not complete its layer switch");
+    check(sink.video_splices.front().presentation_time_us == 100000 &&
+              sink.layer_switches.front().video_presentation_time_us == 100000,
+          "video splice did not move back to the first replacement presentation time");
+    check(sink.splices.empty(),
+          "video-only layer switch unnecessarily replaced the working audio buffer");
 }
 
 void test_unspecified_media_timescale_is_not_remuxed() {
@@ -1260,6 +1317,7 @@ int main() {
     test_layer_switch_replays_cached_target_video_from_requested_rap();
     test_layer_switch_waits_for_target_audio_after_video_rap();
     test_layer_switch_retries_distant_audio_at_later_video_boundary();
+    test_layer_switch_uses_first_replacement_presentation_time();
     test_unspecified_media_timescale_is_not_remuxed();
     test_layer_switch_cancels_once_at_end_of_input();
     test_layer_switch_cancels_on_reposition_and_explicit_selection();

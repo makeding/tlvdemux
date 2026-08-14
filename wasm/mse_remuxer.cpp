@@ -43,8 +43,10 @@ constexpr std::uint32_t kFragmentDurationDivisor = 4;
 // queue has a genuinely safe prefix. Bound how long we wait for one.
 constexpr std::uint32_t kQueueDurationBoundMultiplier = 8;
 constexpr std::int64_t kAudioHistoryDurationUs = 20000000;
+constexpr std::int64_t kLayerSwitchVideoBufferUs = 400000;
 constexpr std::int64_t kLayerSwitchAudioBufferUs = 400000;
-constexpr std::int64_t kLayerSwitchMaxAvGapUs = 3500000;
+constexpr std::int64_t kLayerSwitchMaxAvGapUs = 500000;
+constexpr std::int64_t kLayerSwitchContinuityToleranceUs = 1000;
 
 Bytes u32(const std::uint64_t value) {
     return {static_cast<std::uint8_t>(value >> 24U),
@@ -69,6 +71,31 @@ public:
     void discard_staged_video() noexcept {
         stage_video_ = false;
         staged_video_events_.clear();
+    }
+    std::optional<std::pair<std::int64_t, std::int64_t>> staged_video_range() const {
+        std::vector<std::pair<std::int64_t, std::int64_t>> ranges;
+        for (const auto& event : staged_video_events_) {
+            const auto* segment = std::get_if<tlvdemux::MseMediaSegment>(&event);
+            if (segment && segment->type == "video") {
+                ranges.emplace_back(segment->start_time_us, segment->end_time_us);
+            }
+        }
+        if (ranges.empty()) return std::nullopt;
+        std::sort(ranges.begin(), ranges.end());
+        auto start = ranges.front().first;
+        auto end = ranges.front().second;
+        for (const auto& range : ranges) {
+            if (range.first > end + kLayerSwitchContinuityToleranceUs) break;
+            end = std::max(end, range.second);
+        }
+        return std::pair{start, end};
+    }
+    void set_staged_video_splice(const std::int64_t presentation_time_us) {
+        for (auto& event : staged_video_events_) {
+            if (auto* splice = std::get_if<tlvdemux::MseVideoSplice>(&event)) {
+                splice->presentation_time_us = presentation_time_us;
+            }
+        }
     }
     void commit_staged_video() {
         stage_video_ = false;
@@ -603,10 +630,10 @@ public:
         : BaseMuxer("audio", 2, output), output_(output),
           max_channels_(max_channels) {}
 
-    void discontinuity() {
+    void discontinuity(const bool preserve_history = false) {
         reset_samples();
         clear_resume();
-        history_.clear();
+        if (!preserve_history) history_.clear();
     }
 
     void activate() {
@@ -716,7 +743,12 @@ public:
     void push(const aribtlv::AccessUnit& unit, const bool selected,
               const bool output_enabled,
               const std::optional<std::int64_t> timeline_offset_us) {
-        if (unit.discontinuity) discontinuity();
+        // An alternate layer is deliberately kept warm. Its AU-level
+        // discontinuity marks a new fragment, but samples already mapped onto
+        // the common output timeline remain valid switch history. Active-track
+        // and explicit reset/reposition discontinuities still clear history.
+        const bool preserve_history = unit.discontinuity && !selected;
+        if (unit.discontinuity) discontinuity(preserve_history);
         auto frame = parser_.parse(unit.data);
         if (max_channels_ != 0 && frame.channels > max_channels_) return;
         if (!track_) {
@@ -751,7 +783,13 @@ public:
             }
         }
         if (timestamp < 0) return;
-        if (!history_.empty() && timestamp <= history_.back().pts) return;
+        if (!history_.empty() && timestamp <= history_.back().pts) {
+            if (!preserve_history) return;
+            // A new timestamp epoch cannot share an ordered lookup history
+            // with the previous one. Keep history across packet-loss markers,
+            // but replace it when the broadcaster actually moved backwards.
+            history_.clear();
+        }
         Sample sample{std::move(frame.data), timestamp, timestamp,
                       default_duration(), true};
         history_.push_back(sample);
@@ -881,25 +919,32 @@ public:
 
     void complete_layer_switch() {
         if (!pending_layer || !pending_layer->video_boundary_us) return;
+        auto staged_video = output.staged_video_range();
+        if (!staged_video ||
+            staged_video->second - staged_video->first < kLayerSwitchVideoBufferUs) return;
+        video.flush();
+        staged_video = output.staged_video_range();
+        const auto video_boundary = std::min(
+            *pending_layer->video_boundary_us, staged_video->first);
+        output.set_staged_video_splice(video_boundary);
         if (audio_id == pending_layer->audio_track_id && active_audio != nullptr) {
-            video.flush();
             output.commit_staged_video();
             output.layer_switch(
                 pending_layer->video_track_id, pending_layer->audio_track_id,
-                *pending_layer->video_boundary_us, *pending_layer->video_boundary_us);
+                video_boundary, video_boundary);
             pending_layer.reset();
             return;
         }
         const auto candidate = audio.find(pending_layer->audio_track_id);
         const auto earliest_audio = std::max(
             pending_layer->earliest_presentation_time_us,
-            *pending_layer->video_boundary_us);
+            video_boundary);
         if (candidate == audio.end() ||
             !candidate->second.has_contiguous_history_from(
                 earliest_audio, kLayerSwitchAudioBufferUs)) return;
         const auto audio_boundary = candidate->second.activation_boundary_from(earliest_audio);
         if (!audio_boundary ||
-            *audio_boundary - *pending_layer->video_boundary_us > kLayerSwitchMaxAvGapUs) {
+            *audio_boundary - video_boundary > kLayerSwitchMaxAvGapUs) {
             pending_layer->earliest_presentation_time_us =
                 audio_boundary.value_or(earliest_audio);
             pending_layer->video_boundary_us.reset();
@@ -908,18 +953,13 @@ public:
             return;
         }
         const auto completed = *pending_layer;
-        const auto audio_output_boundary = std::max(
-            completed.earliest_presentation_time_us,
-            *completed.video_boundary_us - kLayerSwitchAudioBufferUs);
         pending_layer.reset();
-        video.flush();
         output.commit_staged_video();
-        const auto boundary = switch_audio(
-            completed.audio_track_id, earliest_audio, audio_output_boundary);
+        const auto boundary = switch_audio(completed.audio_track_id, earliest_audio);
         if (!boundary) return;
         output.layer_switch(
             completed.video_track_id, completed.audio_track_id,
-            *completed.video_boundary_us, *boundary);
+            video_boundary, *boundary);
     }
 
     void push(const aribtlv::AccessUnit& unit) {
@@ -992,7 +1032,11 @@ public:
     void push_selected_video(const aribtlv::AccessUnit& unit) {
         if (unit.discontinuity && !video.is_input_track_switch(unit) &&
             !(pending_layer && unit.track_id == pending_layer->video_track_id)) {
-            for (auto& entry : audio) entry.second.discontinuity();
+            // A damaged selected video layer does not invalidate audio already
+            // prepared for another asset layer. Reset only the audio currently
+            // being emitted; otherwise the fallback history disappears at the
+            // exact moment it is needed.
+            if (active_audio) active_audio->discontinuity();
         }
         video.push(unit, enabled);
         if (pending_layer && unit.track_id == pending_layer->video_track_id) {

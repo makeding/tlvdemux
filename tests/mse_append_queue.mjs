@@ -55,7 +55,27 @@ class FakeMediaSource extends EventTarget {
 }
 
 globalThis.MediaSource = FakeMediaSource;
-const {MseAppendQueue, finalizeMseMediaSource} = await import('../mse-append-queue.mjs');
+const {
+  MseAppendQueue,
+  finalizeMseMediaSource,
+  nextBufferedRange,
+} = await import('../mse-append-queue.mjs');
+
+{
+  const ranges = [
+    {start: 0, end: 307.14},
+    {start: 334.37, end: 334.6},
+    {start: 334.9, end: 375.63},
+  ];
+  assert.equal(nextBufferedRange(ranges, 306), null,
+    'playback still covered by the current range must not jump');
+  assert.deepEqual(nextBufferedRange(ranges, 307.14), ranges[1],
+    'recording gap did not resolve to the next buffered range');
+  assert.deepEqual(nextBufferedRange(ranges, 307.14, 0.5), ranges[2],
+    'Live recovery accepted a range shorter than its startup buffer');
+  assert.equal(nextBufferedRange(ranges, 376), null,
+    'end of input incorrectly produced a recovery target');
+}
 
 async function tick() {
   await new Promise(resolve => setTimeout(resolve, 5));

@@ -61,6 +61,18 @@ export declare class MseAppendQueue {
   destroy(error?: Error): void;
 }
 
+export declare function intersectBufferedRanges(
+  left: readonly MseBufferedRange[],
+  right: readonly MseBufferedRange[],
+): MseBufferedRange[];
+
+export declare function nextBufferedRange(
+  ranges: readonly MseBufferedRange[],
+  time: number,
+  minimumDuration?: number,
+  tolerance?: number,
+): MseBufferedRange | null;
+
 export declare function finalizeMseMediaSource(
   mediaSource: MediaSource,
   queues: MseAppendQueue[],
