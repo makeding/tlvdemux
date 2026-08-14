@@ -159,6 +159,16 @@ class WorkerDemuxer extends WorkerObject {
       videoTrackId, audioTrackId, earliestPresentationTimeUs,
     ]);
   }
+  configureAutomaticLayerSwitch(
+    preferredVideoTrackId, preferredAudioTrackId,
+    fallbackVideoTrackId, fallbackAudioTrackId,
+  ) {
+    return this.call('configureAutomaticLayerSwitch', [
+      preferredVideoTrackId, preferredAudioTrackId,
+      fallbackVideoTrackId, fallbackAudioTrackId,
+    ]);
+  }
+  clearAutomaticLayerSwitch() { return this.call('clearAutomaticLayerSwitch'); }
   setMseOutputEnabled(enabled) { return this.call('setMseOutputEnabled', [enabled]); }
   setSubtitlePassthroughEnabled(enabled) {
     return this.call('setSubtitlePassthroughEnabled', [enabled]);
@@ -180,8 +190,10 @@ class WorkerDemuxer extends WorkerObject {
 export async function createWorkerTlvDemuxModule(options = {}) {
   if (!protocol) throw new Error('demux-worker-protocol.js was not loaded');
   const client = new WorkerClient({
-    workerUrl: options.workerUrl || new URL('./demux-worker-runtime.js', import.meta.url),
-    wasmUrl: options.wasmUrl || new URL('../build-wasm/tlvdemux.js?v=layer-duration-v2', import.meta.url).href,
+    workerUrl: options.workerUrl || new URL(
+      './demux-worker-runtime.js?v=cpp-layer-state-v1', import.meta.url),
+    wasmUrl: options.wasmUrl || new URL(
+      '../build-wasm/tlvdemux.js?v=cpp-layer-state-v1', import.meta.url).href,
   });
   await client.ready;
   return {

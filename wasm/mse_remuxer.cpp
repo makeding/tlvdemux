@@ -4,6 +4,7 @@
 #include "mse/latm_parser.hpp"
 #include "mse/mp4_builder.hpp"
 #include "mse/video_access_unit_history.hpp"
+#include "mse/video_layer_state_machine.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -29,6 +30,8 @@ using tlvdemux::detail::mse::Mp4Track;
 using tlvdemux::detail::mse::NaluView;
 using tlvdemux::detail::mse::Sample;
 using tlvdemux::detail::mse::VideoAccessUnitHistory;
+using tlvdemux::detail::mse::VideoLayerPair;
+using tlvdemux::detail::mse::VideoLayerStateMachine;
 using tlvdemux::detail::mse::annex_b_views;
 using tlvdemux::detail::mse::append;
 using tlvdemux::detail::mse::copy_nalu;
@@ -852,6 +855,7 @@ public:
             output.discard_staged_video();
             video_history.clear();
             video_id = id;
+            automatic_layers.select(id);
             return cancelled;
         }
         if (kind != aribtlv::TrackKind::Audio) return cancelled;
@@ -909,6 +913,7 @@ public:
             video_id.value_or(0), audio_id.value_or(0),
             earliest_presentation_time_us, std::nullopt};
         video.stage_next_switch();
+        automatic_layers.switchStarted(target_video_id);
         video_id = target_video_id;
         for (const auto& unit : video_history.take_from(
                  target_video_id, earliest_presentation_time_us)) {
@@ -928,11 +933,13 @@ public:
             *pending_layer->video_boundary_us, staged_video->first);
         output.set_staged_video_splice(video_boundary);
         if (audio_id == pending_layer->audio_track_id && active_audio != nullptr) {
+            const auto completed_video_id = pending_layer->video_track_id;
             output.commit_staged_video();
             output.layer_switch(
                 pending_layer->video_track_id, pending_layer->audio_track_id,
                 video_boundary, video_boundary);
             pending_layer.reset();
+            automatic_layers.switchCompleted(completed_video_id);
             return;
         }
         const auto candidate = audio.find(pending_layer->audio_track_id);
@@ -960,19 +967,27 @@ public:
         output.layer_switch(
             completed.video_track_id, completed.audio_track_id,
             video_boundary, *boundary);
+        automatic_layers.switchCompleted(completed.video_track_id);
     }
 
-    void push(const aribtlv::AccessUnit& unit) {
+    std::optional<tlvdemux::MseAutomaticLayerSwitchRequest> push(
+        const aribtlv::AccessUnit& unit) {
         if ((unit.codec == aribtlv::Codec::Hevc ||
              unit.codec == aribtlv::Codec::AacLatm) &&
-            (unit.pts.timescale <= 1 || unit.dts.timescale <= 1)) return;
+            (unit.pts.timescale <= 1 || unit.dts.timescale <= 1)) return std::nullopt;
+        const auto automatic = automatic_layers.observe(unit);
         if (unit.codec == aribtlv::Codec::Hevc) {
             if (video_id && unit.track_id == *video_id) {
                 push_selected_video(unit);
             } else {
                 video_history.push(unit);
             }
-            return;
+            if (!automatic) return std::nullopt;
+            return tlvdemux::MseAutomaticLayerSwitchRequest{
+                automatic->video_track_id,
+                automatic->audio_track_id,
+                automatic->earliest_presentation_time_us,
+            };
         }
         if (unit.codec == aribtlv::Codec::AacLatm) {
             auto [iterator, inserted] = audio.try_emplace(
@@ -989,6 +1004,7 @@ public:
                 complete_layer_switch();
             }
         }
+        return std::nullopt;
     }
 
     void flush() {
@@ -1008,6 +1024,7 @@ public:
         audio.clear();
         active_audio = nullptr;
         output.discard_staged_video();
+        automatic_layers.resetObservations();
         return cancelled;
     }
 
@@ -1017,6 +1034,7 @@ public:
         video_history.clear();
         for (auto& entry : audio) entry.second.discontinuity();
         output.discard_staged_video();
+        automatic_layers.resetObservations();
         return cancelled;
     }
 
@@ -1063,6 +1081,7 @@ public:
             pending.previous_audio_track_id,
             reason,
         };
+        automatic_layers.switchCancelled(cancelled.previous_video_track_id);
         sink.onMseLayerSwitchCancelled(cancelled);
         return cancelled;
     }
@@ -1071,6 +1090,7 @@ public:
     Output output;
     HevcMuxer video;
     VideoAccessUnitHistory video_history;
+    VideoLayerStateMachine automatic_layers;
     std::map<std::uint64_t, AacMuxer> audio;
     AacMuxer* active_audio = nullptr;
     MseOptions options;
@@ -1102,6 +1122,20 @@ bool tlvdemux::MseRemuxer::switchLayer(
         video_track_id, audio_track_id, earliest_presentation_time_us);
 }
 
+void tlvdemux::MseRemuxer::configureAutomaticLayerSwitch(
+    const MseAutomaticLayerPair pair) {
+    impl_->automatic_layers.configure(VideoLayerPair{
+        pair.preferred_video_track_id,
+        pair.preferred_audio_track_id,
+        pair.fallback_video_track_id,
+        pair.fallback_audio_track_id,
+    });
+}
+
+void tlvdemux::MseRemuxer::clearAutomaticLayerSwitch() {
+    impl_->automatic_layers.clearConfiguration();
+}
+
 void tlvdemux::MseRemuxer::setOutputEnabled(const bool enabled) {
     const bool was_enabled = impl_->enabled;
     impl_->enabled = enabled;
@@ -1111,7 +1145,8 @@ void tlvdemux::MseRemuxer::setOutputEnabled(const bool enabled) {
     }
 }
 
-void tlvdemux::MseRemuxer::push(const AccessUnit& unit) { impl_->push(unit); }
+std::optional<tlvdemux::MseAutomaticLayerSwitchRequest>
+tlvdemux::MseRemuxer::push(const AccessUnit& unit) { return impl_->push(unit); }
 void tlvdemux::MseRemuxer::flush() { impl_->flush(); }
 std::optional<tlvdemux::MseLayerSwitchCancelled>
 tlvdemux::MseRemuxer::endOfStream() { return impl_->end_of_stream(); }

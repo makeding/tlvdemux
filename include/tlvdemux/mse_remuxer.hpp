@@ -46,6 +46,19 @@ struct MseLayerSwitch {
     std::int64_t audio_presentation_time_us = 0;
 };
 
+struct MseAutomaticLayerPair {
+    std::uint64_t preferred_video_track_id = 0;
+    std::uint64_t preferred_audio_track_id = 0;
+    std::uint64_t fallback_video_track_id = 0;
+    std::uint64_t fallback_audio_track_id = 0;
+};
+
+struct MseAutomaticLayerSwitchRequest {
+    std::uint64_t video_track_id = 0;
+    std::uint64_t audio_track_id = 0;
+    std::int64_t earliest_presentation_time_us = 0;
+};
+
 enum class MseLayerSwitchCancelReason {
     EndOfInput,
     Reset,
@@ -105,8 +118,10 @@ public:
         std::uint64_t track_id, std::int64_t earliest_presentation_time_us);
     bool switchLayer(std::uint64_t video_track_id, std::uint64_t audio_track_id,
                      std::int64_t earliest_presentation_time_us);
+    void configureAutomaticLayerSwitch(MseAutomaticLayerPair pair);
+    void clearAutomaticLayerSwitch();
     void setOutputEnabled(bool enabled);
-    void push(const AccessUnit& unit);
+    std::optional<MseAutomaticLayerSwitchRequest> push(const AccessUnit& unit);
     void flush();
     std::optional<MseLayerSwitchCancelled> endOfStream();
     std::optional<MseLayerSwitchCancelled> reset();

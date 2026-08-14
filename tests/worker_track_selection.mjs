@@ -12,9 +12,14 @@ const context = {
 };
 context.globalThis = context;
 vm.runInNewContext(`${source}\n` +
-  'globalThis.__trackSelectionTest = {rememberSelection, reconcileMptSelection};', context);
+  'globalThis.__trackSelectionTest = {' +
+  'rememberSelection, rememberLayerSelection, reconcileMptSelection};', context);
 
-const {rememberSelection, reconcileMptSelection} = context.__trackSelectionTest;
+const {
+  rememberSelection,
+  rememberLayerSelection,
+  reconcileMptSelection,
+} = context.__trackSelectionTest;
 const group = (groupIdentification, selectionLevel) =>
   ({groupIdentification, selectionLevel});
 const track = (kind, trackId, packetId, componentTag, assetGroups) => ({
@@ -50,6 +55,15 @@ const record = {
 };
 rememberSelection(record, 'video', lowVideo);
 rememberSelection(record, 'audio', lowAudio, 0x10);
+
+record.tracks.set(highVideo.trackId, highVideo);
+record.tracks.set(highAudio.trackId, highAudio);
+rememberLayerSelection(record, highVideo.trackId, highAudio.trackId);
+assert.equal(record.selection.videoTrack, highVideo.trackId);
+assert.equal(record.selection.videoPacketId, highVideo.packetId);
+assert.equal(record.selection.audioTrack, highAudio.trackId);
+assert.equal(record.selection.audioPacketId, highAudio.packetId);
+rememberLayerSelection(record, lowVideo.trackId, lowAudio.trackId);
 
 reconcileMptSelection(record, {tracks: [lowVideo, reboundLowAudio]});
 assert.deepEqual(selections, [['audio', reboundLowAudio.trackId]]);

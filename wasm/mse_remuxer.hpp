@@ -29,8 +29,11 @@ public:
         std::uint64_t track_id, std::int64_t earliest_presentation_time_us);
     bool switchLayer(std::uint64_t video_track_id, std::uint64_t audio_track_id,
                      std::int64_t earliest_presentation_time_us);
+    void configureAutomaticLayerSwitch(tlvdemux::MseAutomaticLayerPair pair);
+    void clearAutomaticLayerSwitch();
     void setOutputEnabled(bool enabled);
-    void push(const aribtlv::AccessUnit& unit);
+    std::optional<tlvdemux::MseAutomaticLayerSwitchRequest> push(
+        const aribtlv::AccessUnit& unit);
     void flush();
     std::optional<tlvdemux::MseLayerSwitchCancelled> endOfStream();
     std::optional<tlvdemux::MseLayerSwitchCancelled> reset();

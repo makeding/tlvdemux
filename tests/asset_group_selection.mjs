@@ -1,16 +1,12 @@
 import assert from 'node:assert/strict';
 import {
-  automaticLayerSwitchEligible,
   audioSelectionIdentity,
   audioTrackChoices,
   correspondingAudioTrack,
   preferredSeekVideoRap,
-  qualityUpgradeReady,
-  restartVideoTrackQualityWindow,
   resolveAudioSelection,
   sameVideoLayerGroup,
   selectionLevel,
-  updateVideoTrackProgress,
 } from '../demo/asset-groups.mjs';
 
 const track = (packetId, groups, componentTag = packetId & 0xff) => ({
@@ -37,72 +33,6 @@ assert.equal(selectionLevel({}), null);
 assert.equal(sameVideoLayerGroup(videoBase, videoLow), true);
 assert.equal(sameVideoLayerGroup(videoHigh, videoLow), true);
 assert.equal(sameVideoLayerGroup(videoBase, {...videoBase, packetId: 0xf303}), false);
-const lag = 2000000n;
-assert.equal(automaticLayerSwitchEligible(videoHigh, 10000000n, videoLow, 12000001n, lag), true);
-assert.equal(automaticLayerSwitchEligible(videoHigh, 10000000n, videoLow, 12000000n, lag), false);
-assert.equal(automaticLayerSwitchEligible(videoLow, 10000000n, videoHigh, 8000000n, lag), true);
-assert.equal(automaticLayerSwitchEligible(
-  videoLow, 10000000n, videoHigh, 8000000n, lag, false), false);
-assert.equal(automaticLayerSwitchEligible(videoLow, 10000000n, videoHigh, 7999999n, lag), false);
-assert.equal(automaticLayerSwitchEligible(videoLow, 10000000n,
-  {...videoHigh, contextId: 2}, 10000000n, lag), false);
-
-let highProgress = updateVideoTrackProgress(
-  {}, 10000000n, 10000000n, true, false, 500000n,
-);
-highProgress = updateVideoTrackProgress(
-  highProgress, 11500000n, 11500000n, true, true, 500000n,
-);
-assert.equal(qualityUpgradeReady(highProgress, 11500000n, 500000n, 2000000n), false,
-  'a discontinuous high-quality layer was allowed to upgrade immediately');
-highProgress = updateVideoTrackProgress(
-  highProgress, 12000000n, 12000000n, true, false, 500000n,
-);
-highProgress = updateVideoTrackProgress(
-  highProgress, 12500000n, 12500000n, true, false, 500000n,
-);
-highProgress = updateVideoTrackProgress(
-  highProgress, 13000000n, 13000000n, true, false, 500000n,
-);
-highProgress = updateVideoTrackProgress(
-  highProgress, 13500000n, 13500000n, true, false, 500000n,
-);
-assert.equal(qualityUpgradeReady(highProgress, 13500000n, 500000n, 2000000n), true,
-  'a high-quality layer did not recover after two clean seconds');
-highProgress = restartVideoTrackQualityWindow(highProgress);
-assert.equal(qualityUpgradeReady(highProgress, 13500000n, 500000n, 2000000n), false,
-  'clean history from before a downgrade was reused as recovery evidence');
-highProgress = updateVideoTrackProgress(
-  highProgress, 14000000n, 14000000n, true, false, 500000n,
-);
-highProgress = updateVideoTrackProgress(
-  highProgress, 14500000n, 14500000n, true, false, 500000n,
-);
-highProgress = updateVideoTrackProgress(
-  highProgress, 15000000n, 15000000n, true, false, 500000n,
-);
-highProgress = updateVideoTrackProgress(
-  highProgress, 15500000n, 15500000n, true, false, 500000n,
-);
-assert.equal(qualityUpgradeReady(highProgress, 15500000n, 500000n, 2000000n), true,
-  'a reset high-quality layer did not recover from new clean data');
-highProgress = updateVideoTrackProgress(
-  highProgress, 15400000n, 15400000n, true, false, 500000n,
-);
-assert.equal(qualityUpgradeReady(highProgress, 15400000n, 500000n, 2000000n), false,
-  'a backwards decode timestamp did not reset high-quality recovery');
-
-let reorderedProgress = updateVideoTrackProgress(
-  {}, 10000000n, 9900000n, true, false, 500000n,
-);
-reorderedProgress = updateVideoTrackProgress(
-  reorderedProgress, 9800000n, 9933367n, false, false, 500000n,
-);
-assert.equal(reorderedProgress.lastPtsUs, 10000000n,
-  'normal B-frame presentation reordering moved the track frontier backwards');
-assert.equal(reorderedProgress.continuousSinceDtsUs, 9900000n,
-  'normal B-frame presentation reordering reset decode continuity');
-
 assert.equal(preferredSeekVideoRap([
   {track: videoHigh, rap: {ptsUs: 33000000n}},
   {track: videoLow, rap: {ptsUs: 33200000n}},

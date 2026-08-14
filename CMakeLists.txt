@@ -48,6 +48,7 @@ add_library(tlvdemux
     src/mse/latm_parser.cpp
     src/mse/mp4_builder.cpp
     src/mse/video_access_unit_history.cpp
+    src/mse/video_layer_state_machine.cpp
     wasm/mse_remuxer.cpp
     src/playback.cpp
 )
@@ -229,6 +230,20 @@ if(BUILD_TESTING)
             -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME tlvdemux-mse-remuxer-tests COMMAND tlvdemux-mse-remuxer-tests)
+
+    add_executable(tlvdemux-video-layer-state-tests
+        tests/video_layer_state_machine_tests.cpp)
+    target_link_libraries(tlvdemux-video-layer-state-tests PRIVATE tlvdemux::tlvdemux)
+    target_include_directories(tlvdemux-video-layer-state-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    if(MSVC)
+        target_compile_options(tlvdemux-video-layer-state-tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(tlvdemux-video-layer-state-tests PRIVATE
+            -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME tlvdemux-video-layer-state-tests
+             COMMAND tlvdemux-video-layer-state-tests)
 
     if(TLVDEMUX_BUILD_WASM_BINDINGS)
         find_program(NODE_EXECUTABLE node)

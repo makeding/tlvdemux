@@ -655,6 +655,24 @@ public:
         return true;
     }
 
+    void configureAutomaticLayerSwitch(
+        const std::uint64_t preferred_video_track_id,
+        const std::uint64_t preferred_audio_track_id,
+        const std::uint64_t fallback_video_track_id,
+        const std::uint64_t fallback_audio_track_id) {
+        if (!mse_enabled_) return;
+        mse_remuxer_.configureAutomaticLayerSwitch(tlvdemux::MseAutomaticLayerPair{
+            preferred_video_track_id,
+            preferred_audio_track_id,
+            fallback_video_track_id,
+            fallback_audio_track_id,
+        });
+    }
+
+    void clearAutomaticLayerSwitch() {
+        mse_remuxer_.clearAutomaticLayerSwitch();
+    }
+
     void setMseOutputEnabled(const bool enabled) {
         mse_remuxer_.setOutputEnabled(enabled);
     }
@@ -926,15 +944,20 @@ public:
 
     void onAccessUnit(aribtlv::AccessUnit&& unit) override {
         if (index_active_) recording_index_.observe(unit);
-        if (mse_enabled_) mse_remuxer_.push(unit);
+        if (mse_enabled_) {
+            const auto automatic = mse_remuxer_.push(unit);
+            if (automatic) {
+                switchLayer(automatic->video_track_id, automatic->audio_track_id,
+                            automatic->earliest_presentation_time_us);
+            }
+        }
         const bool valid_playback_timestamp =
             unit.codec == aribtlv::Codec::Ttml ||
             (unit.pts.timescale > 1 && unit.dts.timescale > 1);
         const bool playback_event = unit.codec == aribtlv::Codec::Ttml ||
             (unit.codec == aribtlv::Codec::Hevc &&
              (unit.random_access || unit.discontinuity)) ||
-            (unit.codec == aribtlv::Codec::AacLatm &&
-             (mse_enabled_ || unit.discontinuity));
+            (unit.codec == aribtlv::Codec::AacLatm && unit.discontinuity);
         if (has_callback("onPlaybackAccessUnitView") && playback_event &&
             valid_playback_timestamp) {
             const auto data = unit.codec == aribtlv::Codec::Ttml
@@ -1314,6 +1337,10 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("selectTrack", &WasmDemuxer::selectTrack)
         .function("switchAudioTrack", &WasmDemuxer::switchAudioTrack)
         .function("switchLayer", &WasmDemuxer::switchLayer)
+        .function("configureAutomaticLayerSwitch",
+                  &WasmDemuxer::configureAutomaticLayerSwitch)
+        .function("clearAutomaticLayerSwitch",
+                  &WasmDemuxer::clearAutomaticLayerSwitch)
         .function("setMseOutputEnabled", &WasmDemuxer::setMseOutputEnabled)
         .function("setSubtitlePassthroughEnabled", &WasmDemuxer::setSubtitlePassthroughEnabled)
         .function("drainApplicationResources", &WasmDemuxer::drainApplicationResources)

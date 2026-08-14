@@ -37,7 +37,7 @@ function transferAccessUnit(objectId, unit) {
   }));
   const value = { ...unit, data, subtitleResources: resources };
   const transfer = [data.buffer, ...resources.map(resource => resource.data.buffer)];
-  sendEvent(objectId, 'onAccessUnitView', value, transfer);
+  sendEvent(objectId, 'onPlaybackAccessUnitView', value, transfer);
 }
 
 function trackGroup(track, groupIdentification = null, selectionLevel = null) {
@@ -56,6 +56,20 @@ function rememberSelection(record, kind, track, groupIdentification = null) {
     groupIdentification: group?.groupIdentification ?? null,
     selectionLevel: group?.selectionLevel ?? null,
   };
+}
+
+function rememberLayerSelection(record, videoTrackId, audioTrackId) {
+  for (const [kind, trackId] of [
+    ['video', videoTrackId],
+    ['audio', audioTrackId],
+  ]) {
+    const track = trackId === 0n ? null : record.tracks.get(trackId);
+    if (track) rememberSelection(record, kind, track);
+    else {
+      record.selection[`${kind}Track`] = trackId === 0n ? null : trackId;
+      record.selection[`${kind}Identity`] = null;
+    }
+  }
 }
 
 function defaultTrack(tracks, kind, targetLevel, maxAudioChannels) {
@@ -183,19 +197,13 @@ function createDemuxer(module, objectId, options) {
     onMseVideoStart: event('onMseVideoStart'),
     onMseVideoSplice: event('onMseVideoSplice'),
     onMseAudioSplice: event('onMseAudioSplice'),
-    onMseLayerSwitch: event('onMseLayerSwitch'),
+    onMseLayerSwitch(layer) {
+      rememberLayerSelection(record, layer.videoTrackId, layer.audioTrackId);
+      sendEvent(objectId, 'onMseLayerSwitch', layer);
+    },
     onMseLayerSwitchCancelled(cancelled) {
-      for (const [kind, trackId] of [
-        ['video', cancelled.previousVideoTrackId],
-        ['audio', cancelled.previousAudioTrackId],
-      ]) {
-        const track = trackId === 0n ? null : record.tracks.get(trackId);
-        if (track) rememberSelection(record, kind, track);
-        else {
-          record.selection[`${kind}Track`] = trackId === 0n ? null : trackId;
-          record.selection[`${kind}Identity`] = null;
-        }
-      }
+      rememberLayerSelection(
+        record, cancelled.previousVideoTrackId, cancelled.previousAudioTrackId);
       sendEvent(objectId, 'onMseLayerSwitchCancelled', cancelled);
     },
     onMseInit(init) {
