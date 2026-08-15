@@ -175,7 +175,7 @@ inline double prototype_sdr_chroma_luma_recovery(
     const double saturation = maximum > 0.0 ? (maximum - minimum) / maximum : 0.0;
     const double ratio = clamp01((saturation - 0.25) / 0.40);
     const double chroma_weight = ratio * ratio * (3.0 - 2.0 * ratio);
-    return calibrated_luma + 0.40 * chroma_weight *
+    return calibrated_luma + 0.50 * chroma_weight *
         (original_luma - calibrated_luma);
 }
 
