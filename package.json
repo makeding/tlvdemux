@@ -1,6 +1,6 @@
 {
   "name": "tlvdemux",
-  "version": "0.2.2-rc2",
+  "version": "0.2.2-rc3",
   "description": "ARIB MMT/TLV demultiplexer for browsers, workers, and Node.js",
   "license": "MIT",
   "author": {
@@ -66,7 +66,7 @@
     "access": "public"
   },
   "scripts": {
-    "build:wasm": "emcmake cmake -S . -B build-wasm -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF -DTLVDEMUX_BUILD_TOOLS=OFF -DTLVDEMUX_USE_SYSTEM_LIBARIBTLV=OFF -DTLVDEMUX_LIBARIBTLV_SOURCE_DIR= && cmake --build build-wasm --target tlvdemux-wasm",
+    "build:wasm": "sh scripts/build-wasm.sh",
     "build:package": "cmake -E make_directory dist && cmake -E copy_if_different build-wasm/tlvdemux.js dist/tlvdemux.js",
     "build": "npm run build:wasm && npm run build:package",
     "benchmark:wasm": "node tests/wasm_benchmark.mjs",
