@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(tlvdemux VERSION 0.2.1 LANGUAGES CXX)
+project(tlvdemux VERSION 0.2.2 LANGUAGES CXX)
+
+set(TLVDEMUX_RELEASE_VERSION "0.2.2-rc1")
 
 include(CTest)
 include(GNUInstallDirs)
@@ -120,7 +122,7 @@ if(TLVDEMUX_BUILD_TOOLS)
     )
     target_link_libraries(tlvdemux-cli PRIVATE tlvdemux::tlvdemux)
     target_compile_definitions(tlvdemux-cli PRIVATE
-        TLVDEMUX_VERSION="${PROJECT_VERSION}")
+        TLVDEMUX_VERSION="${TLVDEMUX_RELEASE_VERSION}")
     set_target_properties(tlvdemux-cli PROPERTIES OUTPUT_NAME tlvdemux)
     add_executable(tlvdemux-cocktail tools/tlvdemux-cocktail.cpp)
     target_link_libraries(tlvdemux-cocktail PRIVATE tlvdemux::tlvdemux)

@@ -5,6 +5,17 @@
 > labelled **legacy `tlvdemux` implementation**; this is a historical name,
 > not a separate product line.
 
+## [0.2.2-rc1] - 2026-08-15
+
+Commit range: `1adff6b..HEAD`
+
+- Add HLG-SDR video signalling control, including live stream property updates
+  and SDR reinterpretation that preserves BT.2020 primaries and matrix.
+- Add C++/WASM HLG-SDR tone-mapping LUTs and a WebGPU luminance-only renderer
+  for correcting SDR content carried in HLG without independently boosting RGB
+  channels.
+- Add native, WASM, and sample-based regression coverage for the colour path.
+
 ## [0.2.1] - 2026-08-15
 
 Commit range: `e960417..1adff6b`
