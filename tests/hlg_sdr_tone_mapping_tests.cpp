@@ -162,8 +162,12 @@ int main() {
     const double saturated_recovery =
         tlvdemux::detail::prototype_sdr_chroma_luma_recovery(
             {0.8, 0.3, 0.1}, 0.5, 0.25);
+    const double highlight_recovery =
+        tlvdemux::detail::prototype_sdr_chroma_luma_recovery(
+            {1.0, 0.8, 0.2}, 0.95, 0.70);
     check(std::abs(neutral_recovery - 0.25) < 1e-12 &&
-              std::abs(saturated_recovery - 0.375) < 1e-12,
+              std::abs(saturated_recovery - 0.375) < 1e-12 &&
+              highlight_recovery > 0.89 && highlight_recovery < 0.91,
           "prototype chroma luma recovery changed neutral pixels or missed saturated pixels");
     const auto prototype_black =
         tlvdemux::detail::map_hlg_sdr_prototype_rgb({0.0, 0.0, 0.0});
