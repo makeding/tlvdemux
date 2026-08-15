@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { resolve } from 'node:path';
 
-const modulePath = process.argv[2] || '../build-wasm/tlvdemux.js';
-const createModule = (await import(modulePath)).default;
+const modulePath = resolve(process.argv[2] || '../build-wasm/tlvdemux.js');
+const createModule = createRequire(import.meta.url)(modulePath);
 const module = await createModule();
 const demuxer = new module.TlvDemuxer({});
 const lut = demuxer.hlgSdrToneMappingLut();

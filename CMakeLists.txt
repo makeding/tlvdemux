@@ -124,6 +124,9 @@ if(TLVDEMUX_BUILD_TOOLS)
     set_target_properties(tlvdemux-cli PROPERTIES OUTPUT_NAME tlvdemux)
     add_executable(tlvdemux-cocktail tools/tlvdemux-cocktail.cpp)
     target_link_libraries(tlvdemux-cocktail PRIVATE tlvdemux::tlvdemux)
+    add_executable(tlvdemux-hlg-sdr-compare
+        tools/hlg_sdr_tone_mapping_compare.cpp)
+    target_link_libraries(tlvdemux-hlg-sdr-compare PRIVATE tlvdemux::tlvdemux)
     if(APPLE)
         enable_language(OBJCXX)
         add_executable(tlvdemux-videotoolbox-probe
@@ -149,11 +152,14 @@ if(TLVDEMUX_BUILD_TOOLS)
     if(MSVC)
         target_compile_options(tlvdemux-cli PRIVATE /W4 /permissive-)
         target_compile_options(tlvdemux-cocktail PRIVATE /W4 /permissive-)
+        target_compile_options(tlvdemux-hlg-sdr-compare PRIVATE /W4 /permissive-)
     else()
         target_compile_options(tlvdemux-cli PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(tlvdemux-cocktail PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(tlvdemux-hlg-sdr-compare PRIVATE
+            -Wall -Wextra -Wpedantic)
     endif()
-    install(TARGETS tlvdemux-cli
+    install(TARGETS tlvdemux-cli tlvdemux-hlg-sdr-compare
             RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 

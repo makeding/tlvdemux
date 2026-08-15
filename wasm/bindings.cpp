@@ -1179,8 +1179,11 @@ private:
         }
         const bool programme_is_hdr = current_video_presentation_hint_.has_value() &&
             *current_video_presentation_hint_ == aribtlv::VideoPresentationHint::Hdr;
-        const bool sdr_in_hlg = !programme_is_hdr &&
-            explicit_sdr_video_track_ids_.count(track_id) != 0;
+        // HLG is the transport signalling here, not proof that the programme
+        // is HDR. In auto mode, only an explicit HDR EIT indication keeps the
+        // original HLG metadata. The decision is reevaluated when the current
+        // EIT programme changes, so a later HDR programme returns to HLG.
+        const bool sdr_in_hlg = !programme_is_hdr;
         mse_remuxer_.setSdrInHlg(track_id, sdr_in_hlg);
     }
 
