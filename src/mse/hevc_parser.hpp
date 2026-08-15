@@ -24,10 +24,17 @@ struct HevcConfiguration {
     std::optional<ColorInformation> color;
 };
 
+enum class HevcColorPolicy {
+    Preserve,
+    SdrInHlg,
+    HlgSdrPrototype,
+};
+
 std::vector<NaluView> annex_b_views(const Bytes& data);
 Bytes copy_nalu(const Bytes& data, const NaluView& view);
 HevcConfiguration hevc_configuration(const Bytes& vps, const Bytes& sps,
                                      const Bytes& pps,
-                                     bool sdr_in_hlg = false);
+                                     HevcColorPolicy color_policy =
+                                         HevcColorPolicy::Preserve);
 
 } // namespace tlvdemux::detail::mse

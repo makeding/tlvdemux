@@ -1431,6 +1431,29 @@ void test_sdr_in_hlg_rewrites_video_colour_signalling() {
           "SDR-in-HLG video did not remove HLG transfer signalling");
 }
 
+void test_hlg_sdr_prototype_emits_internal_carrier_signalling() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.setHlgSdrPrototype(2, true);
+    remuxer.push(hevc_unit_with_transfer(2, 0, 0, true, true, 18));
+    remuxer.flush();
+
+    check(sink.inits.size() == 1,
+          "HLG-SDR prototype did not emit exactly one init segment");
+    check(video_color_information(sink.inits.front().data) ==
+              ParsedColorInformation{1, 13, 9, false},
+          "HLG-SDR prototype did not emit the 1/13/9 carrier");
+    check(sink.video_properties.size() == 1 &&
+              sink.video_properties.front().source_color ==
+                  tlvdemux::MseVideoColor{9, 18, 9, false} &&
+              sink.video_properties.front().output_color ==
+                  tlvdemux::MseVideoColor{1, 13, 9, false} &&
+              sink.video_properties.front().hlg_sdr_prototype &&
+              !sink.video_properties.front().sdr_in_hlg,
+          "HLG-SDR prototype did not expose source and carrier state");
+}
+
 void test_sdr_in_hlg_policy_change_reconfigures_at_next_rap() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
@@ -1490,6 +1513,7 @@ int main() {
     test_multiplexed_output_has_two_tracks_and_global_sequences();
     test_video_only_output_does_not_wait_for_audio();
     test_sdr_in_hlg_rewrites_video_colour_signalling();
+    test_hlg_sdr_prototype_emits_internal_carrier_signalling();
     test_sdr_in_hlg_policy_change_reconfigures_at_next_rap();
     test_audio_drops_non_advancing_dts();
     test_audio_forward_gap_keeps_decoder_timeline_contiguous();

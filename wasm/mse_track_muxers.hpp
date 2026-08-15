@@ -396,11 +396,22 @@ public:
 
     bool started() const noexcept { return started_; }
     void set_sdr_in_hlg(const std::uint64_t track_id, const bool enabled) {
-        const bool was_enabled = sdr_in_hlg_tracks_.count(track_id) != 0;
-        if (enabled == was_enabled) return;
+        const auto previous = color_policy(track_id);
         if (enabled) sdr_in_hlg_tracks_.insert(track_id);
         else sdr_in_hlg_tracks_.erase(track_id);
-        if (track_ && input_track_id_.has_value() && *input_track_id_ == track_id) {
+        if (enabled) hlg_sdr_prototype_tracks_.erase(track_id);
+        if (previous != color_policy(track_id) && track_ &&
+            input_track_id_.has_value() && *input_track_id_ == track_id) {
+            configuration_policy_dirty_ = true;
+        }
+    }
+    void set_hlg_sdr_prototype(const std::uint64_t track_id, const bool enabled) {
+        const auto previous = color_policy(track_id);
+        if (enabled) hlg_sdr_prototype_tracks_.insert(track_id);
+        else hlg_sdr_prototype_tracks_.erase(track_id);
+        if (enabled) sdr_in_hlg_tracks_.erase(track_id);
+        if (previous != color_policy(track_id) && track_ &&
+            input_track_id_.has_value() && *input_track_id_ == track_id) {
             configuration_policy_dirty_ = true;
         }
     }
@@ -441,7 +452,10 @@ public:
         stage_next_switch_ = false;
         configuration_policy_dirty_ = false;
         current_video_properties_.reset();
-        if (clear_policy) sdr_in_hlg_tracks_.clear();
+        if (clear_policy) {
+            sdr_in_hlg_tracks_.clear();
+            hlg_sdr_prototype_tracks_.clear();
+        }
     }
 
     void push(const aribtlv::AccessUnit& unit, const bool output_enabled) {
@@ -479,7 +493,7 @@ public:
             parameter_sets_.count(34) != 0) {
             const auto config = hevc_configuration(
                 parameter_sets_[32], parameter_sets_[33], parameter_sets_[34],
-                sdr_in_hlg_tracks_.count(unit.track_id) != 0);
+                color_policy(unit.track_id));
             auto candidate = video_track(config, unit);
             const auto properties = video_properties(config, unit);
             if (!track_) {
@@ -611,6 +625,16 @@ public:
     }
 
 private:
+    HevcColorPolicy color_policy(const std::uint64_t track_id) const noexcept {
+        if (hlg_sdr_prototype_tracks_.count(track_id) != 0) {
+            return HevcColorPolicy::HlgSdrPrototype;
+        }
+        if (sdr_in_hlg_tracks_.count(track_id) != 0) {
+            return HevcColorPolicy::SdrInHlg;
+        }
+        return HevcColorPolicy::Preserve;
+    }
+
     static tlvdemux::MseVideoColor video_color(const ColorInformation& color) {
         return {color.primaries, color.transfer, color.matrix, color.full_range};
     }
@@ -628,7 +652,11 @@ private:
         if (config.color) properties.output_color = video_color(*config.color);
         properties.sdr_in_hlg = config.source_color.has_value() &&
             config.color.has_value() && config.source_color->transfer == 18 &&
-            config.color->transfer == 1;
+            *config.color == ColorInformation{9, 1, 9, false};
+        properties.hlg_sdr_prototype = config.source_color.has_value() &&
+            config.color.has_value() &&
+            *config.source_color == ColorInformation{9, 18, 9, false} &&
+            *config.color == ColorInformation{1, 13, 9, false};
         return properties;
     }
 
@@ -641,7 +669,9 @@ private:
             current_video_properties_->codec != properties.codec ||
             current_video_properties_->source_color != properties.source_color ||
             current_video_properties_->output_color != properties.output_color ||
-            current_video_properties_->sdr_in_hlg != properties.sdr_in_hlg;
+            current_video_properties_->sdr_in_hlg != properties.sdr_in_hlg ||
+            current_video_properties_->hlg_sdr_prototype !=
+                properties.hlg_sdr_prototype;
     }
 
     void emit_video_properties(const tlvdemux::MseVideoProperties& properties) {
@@ -689,6 +719,7 @@ private:
     Output& output_;
     std::map<int, Bytes> parameter_sets_;
     std::set<std::uint64_t> sdr_in_hlg_tracks_;
+    std::set<std::uint64_t> hlg_sdr_prototype_tracks_;
     std::optional<tlvdemux::MseVideoProperties> current_video_properties_;
     bool started_ = false;
     bool no_rasl_output_ = false;

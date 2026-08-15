@@ -177,6 +177,7 @@ class WorkerDemuxer extends WorkerObject {
   }
   hlgSdrToneMappingLut() { return this.call('hlgSdrToneMappingLut'); }
   hlgSdrColorLut() { return this.call('hlgSdrColorLut'); }
+  hlgSdrPrototypeColorLut() { return this.call('hlgSdrPrototypeColorLut'); }
   setMseOutputEnabled(enabled) { return this.call('setMseOutputEnabled', [enabled]); }
   setSubtitlePassthroughEnabled(enabled) {
     return this.call('setSubtitlePassthroughEnabled', [enabled]);

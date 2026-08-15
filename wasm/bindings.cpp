@@ -53,6 +53,16 @@ val hlg_sdr_color_lut_value() {
     return result;
 }
 
+val hlg_sdr_prototype_color_lut_value() {
+    const auto lut = tlvdemux::hlg_sdr_prototype_color_lut();
+    auto result = val::object();
+    result.set("size", lut.size);
+    result.set("width", lut.width);
+    result.set("height", lut.height);
+    result.set("data", copy_bytes(lut.rgba));
+    return result;
+}
+
 val view_bytes(const std::vector<std::uint8_t>& source) {
     if (source.empty()) return val::global("Uint8Array").new_(0);
     return val(emscripten::typed_memory_view(source.size(), source.data()));
@@ -719,7 +729,8 @@ public:
     }
 
     void setMseToneMappingMode(const std::string& mode) {
-        if (mode != "auto" && mode != "force" && mode != "on_compare" && mode != "off") {
+        if (mode != "auto" && mode != "force" && mode != "on_compare" &&
+            mode != "prototype" && mode != "off") {
             throw std::invalid_argument("invalid MSE tone mapping mode");
         }
         tone_mapping_mode_ = mode;
@@ -732,6 +743,10 @@ public:
 
     val hlgSdrColorLut() const {
         return hlg_sdr_color_lut_value();
+    }
+
+    val hlgSdrPrototypeColorLut() const {
+        return hlg_sdr_prototype_color_lut_value();
     }
 
     void setMseOutputEnabled(const bool enabled) {
@@ -1183,6 +1198,12 @@ public:
 
 private:
     void apply_video_presentation_policy(const std::uint64_t track_id) {
+        if (tone_mapping_mode_ == "prototype") {
+            mse_remuxer_.setSdrInHlg(track_id, false);
+            mse_remuxer_.setHlgSdrPrototype(track_id, true);
+            return;
+        }
+        mse_remuxer_.setHlgSdrPrototype(track_id, false);
         if (tone_mapping_mode_ == "force" || tone_mapping_mode_ == "on_compare") {
             mse_remuxer_.setSdrInHlg(track_id, true);
             return;
@@ -1485,6 +1506,7 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("setMseToneMappingMode", &WasmDemuxer::setMseToneMappingMode)
         .function("hlgSdrToneMappingLut", &WasmDemuxer::hlgSdrToneMappingLut)
         .function("hlgSdrColorLut", &WasmDemuxer::hlgSdrColorLut)
+        .function("hlgSdrPrototypeColorLut", &WasmDemuxer::hlgSdrPrototypeColorLut)
         .function("setMseOutputEnabled", &WasmDemuxer::setMseOutputEnabled)
         .function("setSubtitlePassthroughEnabled", &WasmDemuxer::setSubtitlePassthroughEnabled)
         .function("drainApplicationResources", &WasmDemuxer::drainApplicationResources)

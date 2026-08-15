@@ -152,6 +152,7 @@ public:
         event.set("sourceColor", video_color_value(properties.source_color));
         event.set("outputColor", video_color_value(properties.output_color));
         event.set("sdrInHlg", properties.sdr_in_hlg);
+        event.set("hlgSdrPrototype", properties.hlg_sdr_prototype);
         emit("onMseVideoProperties", event);
     }
 
@@ -226,6 +227,11 @@ void WasmMseRemuxer::clearAutomaticLayerSwitch() {
 void WasmMseRemuxer::setSdrInHlg(
     const std::uint64_t video_track_id, const bool enabled) {
     impl_->remuxer().setSdrInHlg(video_track_id, enabled);
+}
+
+void WasmMseRemuxer::setHlgSdrPrototype(
+    const std::uint64_t video_track_id, const bool enabled) {
+    impl_->remuxer().setHlgSdrPrototype(video_track_id, enabled);
 }
 
 void WasmMseRemuxer::setOutputEnabled(const bool enabled) {

@@ -7,7 +7,7 @@ declare function createTlvDemuxModule(
 declare namespace createTlvDemuxModule {
   type TrackKind = "video" | "audio" | "subtitle";
   type Codec = "hevc" | "aac-latm" | "ttml";
-  type MseToneMappingMode = "auto" | "force" | "on_compare" | "off";
+  type MseToneMappingMode = "auto" | "force" | "on_compare" | "prototype" | "off";
 
   interface HlgSdrColorLut {
     /** Number of samples on each RGB axis. */
@@ -577,6 +577,7 @@ declare namespace createTlvDemuxModule {
     sourceColor: MseVideoColor | null;
     outputColor: MseVideoColor | null;
     sdrInHlg: boolean;
+    hlgSdrPrototype: boolean;
   }
 
   interface PlaybackDamage {
@@ -669,6 +670,8 @@ declare namespace createTlvDemuxModule {
     hlgSdrToneMappingLut(): Uint8Array;
     /** Return the canonical C++ HLG-SDR packed RGB 3D LUT. */
     hlgSdrColorLut(): HlgSdrColorLut;
+    /** Return the experimental controlled HLG-to-SDR packed RGB 3D LUT. */
+    hlgSdrPrototypeColorLut(): HlgSdrColorLut;
     drainApplicationResources(maxEvents: number): boolean;
     startIndex(growing: boolean): void;
     finalizeIndex(): boolean;

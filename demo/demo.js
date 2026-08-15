@@ -117,6 +117,8 @@ let knownVideoTracks = new Map();
 let currentVideoPresentationHint = null;
 let currentVideoProperties = null;
 let currentToneMappingMode = 'on_compare';
+let currentHlgSdrLut = null;
+let prototypeHlgSdrLut = null;
 let knownAudioTracks = new Map();
 let selectedSubtitlePacketId = null;
 let preferredSubtitlePacketId = null;
@@ -300,14 +302,21 @@ function updateVideoColorStatus() {
   const outputTransfer = currentVideoProperties.outputColor?.transfer;
   let label = '色彩情報なし';
   let state = 'unknown';
-  if (currentVideoProperties.sdrInHlg || (sourceTransfer === 18 && outputTransfer === 1)) {
+  if (currentVideoProperties.hlgSdrPrototype) {
+    label = 'HLG-SDR 原型';
+    state = 'hlg-sdr';
+  } else if (currentVideoProperties.sdrInHlg ||
+             (sourceTransfer === 18 && outputTransfer === 1)) {
     label = 'HLG-SDR';
     state = 'hlg-sdr';
   } else if (sourceTransfer === 16) {
     label = 'HDR · PQ';
     state = 'hdr';
   } else if (sourceTransfer === 18) {
-    if (isForcedToneMapping(effectiveMode)) {
+    if (effectiveMode === 'prototype') {
+      label = 'HLG-SDR 原型（適用待ち）';
+      state = 'hlg-sdr';
+    } else if (isForcedToneMapping(effectiveMode)) {
       label = 'HLG-SDR（適用待ち）';
       state = 'hlg-sdr';
     } else {
@@ -322,19 +331,23 @@ function updateVideoColorStatus() {
   elements.videoColor.dataset.state = state;
   const sourceIsHlg = sourceTransfer === 18;
   const applyLut = sourceIsHlg && effectiveMode !== 'off' &&
-    (isForcedToneMapping(effectiveMode) || currentVideoProperties.sdrInHlg);
+    (currentVideoProperties.hlgSdrPrototype ||
+     isForcedToneMapping(effectiveMode) || currentVideoProperties.sdrInHlg);
   setHlgSdrEnabled(applyLut);
 }
 
 function toneMappingModeLabel(mode) {
   if (mode === 'force') return '強制 SDR 解釈';
   if (mode === 'on_compare') return '強制比較（左: 未補正 / 右: 補正）';
+  if (mode === 'prototype') return '受控 HLG→SDR 原型';
   return mode === 'off' ? '無効（原信号）' : '自動';
 }
 
 async function applyToneMappingMode(mode, announce = true) {
-  if (!['auto', 'force', 'on_compare', 'off'].includes(mode)) return;
+  if (!['auto', 'force', 'on_compare', 'prototype', 'off'].includes(mode)) return;
   currentToneMappingMode = mode;
+  const lut = mode === 'prototype' ? prototypeHlgSdrLut : currentHlgSdrLut;
+  if (lut) setHlgSdrLut(lut);
   if (activeDemuxer) await activeDemuxer.setMseToneMappingMode(effectiveToneMappingMode(mode));
   updateVideoColorStatus();
   if (announce) {
@@ -1385,7 +1398,11 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       }
     },
   });
-  setHlgSdrLut(await demuxer.hlgSdrColorLut());
+  [currentHlgSdrLut, prototypeHlgSdrLut] = await Promise.all([
+    demuxer.hlgSdrColorLut(), demuxer.hlgSdrPrototypeColorLut(),
+  ]);
+  setHlgSdrLut(currentToneMappingMode === 'prototype'
+    ? prototypeHlgSdrLut : currentHlgSdrLut);
   await demuxer.configureTrackSelection({
     videoPacketId: initialVideoPacketId,
     audioPacketId: preferredAudioPacketId,

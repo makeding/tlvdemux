@@ -32,6 +32,7 @@ public:
     void configureAutomaticLayerSwitch(tlvdemux::MseAutomaticLayerPair pair);
     void clearAutomaticLayerSwitch();
     void setSdrInHlg(std::uint64_t video_track_id, bool enabled);
+    void setHlgSdrPrototype(std::uint64_t video_track_id, bool enabled);
     void setOutputEnabled(bool enabled);
     std::optional<tlvdemux::MseAutomaticLayerSwitchRequest> push(
         const aribtlv::AccessUnit& unit);

@@ -121,5 +121,40 @@ int main() {
     }
     check(maximum_error <= 3.0 / 255.0,
           "3D LUT interpolation error exceeds three 8-bit levels");
+
+    const auto prototype_black =
+        tlvdemux::detail::map_hlg_sdr_prototype_rgb({0.0, 0.0, 0.0});
+    check(prototype_black.red == 0.0 && prototype_black.green == 0.0 &&
+              prototype_black.blue == 0.0,
+          "prototype mapper changed black");
+    const auto prototype_mid =
+        tlvdemux::detail::map_hlg_sdr_prototype_rgb({0.5, 0.5, 0.5});
+    check(prototype_mid.red > 0.65 && prototype_mid.red < 0.73 &&
+              std::abs(prototype_mid.red - prototype_mid.green) < 0.0001 &&
+              std::abs(prototype_mid.green - prototype_mid.blue) < 0.0001,
+          "prototype mapper does not preserve the Method C mid-grey anchor");
+    const auto prototype_reference =
+        tlvdemux::detail::map_hlg_sdr_prototype_rgb({0.75, 0.75, 0.75});
+    check(prototype_reference.red > 0.93 && prototype_reference.red < 0.99 &&
+              std::abs(prototype_reference.red - prototype_reference.green) < 0.0001 &&
+              std::abs(prototype_reference.green - prototype_reference.blue) < 0.0001,
+          "prototype mapper does not preserve HLG reference white");
+    const auto prototype_white =
+        tlvdemux::detail::map_hlg_sdr_prototype_rgb({1.0, 1.0, 1.0});
+    check(prototype_white.red > 0.995 && prototype_white.green > 0.995 &&
+              prototype_white.blue > 0.995,
+          "prototype mapper does not fit peak white into the browser canvas");
+
+    const auto prototype_lut = tlvdemux::hlg_sdr_prototype_color_lut();
+    check(prototype_lut.size == tlvdemux::kHlgSdrColorLutSize &&
+              prototype_lut.rgba.size() ==
+                  prototype_lut.width * prototype_lut.height * 4U,
+          "prototype 3D LUT layout is invalid");
+    const auto prototype_mid_lut = sample_lut(
+        prototype_lut, {0.5, 0.5, 0.5});
+    check(std::abs(prototype_mid_lut.red - prototype_mid.red) <= 4.0 / 255.0 &&
+              std::abs(prototype_mid_lut.green - prototype_mid.green) <= 4.0 / 255.0 &&
+              std::abs(prototype_mid_lut.blue - prototype_mid.blue) <= 4.0 / 255.0,
+          "prototype LUT interpolation changed its mid-grey output");
     std::cout << "HLG-SDR C++ tone mapping tests passed\n";
 }

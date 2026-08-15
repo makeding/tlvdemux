@@ -285,7 +285,7 @@ Bytes escape_rbsp(const Bytes& data) {
     return output;
 }
 
-Bytes sdr_interpreted_sps(const Bytes& sps) {
+Bytes rewritten_color_sps(const Bytes& sps, const HevcColorPolicy policy) {
     if (sps.size() < 2) return sps;
     const auto original = parse_sps(sps);
     if (!original.color || !original.color_offset ||
@@ -293,11 +293,19 @@ Bytes sdr_interpreted_sps(const Bytes& sps) {
         return sps;
     }
     auto data = rbsp(sps);
-    // Remove only the HLG transfer declaration. The primaries and matrix are
-    // properties of the coded BT.2020 YUV and must remain unchanged; changing
-    // the matrix here changes YUV-to-RGB colours rather than just disabling
-    // the browser's HDR path.
-    write_bits(data, *original.color_offset + 8U, 8, 1);
+    if (policy == HevcColorPolicy::SdrInHlg) {
+        // Remove only the HLG transfer declaration. The primaries and matrix
+        // remain properties of the coded BT.2020 YUV.
+        write_bits(data, *original.color_offset + 8U, 8, 1);
+    } else if (policy == HevcColorPolicy::HlgSdrPrototype) {
+        // Internal GPU carrier: keep the BT.2020-NCL matrix that reconstructs
+        // the coded RGB' values, but advertise matching sRGB primaries and
+        // transfer so external-texture sampling does not pre-tone-map HLG.
+        write_bits(data, *original.color_offset, 8, 1);
+        write_bits(data, *original.color_offset + 8U, 8, 13);
+    } else {
+        return sps;
+    }
     Bytes output{sps.begin(), sps.begin() + 2};
     const Bytes payload(data.begin() + 2, data.end());
     append(output, escape_rbsp(payload));
@@ -370,9 +378,10 @@ Bytes copy_nalu(const Bytes& data, const NaluView& view) {
 }
 
 HevcConfiguration hevc_configuration(const Bytes& vps, const Bytes& sps,
-                                     const Bytes& pps, const bool sdr_in_hlg) {
+                                     const Bytes& pps,
+                                     const HevcColorPolicy color_policy) {
     const auto source_info = parse_sps(sps);
-    const auto effective_sps = sdr_in_hlg ? sdr_interpreted_sps(sps) : sps;
+    const auto effective_sps = rewritten_color_sps(sps, color_policy);
     const auto info = parse_sps(effective_sps);
     return {info.width, info.height, info.codec,
             make_hvcc(vps, effective_sps, pps, info),

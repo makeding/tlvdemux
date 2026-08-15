@@ -98,6 +98,7 @@ struct MseVideoProperties {
     std::optional<MseVideoColor> source_color;
     std::optional<MseVideoColor> output_color;
     bool sdr_in_hlg = false;
+    bool hlg_sdr_prototype = false;
 };
 
 enum class MseOutputMode {
@@ -145,6 +146,8 @@ public:
     void clearAutomaticLayerSwitch();
     // Reinterpret an explicitly identified HLG video track as UHD SDR.
     void setSdrInHlg(std::uint64_t video_track_id, bool enabled);
+    // Experimental 1/13/9 carrier for a controlled GPU HLG-to-SDR transform.
+    void setHlgSdrPrototype(std::uint64_t video_track_id, bool enabled);
     void setOutputEnabled(bool enabled);
     std::optional<MseAutomaticLayerSwitchRequest> push(const AccessUnit& unit);
     void observeDamage(const aribtlv::DamageSpan& damage);
