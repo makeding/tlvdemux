@@ -39,17 +39,32 @@ SPS is HLG. The maintained `libaribtlv` API therefore exposes the positive
 MH-EIT HDR programme icon as `VideoPresentationHint::Hdr`; absence is
 `Unknown`, not a negative HDR assertion. The browser demo uses the current
 present-event hint as a positive signal: a positive HDR hint preserves native
-HLG, while an unknown programme leaves the source untouched. An explicit B60
-video transfer value of `3` (UHD SDR) may enable the SDR-in-HLG rewrite when
-the coded SPS nevertheless declares HLG. Absence of both signals is not a
-negative HDR assertion.
+HLG, while an unknown programme leaves the source untouched in `auto` mode. An
+explicit B60 video transfer value of `3` (UHD SDR) may enable the SDR-in-HLG
+rewrite when the coded SPS nevertheless declares HLG. Absence of both signals
+is not a negative HDR assertion.
+
+This is a signalling reinterpretation, not a pixel tone-mapping algorithm.
+The practical case is SDR programme material carried with an HLG transfer
+declaration: changing the effective transfer declaration from HLG (`18`) to
+UHD SDR (`14`) lets the browser apply the SDR display curve. A true tone mapper
+would need to process decoded pixels through HLG inverse OETF, display mapping,
+and gamut conversion; MSE metadata cannot perform that operation.
+
+The demo exposes three policies:
+
+| Policy | Behaviour |
+| --- | --- |
+| `auto` | Use structured programme hints and explicit B60 SDR metadata; otherwise preserve HLG. |
+| `force` | Request HLG-to-SDR signalling reinterpretation for each HLG SPS. This is user-controlled and is not a definitive SDR classification. |
+| `off` | Preserve source signalling and let the browser handle HLG/HDR. |
 
 ## Ownership and precedence
 
 | Layer | Responsibility | Must not do |
 | --- | --- | --- |
 | `libaribtlv` | Parse B60 `0x800A` and `0x8010`; expose their colour-relevant fields on `TrackInfo.video` | Parse codec SPS bytes or invent missing CICP values |
-| `tlvdemux` HEVC parser | Parse the active SPS VUI, including range, primaries, transfer, and matrix; rewrite only an explicitly selected SDR-in-HLG SPS for browser MSE | Infer colour from resolution, bit depth, or absent metadata |
+| `tlvdemux` HEVC parser | Parse the active SPS VUI, including range, primaries, transfer, and matrix; rewrite an HLG SPS only when the selected policy requests it | Infer colour from resolution, bit depth, or absent metadata |
 | `tlvdemux` MP4 builder | Serialize the SPS-derived tuple as `colr`/`nclx` beside `hvcC` | Emit a partially guessed `nclx` tuple |
 | Browser | Interpret the MP4 sample entry and render to the output display | Recover omitted source signalling reliably |
 
@@ -97,7 +112,8 @@ and HLG again; consumers must replace their current state rather than cache a
 file-wide HDR boolean. A changed SPS without a corresponding metadata change
 still updates this state from the coded stream. If neither SPS signalling nor
 the structured programme metadata changes, the content cannot be classified
-reliably from the byte stream alone.
+reliably from the byte stream alone. That limitation is why `force` is exposed
+as a display policy rather than presented as automatic SDR detection.
 
 ## Verification boundary
 

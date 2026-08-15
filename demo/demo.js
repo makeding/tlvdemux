@@ -53,6 +53,7 @@ const elements = Object.fromEntries([
   'videoPacketId', 'probeButton', 'cancelButton', 'clearButton',
   'probeState', 'duration', 'videoColor', 'sourceSize', 'transferred', 'log',
   'video', 'mediaInfo', 'liveMode', 'videoTrack', 'audioTrack', 'subtitleTrack', 'subtitleOverlay',
+  'toneMappingMode',
   'playbackNotice',
   'captionVisible', 'superimposeVisible',
   'broadcastViewport', 'broadcastVideoSurface', 'broadcastMediaPlane', 'broadcastFrame', 'dataRemote',
@@ -98,6 +99,7 @@ let selectedVideoPacketId = null;
 let knownVideoTracks = new Map();
 let currentVideoPresentationHint = null;
 let currentVideoProperties = null;
+let currentToneMappingMode = 'auto';
 let knownAudioTracks = new Map();
 let selectedSubtitlePacketId = null;
 let preferredSubtitlePacketId = null;
@@ -274,14 +276,34 @@ function updateVideoColorStatus() {
     label = 'HDR · PQ';
     state = 'hdr';
   } else if (sourceTransfer === 18) {
-    label = currentVideoPresentationHint === 'hdr' ? 'HDR · HLG' : 'HLG（判定不能）';
-    state = currentVideoPresentationHint === 'hdr' ? 'hdr' : 'hlg-unknown';
+    if (currentToneMappingMode === 'force') {
+      label = 'HLG-SDR（適用待ち）';
+      state = 'hlg-sdr';
+    } else {
+      label = currentVideoPresentationHint === 'hdr' ? 'HDR · HLG' : 'HLG（判定不能）';
+      state = currentVideoPresentationHint === 'hdr' ? 'hdr' : 'hlg-unknown';
+    }
   } else if (sourceTransfer === 1 || sourceTransfer === 11 || sourceTransfer === 14) {
     label = 'SDR';
     state = 'sdr';
   }
   elements.videoColor.textContent = label;
   elements.videoColor.dataset.state = state;
+}
+
+function toneMappingModeLabel(mode) {
+  return mode === 'force' ? '強制 SDR 解釈' : mode === 'off' ? '無効（原信号）' : '自動';
+}
+
+async function applyToneMappingMode(mode, announce = true) {
+  if (!['auto', 'force', 'off'].includes(mode)) return;
+  currentToneMappingMode = mode;
+  if (activeDemuxer) await activeDemuxer.setMseToneMappingMode(mode);
+  updateVideoColorStatus();
+  if (announce) {
+    appendLog(`HLG-SDR 補正を ${toneMappingModeLabel(mode)} に変更しました` +
+      (activeDemuxer ? '（次の映像 RAP から適用）' : '（次回再生から適用）'));
+  }
 }
 
 function mediaErrorMessage(error = elements.video.error) {
@@ -1331,6 +1353,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     audioPacketId: preferredAudioPacketId,
     subtitlePacketId: preferredSubtitlePacketId,
   });
+  await demuxer.setMseToneMappingMode(currentToneMappingMode);
   await demuxer.setSubtitlePassthroughEnabled(true);
   await demuxer.setMseOutputEnabled(!suppressOutput);
   activeDemuxer = demuxer;
@@ -1678,6 +1701,12 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false, operationLa
 elements.probeButton.addEventListener('click', () => loadAndPlay(0));
 elements.cancelButton.addEventListener('click', stopPlayback);
 elements.clearButton.addEventListener('click', () => { elements.log.textContent = ''; });
+elements.toneMappingMode.addEventListener('change', () => {
+  applyToneMappingMode(elements.toneMappingMode.value).catch(error => {
+    appendLog(`HLG-SDR 補正の変更に失敗しました: ${error.message || error}`);
+    elements.toneMappingMode.value = currentToneMappingMode;
+  });
+});
 elements.videoTrack.addEventListener('change', () => {
   const value = elements.videoTrack.value;
   if (value === '' || !activeVideoSwitch) return;

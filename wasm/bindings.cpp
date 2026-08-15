@@ -12,6 +12,7 @@
 #include <deque>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <variant>
@@ -698,6 +699,14 @@ public:
         if (mse_enabled_) mse_remuxer_.setSdrInHlg(video_track_id, enabled);
     }
 
+    void setMseToneMappingMode(const std::string& mode) {
+        if (mode != "auto" && mode != "force" && mode != "off") {
+            throw std::invalid_argument("invalid MSE tone mapping mode");
+        }
+        tone_mapping_mode_ = mode;
+        for (const auto track_id : video_track_ids_) apply_video_presentation_policy(track_id);
+    }
+
     void setMseOutputEnabled(const bool enabled) {
         mse_remuxer_.setOutputEnabled(enabled);
     }
@@ -1147,6 +1156,14 @@ public:
 
 private:
     void apply_video_presentation_policy(const std::uint64_t track_id) {
+        if (tone_mapping_mode_ == "force") {
+            mse_remuxer_.setSdrInHlg(track_id, true);
+            return;
+        }
+        if (tone_mapping_mode_ == "off") {
+            mse_remuxer_.setSdrInHlg(track_id, false);
+            return;
+        }
         const bool programme_is_hdr = current_video_presentation_hint_.has_value() &&
             *current_video_presentation_hint_ == aribtlv::VideoPresentationHint::Hdr;
         const bool sdr_in_hlg = !programme_is_hdr &&
@@ -1413,6 +1430,7 @@ private:
     std::set<std::uint64_t> video_track_ids_;
     std::set<std::uint64_t> explicit_sdr_video_track_ids_;
     std::optional<aribtlv::VideoPresentationHint> current_video_presentation_hint_;
+    std::string tone_mapping_mode_ = "auto";
 };
 
 } // namespace
@@ -1434,6 +1452,7 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("clearAutomaticLayerSwitch",
                   &WasmDemuxer::clearAutomaticLayerSwitch)
         .function("setMseSdrInHlg", &WasmDemuxer::setMseSdrInHlg)
+        .function("setMseToneMappingMode", &WasmDemuxer::setMseToneMappingMode)
         .function("setMseOutputEnabled", &WasmDemuxer::setMseOutputEnabled)
         .function("setSubtitlePassthroughEnabled", &WasmDemuxer::setSubtitlePassthroughEnabled)
         .function("drainApplicationResources", &WasmDemuxer::drainApplicationResources)

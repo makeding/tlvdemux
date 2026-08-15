@@ -7,6 +7,7 @@ declare function createTlvDemuxModule(
 declare namespace createTlvDemuxModule {
   type TrackKind = "video" | "audio" | "subtitle";
   type Codec = "hevc" | "aac-latm" | "ttml";
+  type MseToneMappingMode = "auto" | "force" | "off";
   type ErrorCode =
     | "malformed-input"
     | "unsupported-feature"
@@ -651,6 +652,8 @@ declare namespace createTlvDemuxModule {
     setSubtitlePassthroughEnabled(enabled: boolean): void;
     /** Reinterpret an explicitly identified SDR-in-HLG video track as UHD SDR. */
     setMseSdrInHlg(videoTrackId: bigint, enabled: boolean): void;
+    /** Select automatic, forced, or disabled HLG-SDR colour reinterpretation. */
+    setMseToneMappingMode(mode: MseToneMappingMode): void;
     drainApplicationResources(maxEvents: number): boolean;
     startIndex(growing: boolean): void;
     finalizeIndex(): boolean;

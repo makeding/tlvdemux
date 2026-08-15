@@ -172,6 +172,9 @@ class WorkerDemuxer extends WorkerObject {
   setMseSdrInHlg(videoTrackId, enabled) {
     return this.call('setMseSdrInHlg', [videoTrackId, enabled]);
   }
+  setMseToneMappingMode(mode) {
+    return this.call('setMseToneMappingMode', [mode]);
+  }
   setMseOutputEnabled(enabled) { return this.call('setMseOutputEnabled', [enabled]); }
   setSubtitlePassthroughEnabled(enabled) {
     return this.call('setSubtitlePassthroughEnabled', [enabled]);
