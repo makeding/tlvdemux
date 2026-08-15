@@ -16,12 +16,15 @@ struct HlgSdrToneMappingPoint {
     double output;
 };
 
-inline constexpr std::array<HlgSdrToneMappingPoint, 5> kHlgSdrToneMappingPoints{{
+inline constexpr std::array<HlgSdrToneMappingPoint, 6> kHlgSdrToneMappingPoints{{
     {0.00, 0.00},
     {0.40, 0.40},
     {0.75, 0.90},
-    {0.79, 1.00},
-    {1.00, 1.09},
+    // Keep the glow shoulder below hard clipping instead of turning every
+    // value above the 79% point into white.
+    {0.79, 0.98},
+    {0.90, 0.995},
+    {1.00, 1.00},
 }};
 
 constexpr double clamp01(const double value) {
@@ -47,7 +50,7 @@ constexpr double map_hlg_sdr_signal(const double value) {
 // signal anchors so highlights do not gain a second boost.
 inline double lift_hlg_sdr_midtones(const double value) {
     constexpr double pivot = 0.75;
-    constexpr double gamma = 0.83;
+    constexpr double gamma = 0.87;
     const double input = clamp01(value);
     if (input >= pivot) return input;
     return pivot * std::pow(input / pivot, gamma);

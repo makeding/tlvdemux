@@ -19,8 +19,9 @@ int main() {
     check(map_hlg_sdr_signal(0.0) == 0.0, "black anchor changed");
     check(map_hlg_sdr_signal(0.4) == 0.4, "40% anchor changed");
     check(map_hlg_sdr_signal(0.75) == 0.9, "75% anchor changed");
-    check(map_hlg_sdr_signal(0.79) == 1.0, "79% anchor changed");
-    check(map_hlg_sdr_signal(1.0) == 1.0, "clipped 109% anchor changed");
+    check(map_hlg_sdr_signal(0.79) == 0.98, "79% shoulder changed");
+    check(map_hlg_sdr_signal(0.90) == 0.995, "90% shoulder changed");
+    check(map_hlg_sdr_signal(1.0) == 1.0, "100% shoulder changed");
 
     const auto lut = tlvdemux::hlg_sdr_tone_mapping_lut();
     check(lut.front() == 0 && lut.back() == 255, "LUT endpoints changed");

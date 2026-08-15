@@ -19,12 +19,15 @@ fn vertex(@builtin(vertex_index) index: u32) -> VertexOutput {
 @fragment
 fn fragment(input: VertexOutput) -> @location(0) vec4f {
   let sample = textureSampleBaseClampToEdge(videoFrame, linearSampler, input.uv);
-  return vec4f(
-    textureSampleLevel(toneMap, linearSampler, vec2f(sample.r, 0.5), 0.0).r,
-    textureSampleLevel(toneMap, linearSampler, vec2f(sample.g, 0.5), 0.0).r,
-    textureSampleLevel(toneMap, linearSampler, vec2f(sample.b, 0.5), 0.0).r,
-    1.0,
-  );
+  // HLG-SDR correction is a luminance correction. Mapping each channel
+  // independently changes the RGB ratios and visibly over-saturates glows.
+  let luma = dot(sample.rgb, vec3f(0.2627, 0.6780, 0.0593));
+  let mappedLuma = textureSampleLevel(
+    toneMap, linearSampler, vec2f(luma, 0.5), 0.0).r;
+  if (luma <= 0.0001) {
+    return vec4f(0.0, 0.0, 0.0, 1.0);
+  }
+  return vec4f(min(sample.rgb * (mappedLuma / luma), vec3f(1.0)), 1.0);
 }
 `;
 
