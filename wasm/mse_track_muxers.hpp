@@ -279,10 +279,10 @@ protected:
         if (emit) emit_init();
     }
 
-    void replace_track(Mp4Track track) {
+    void replace_track(Mp4Track track, const bool emit = true) {
         track.id = track_id_;
         track_ = std::move(track);
-        emit_init();
+        if (emit) emit_init();
     }
 
     void flush_at(const std::int64_t next_dts) {
@@ -648,6 +648,7 @@ public:
     // reset on every later activation, including switches back to a used track.
     void resume_at(const std::int64_t resume_at_ticks,
                    const std::uint32_t resume_timescale) {
+        timestamp_correction_ticks_ = 0;
         resume_at_ticks_ = resume_at_ticks;
         resume_timescale_ = resume_timescale;
         resume_offset_ticks_ = track_.has_value()
@@ -760,13 +761,7 @@ public:
         auto frame = parser_.parse(unit.data);
         if (max_channels_ != 0 && frame.channels > max_channels_) return;
         if (!track_) {
-            Mp4Track track;
-            track.timescale = frame.sample_rate;
-            track.sample_rate = frame.sample_rate;
-            track.channels = frame.channels;
-            track.codec = "mp4a.40." + std::to_string(frame.object);
-            track.config = frame.asc;
-            set_track(std::move(track), selected);
+            set_track(audio_track(frame), selected);
             if (resume_at_ticks_.has_value()) {
                 // Now that we know this track's timescale, convert the resume
                 // point (given in the previous track's timescale) into ours.
@@ -794,6 +789,20 @@ public:
             }
         }
         if (timestamp < 0) return;
+        if (track_configuration_differs(frame)) {
+            // LATM can carry a new StreamMuxConfig on the same broadcast
+            // audio track (this stream changes from 5.1 to stereo). The old
+            // fMP4 init segment cannot describe the new raw AAC channel
+            // elements, so close the old media timeline and emit a matching
+            // init segment before accepting the new frame.
+            const auto boundary_us = scaled(
+                timestamp, track_->timescale, 1000000);
+            flush();
+            history_.clear();
+            timestamp_correction_ticks_ = 0;
+            if (selected) output_.audio_splice(boundary_us);
+            replace_track(audio_track(frame), selected);
+        }
         if (!history_.empty() && timestamp <= history_.back().pts) {
             if (!preserve_history) return;
             // A recoverable packet-loss marker keeps the current mapping when
@@ -805,6 +814,23 @@ public:
             timestamp =
                 scaled(unit.pts.value, unit.pts.timescale, track_->timescale) +
                 scaled(*timeline_offset_us_, 1000000, track_->timescale);
+        }
+        if (!preserve_history && !history_.empty()) {
+            // A lost AAC access unit leaves a forward hole in the source PTS.
+            // BaseMuxer uses the next DTS as the previous trun sample's
+            // duration, so passing that hole through would turn one 1024-tick
+            // AAC frame into (for example) an 85 ms frame. Chromium may then
+            // reject the first packet after the hole. Keep the AAC decode
+            // timeline contiguous and carry the correction over subsequent
+            // source timestamps.
+            const auto frame_duration = static_cast<std::int64_t>(default_duration());
+            const auto previous_timestamp = history_.back().pts;
+            const auto candidate_timestamp = timestamp + timestamp_correction_ticks_;
+            if (candidate_timestamp > previous_timestamp + frame_duration + 2) {
+                timestamp_correction_ticks_ +=
+                    previous_timestamp + frame_duration - candidate_timestamp;
+            }
+            timestamp += timestamp_correction_ticks_;
         }
         Sample sample{std::move(frame.data), timestamp, timestamp,
                       default_duration(), true};
@@ -823,6 +849,24 @@ public:
     }
 
 private:
+    static Mp4Track audio_track(const AacFrame& frame) {
+        Mp4Track track;
+        track.timescale = frame.sample_rate;
+        track.sample_rate = frame.sample_rate;
+        track.channels = frame.channels;
+        track.codec = "mp4a.40." + std::to_string(frame.object);
+        track.config = frame.asc;
+        return track;
+    }
+
+    bool track_configuration_differs(const AacFrame& frame) const {
+        if (!track_) return false;
+        return track_->sample_rate != frame.sample_rate ||
+            track_->channels != frame.channels ||
+            track_->codec != "mp4a.40." + std::to_string(frame.object) ||
+            track_->config != frame.asc;
+    }
+
     std::uint32_t default_duration() const override {
         return track_ ? static_cast<std::uint32_t>(std::llround(
                             1024.0 * track_->timescale / track_->sample_rate))
@@ -836,6 +880,7 @@ private:
         resume_origin_ticks_.reset();
         first_after_resume_ = false;
         last_enqueued_dts_.reset();
+        timestamp_correction_ticks_ = 0;
     }
 
     LatmParser parser_;
@@ -847,6 +892,7 @@ private:
     std::optional<std::int64_t> resume_origin_ticks_;
     bool first_after_resume_ = false;
     std::optional<std::int64_t> last_enqueued_dts_;
+    std::int64_t timestamp_correction_ticks_ = 0;
     std::optional<std::int64_t> timeline_offset_us_;
     std::deque<Sample> history_;
 };

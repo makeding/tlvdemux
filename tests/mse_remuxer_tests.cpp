@@ -522,6 +522,70 @@ void test_audio_drops_non_advancing_dts() {
           "the two non-advancing samples were papered over with a fallback duration instead of dropped");
 }
 
+void test_audio_forward_gap_keeps_decoder_timeline_contiguous() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.push(hevc_unit(2, 0, 0, true, true));
+
+    // AAC-LC at 48 kHz advances by 1024 track ticks per access unit. The
+    // third AU starts three frames late, simulating the missing packet which
+    // caused Chromium to reject the next audio packet in the captured stream.
+    for (const auto pts : {std::int64_t{0}, std::int64_t{1024},
+                           std::int64_t{4096}, std::int64_t{5120}}) {
+        remuxer.push(audio_unit(1, pts));
+    }
+    remuxer.flush();
+
+    const auto segments = segments_of(sink.segments, "audio");
+    check(!segments.empty(), "audio forward-gap test emitted no media");
+    std::int64_t expected_dts = 0;
+    std::size_t total_samples = 0;
+    for (const auto& segment : segments) {
+        check(std::int64_t(segment.tfdt) == expected_dts,
+              "audio forward gap left a discontinuous fragment decode timeline");
+        std::uint64_t segment_duration = 0;
+        for (const auto& sample : segment.samples) {
+            check(sample.duration == 1024,
+                  "audio forward gap stretched an AAC sample duration");
+            segment_duration += sample.duration;
+            ++total_samples;
+        }
+        expected_dts += std::int64_t(segment_duration);
+    }
+    check(total_samples == 4,
+          "audio forward-gap test lost a valid AAC packet while repairing timestamps");
+}
+
+void test_audio_configuration_change_emits_matching_init() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.push(hevc_unit(2, 0, 0, true, true));
+    remuxer.push(audio_unit(1, 0, 6));
+    remuxer.push(audio_unit(1, 1024, 6));
+    remuxer.push(audio_unit(1, 2048, 2));
+    remuxer.flush();
+
+    std::vector<tlvdemux::MseTrackInit> audio_inits;
+    for (const auto& init : sink.inits) {
+        if (init.type == "audio") audio_inits.push_back(init);
+    }
+    check(audio_inits.size() == 2,
+          "AAC channel configuration change did not emit a replacement init segment");
+    check(audio_inits[0].channels == 6 && audio_inits[1].channels == 2,
+          "AAC replacement init segments have the wrong channel layouts");
+    check(sink.splices.size() == 1,
+          "AAC channel configuration change did not emit one audio splice");
+    const auto segments = segments_of(sink.segments, "audio");
+    check(segments.size() == 2,
+          "AAC channel configuration change did not split old and new media");
+    check(segments[0].tfdt == 0 && segments[1].tfdt == 2048,
+          "AAC configuration change broke the decode timeline boundary");
+}
+
 struct ReorderedFrame { std::int64_t dts, pts; bool keyframe; };
 
 std::vector<ReorderedFrame> build_reordered_frames(const int groups, const std::int64_t dts_step) {
@@ -1367,6 +1431,8 @@ int main() {
     test_multiplexed_output_has_two_tracks_and_global_sequences();
     test_video_only_output_does_not_wait_for_audio();
     test_audio_drops_non_advancing_dts();
+    test_audio_forward_gap_keeps_decoder_timeline_contiguous();
+    test_audio_configuration_change_emits_matching_init();
     test_video_fragments_do_not_overlap_in_composition_time();
     test_video_fragments_do_not_overlap_with_broadcast_timescale();
     test_video_queue_bound_forces_emit_without_safe_cut();
