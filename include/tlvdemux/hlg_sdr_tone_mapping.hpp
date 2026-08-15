@@ -3,7 +3,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cmath>
 #include <utility>
 #include <vector>
 
@@ -35,11 +34,12 @@ struct HlgSdrToneMappingPoint {
 inline constexpr std::array<HlgSdrToneMappingPoint, 6> kHlgSdrToneMappingPoints{{
     {0.00, 0.00},
     {0.40, 0.40},
-    {0.75, 0.90},
-    // Keep the glow shoulder below hard clipping instead of turning every
-    // value above the 79% point into white.
-    {0.79, 0.98},
-    {0.90, 0.995},
+    // Matched QVC CS161/BS4K221 frames place the SDR mid/highlights below the
+    // former 0.90/0.98 boost. Preserve the 40% pivot and white point while
+    // retaining headroom through the shoulder.
+    {0.75, 0.84},
+    {0.79, 0.94},
+    {0.90, 0.985},
     {1.00, 1.00},
 }};
 
@@ -61,19 +61,10 @@ constexpr double map_hlg_sdr_signal(const double value) {
     return 1.0;
 }
 
-// The reference player keeps the HLG/SDR 75% white anchor but lifts the
-// lower SDR-like range. This is deliberately applied before the ARIB/ITU
-// signal anchors so highlights do not gain a second boost.
-inline double lift_hlg_sdr_midtones(const double value) {
-    constexpr double pivot = 0.75;
-    constexpr double gamma = 0.87;
-    const double input = clamp01(value);
-    if (input >= pivot) return input;
-    return pivot * std::pow(input / pivot, gamma);
-}
-
 inline double map_hlg_sdr_display_signal(const double value) {
-    return map_hlg_sdr_signal(lift_hlg_sdr_midtones(value));
+    // A ten-minute CS161/BS4K221 match showed that the former unconditional
+    // midtone lift made the SDR result brighter than the SDR simulcast.
+    return map_hlg_sdr_signal(value);
 }
 
 // Keep the colour operation here rather than in individual GPU backends. The
