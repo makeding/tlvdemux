@@ -26,9 +26,10 @@ class ConsumerClosed final : public std::exception {};
 class PipeSink final : public aribtlv::Sink, public tlvdemux::MseSink {
 public:
     PipeSink(std::optional<std::uint16_t> video_packet_id,
-             std::optional<std::uint16_t> audio_packet_id, const bool video_only)
+             std::optional<std::uint16_t> audio_packet_id, const bool video_only,
+             const bool sdr_in_hlg)
         : video_packet_id_(video_packet_id), audio_packet_id_(audio_packet_id),
-          video_only_(video_only),
+          video_only_(video_only), sdr_in_hlg_(sdr_in_hlg),
           remuxer_(*this, {0, video_only ? tlvdemux::MseOutputMode::SeparateTracks
                                         : tlvdemux::MseOutputMode::Multiplexed}) {}
 
@@ -38,6 +39,7 @@ public:
         if (track.kind == aribtlv::TrackKind::Video && !video_track_ &&
             (!video_packet_id_ || track.packet_id == *video_packet_id_)) {
             video_track_ = track.track_id;
+            if (sdr_in_hlg_) remuxer_.setSdrInHlg(*video_track_, true);
             remuxer_.selectTrack(aribtlv::TrackKind::Video, video_track_);
         } else if (!video_only_ && track.kind == aribtlv::TrackKind::Audio && !audio_track_ &&
                    (!audio_packet_id_ || track.packet_id == *audio_packet_id_)) {
@@ -88,6 +90,7 @@ private:
     std::optional<std::uint16_t> video_packet_id_;
     std::optional<std::uint16_t> audio_packet_id_;
     bool video_only_ = false;
+    bool sdr_in_hlg_ = false;
     std::optional<std::uint64_t> video_track_;
     std::optional<std::uint64_t> audio_track_;
     bool initialized_ = false;
@@ -101,8 +104,8 @@ std::uint16_t packet_id(const std::string& value) {
 }
 
 void usage() {
-    std::cerr << "usage: tlvdemux pipe [--video-only] [--service ID] [--video-packet-id ID]"
-                 " [--audio-packet-id ID] INPUT|-\n";
+    std::cerr << "usage: tlvdemux pipe [--video-only] [--sdr-in-hlg] [--service ID]"
+                 " [--video-packet-id ID] [--audio-packet-id ID] INPUT|-\n";
 }
 
 } // namespace
@@ -113,6 +116,7 @@ int tlvdemux_cli::run_pipe(int argc, char** argv) {
         std::optional<std::uint16_t> video_packet_id;
         std::optional<std::uint16_t> audio_packet_id;
         bool video_only = false;
+        bool sdr_in_hlg = false;
         std::string input_path;
         for (int index = 1; index < argc; ++index) {
             const std::string argument = argv[index];
@@ -124,6 +128,8 @@ int tlvdemux_cli::run_pipe(int argc, char** argv) {
             };
             if (argument == "--video-only") {
                 video_only = true;
+            } else if (argument == "--sdr-in-hlg") {
+                sdr_in_hlg = true;
             } else if (argument == "--service") {
                 service = static_cast<std::uint32_t>(std::stoul(value("--service"), nullptr, 0));
             } else if (argument == "--video-packet-id") {
@@ -165,7 +171,7 @@ int tlvdemux_cli::run_pipe(int argc, char** argv) {
         }
 #endif
 
-        PipeSink sink(video_packet_id, audio_packet_id, video_only);
+        PipeSink sink(video_packet_id, audio_packet_id, video_only, sdr_in_hlg);
         aribtlv::Demuxer demuxer(sink);
         demuxer.selectService(service);
 

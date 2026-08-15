@@ -104,8 +104,13 @@ def find_tlvdemux(requested: str | None, root: Path) -> str:
     )
 
 
+def filter_path(path: Path) -> str:
+    return str(path).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+
+
 def decoder_command(ffmpeg: str, input_format: str, frames: int, fps: float,
-                    source: str) -> list[str]:
+                    source: str, bs_mode: str = "source",
+                    lut_path: Path | None = None) -> list[str]:
     if source == "cs":
         conversion = (
             f"fps={fps},zscale=w={WIDTH}:h={HEIGHT}:filter=bilinear:"
@@ -113,12 +118,24 @@ def decoder_command(ffmpeg: str, input_format: str, frames: int, fps: float,
             "matrix=gbr:transfer=linear:primaries=709:range=full:npl=100,"
             "format=gbrpf32le"
         )
-    else:
+    elif bs_mode == "source":
         conversion = (
             f"fps={fps},zscale=w={WIDTH}:h={HEIGHT}:filter=bilinear:"
             "matrixin=2020_ncl:transferin=arib-std-b67:primariesin=2020:"
             "rangein=limited:matrix=gbr:transfer=linear:primaries=709:"
             "range=full:npl=100,format=gbrpf32le"
+        )
+    else:
+        if lut_path is None:
+            raise RuntimeError("current-sdr analysis requires the exported 3D LUT")
+        conversion = (
+            f"fps={fps},zscale=w={WIDTH}:h={HEIGHT}:filter=bilinear:"
+            "matrixin=2020_ncl:transferin=709:primariesin=2020:rangein=limited:"
+            "matrix=gbr:transfer=709:primaries=709:range=full:npl=100,"
+            f"format=gbrpf32le,lut3d=file='{filter_path(lut_path)}':interp=trilinear,"
+            "zscale=matrixin=gbr:transferin=709:primariesin=709:rangein=full:"
+            "matrix=gbr:transfer=linear:primaries=709:range=full:npl=100,"
+            "format=gbrpf32le"
         )
     return [
         ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "info",
@@ -352,7 +369,7 @@ def aggregate_pairs(records: list[dict[str, object]]) -> dict[str, object]:
 
 
 def write_snapshots(output_dir: Path, pairs: list[tuple[Frame, Frame]], fps: float,
-                    interval: int) -> list[dict[str, object]]:
+                    interval: int, bs_label: str) -> list[dict[str, object]]:
     selected = []
     next_second = 0.0
     for pair_index, (cs_frame, bs_frame) in enumerate(pairs):
@@ -372,7 +389,7 @@ def write_snapshots(output_dir: Path, pairs: list[tuple[Frame, Frame]], fps: flo
         selected.append({
             "elapsed_seconds": second,
             "file": filename,
-            "layout": "left=CS161 SDR, right=BS4K221 HLG; both linearized to BT.709",
+            "layout": f"left=CS161 SDR, right={bs_label}; both linearized to BT.709",
             "cs_frame": cs_frame.index,
             "bs4k_frame": bs_frame.index,
         })
@@ -413,6 +430,10 @@ def self_test() -> None:
     }])
     if summary["mean_luma_ev_bs4k_minus_cs"]["p50"] != 1.0:
         raise AssertionError("aggregate test failed")
+    command = decoder_command("ffmpeg", "mp4", 10, 1.0, "bs", "current-sdr",
+                              Path("current.cube"))
+    if "lut3d=" not in command[command.index("-vf") + 1]:
+        raise AssertionError("current SDR filter test failed")
     print("qvc color comparison self-test passed")
 
 
@@ -431,6 +452,10 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--tlvdemux")
     parser.add_argument("--video-packet-id", help="optional BS4K MMTP video packet ID")
+    parser.add_argument(
+        "--bs-mode", choices=["source", "current-sdr"], default="source",
+        help="compare the HLG source baseline or the current tlvdemux SDR result",
+    )
     parser.add_argument("--self-test", action="store_true")
     return parser.parse_args()
 
@@ -456,17 +481,34 @@ def main() -> int:
     cs_url = f"{base}/api/services/{CS_SERVICE_ID}/stream?decode=0"
     bs_url = f"{base}/api/services/{BS4K_SERVICE_ID}/stream?decode=0"
 
+    lut_path: Path | None = None
+    lut_command: list[str] | None = None
+    if args.bs_mode == "current-sdr":
+        lut_path = output_dir / "current-hlg-sdr.cube"
+        lut_command = [tlvdemux, "hlg-sdr-lut"]
+        with lut_path.open("wb") as output, \
+                (output_dir / "hlg-sdr-lut.stderr.log").open("wb") as error:
+            result = subprocess.run(lut_command, stdout=output, stderr=error, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(f"tlvdemux hlg-sdr-lut exited with {result.returncode}")
+
     curl_cs = [curl, "--fail", "--silent", "--show-error", "--no-buffer", cs_url]
     curl_bs = [curl, "--fail", "--silent", "--show-error", "--no-buffer", bs_url]
     # The Mirakurun endpoint already selects service 221. libaribtlv's
     # --service option addresses its local package context (currently 1), not
     # the broadcast service_id, so selecting 221 here would suppress all media.
     pipe_bs = [tlvdemux, "pipe", "--video-only"]
+    if args.bs_mode == "current-sdr":
+        pipe_bs.append("--sdr-in-hlg")
     if args.video_packet_id:
         pipe_bs.extend(["--video-packet-id", args.video_packet_id])
     pipe_bs.append("-")
     cs_commands = [curl_cs, decoder_command(ffmpeg, "mpegts", frames, args.fps, "cs")]
-    bs_commands = [curl_bs, pipe_bs, decoder_command(ffmpeg, "mp4", frames, args.fps, "bs")]
+    bs_commands = [
+        curl_bs, pipe_bs,
+        decoder_command(ffmpeg, "mp4", frames, args.fps, "bs", args.bs_mode,
+                        lut_path),
+    ]
     manifest: dict[str, object] = {
         "status": "running",
         "started_at": dt.datetime.now().astimezone().isoformat(),
@@ -475,13 +517,18 @@ def main() -> int:
         "duration_seconds": args.duration,
         "sample_fps": args.fps,
         "raw_streams_saved": False,
-        "project_sdr_conversion_applied": False,
+        "project_sdr_conversion_applied": args.bs_mode == "current-sdr",
+        "bs_mode": args.bs_mode,
         "analysis_space": {
             "encoding": "linear RGB",
             "primaries": "BT.709",
             "nominal_peak_luminance": 100,
             "cs_input": "BT.709/BT.709/BT.709 limited",
-            "bs4k_input": "BT.2020/HLG/BT.2020 non-constant limited",
+            "bs4k_input": (
+                "BT.2020/HLG/BT.2020 non-constant limited"
+                if args.bs_mode == "source" else
+                "BT.2020/BT.709/BT.2020 non-constant limited, then current 3D LUT"
+            ),
         },
         "commands": {"cs161": cs_commands, "bs4k221": bs_commands},
         "logs": {
@@ -490,6 +537,9 @@ def main() -> int:
                          "bs4k221-3.stderr.log"],
         },
     }
+    if lut_command is not None:
+        manifest["commands"]["hlg_sdr_lut"] = [lut_command]
+        manifest["logs"]["hlg_sdr_lut"] = ["hlg-sdr-lut.stderr.log"]
     write_json(output_dir / "run.json", manifest)
 
     pipelines: list[Pipeline] = []
@@ -533,14 +583,18 @@ def main() -> int:
         with (output_dir / "aligned-frames.jsonl").open("w") as records:
             for record in pair_records:
                 records.write(json.dumps(record, ensure_ascii=False) + "\n")
+        bs_label = ("BS4K221 HLG" if args.bs_mode == "source" else
+                    "BS4K221 current tlvdemux SDR")
         snapshots = write_snapshots(
-            output_dir, pairs, args.fps, args.snapshot_interval)
+            output_dir, pairs, args.fps, args.snapshot_interval, bs_label)
         cs_signalling = observed_video_signalling(output_dir / "cs161-2.stderr.log")
         bs_signalling = observed_video_signalling(output_dir / "bs4k221-3.stderr.log")
-        signalling_matches = bool(
-            cs_signalling and "bt709" in cs_signalling and
-            bs_signalling and "bt2020nc/bt2020/arib-std-b67" in bs_signalling
+        expected_bs_signalling = (
+            "bt2020nc/bt2020/arib-std-b67" if args.bs_mode == "source" else
+            "bt2020nc/bt2020/bt709"
         )
+        signalling_matches = bool(cs_signalling and "bt709" in cs_signalling and
+                                  bs_signalling and expected_bs_signalling in bs_signalling)
         best_score = max(item["score"] for item in scores)
         alternatives = [item["score"] for item in scores
                         if abs(item["shift_frames"] - shift) > max(1, round(args.fps))]
@@ -565,9 +619,14 @@ def main() -> int:
             "snapshots": snapshots,
             "frame_records": "aligned-frames.jsonl",
             "interpretation": [
-                "No tlvdemux HLG-to-SDR LUT or SDR-in-HLG rewrite was applied.",
+                ("No tlvdemux HLG-to-SDR LUT or SDR-in-HLG rewrite was applied."
+                 if args.bs_mode == "source" else
+                 "The BS4K path used tlvdemux SDR-in-HLG signalling and the exact exported 8-bit 3D LUT."),
                 "Both sources were linearized and converted to BT.709 primaries for analysis.",
                 "The 100-nit normalization makes the luma comparison reproducible; it is not a display tone map.",
+                ("FFmpeg trilinear LUT application reproduces the project transform but not the browser's exact video-texture pipeline."
+                 if args.bs_mode == "current-sdr" else
+                 "The source baseline does not measure the current project SDR output."),
                 "Inspect the complete process logs before trusting results if source signalling differs from the declared inputs.",
             ],
         }

@@ -114,6 +114,7 @@ install(FILES
 if(TLVDEMUX_BUILD_TOOLS)
     add_executable(tlvdemux-cli
         tools/tlvdemux.cpp
+        tools/tlvdemux-hlg-sdr-lut.cpp
         tools/tlvdemux-inspect.cpp
         tools/tlvdemux-extract.cpp
         tools/tlvdemux-probe.cpp
@@ -198,10 +199,14 @@ if(BUILD_TESTING)
     if(TLVDEMUX_BUILD_TOOLS)
         add_test(NAME tlvdemux-cli-help COMMAND tlvdemux-cli --help)
         add_test(NAME tlvdemux-cli-version COMMAND tlvdemux-cli --version)
-        foreach(command pipe probe inspect extract analyze)
+        foreach(command hlg-sdr-lut pipe probe inspect extract analyze)
             add_test(NAME tlvdemux-cli-${command}-help
                      COMMAND tlvdemux-cli ${command} --help)
         endforeach()
+        add_test(NAME tlvdemux-cli-hlg-sdr-lut-output
+                 COMMAND tlvdemux-cli hlg-sdr-lut)
+        set_tests_properties(tlvdemux-cli-hlg-sdr-lut-output PROPERTIES
+            PASS_REGULAR_EXPRESSION "LUT_3D_SIZE 33")
         add_test(NAME tlvdemux-cli-missing-command COMMAND tlvdemux-cli)
         set_tests_properties(tlvdemux-cli-missing-command PROPERTIES WILL_FAIL TRUE)
         add_test(NAME tlvdemux-cli-unknown-command COMMAND tlvdemux-cli unknown)
