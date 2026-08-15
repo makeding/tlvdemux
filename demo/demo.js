@@ -310,6 +310,13 @@ function appendLog(message) {
   elements.log.scrollTop = elements.log.scrollHeight;
 }
 
+function effectiveToneMappingMode(mode = currentToneMappingMode) {
+  if (mode !== 'auto') return mode;
+  const hdrOutput = matchMedia('(video-dynamic-range: high)').matches ||
+    matchMedia('(dynamic-range: high)').matches;
+  return hdrOutput ? 'off' : 'force';
+}
+
 function updateVideoColorStatus() {
   if (!currentVideoProperties) {
     elements.videoColor.textContent = '—';
@@ -319,6 +326,7 @@ function updateVideoColorStatus() {
   }
   const sourceTransfer = currentVideoProperties.sourceColor?.transfer;
   const outputTransfer = currentVideoProperties.outputColor?.transfer;
+  const effectiveMode = effectiveToneMappingMode();
   let label = '色彩情報なし';
   let state = 'unknown';
   if (currentVideoProperties.sdrInHlg || (sourceTransfer === 18 && outputTransfer === 1)) {
@@ -328,7 +336,7 @@ function updateVideoColorStatus() {
     label = 'HDR · PQ';
     state = 'hdr';
   } else if (sourceTransfer === 18) {
-    if (currentToneMappingMode === 'force') {
+    if (effectiveMode === 'force') {
       label = 'HLG-SDR（適用待ち）';
       state = 'hlg-sdr';
     } else {
@@ -342,8 +350,8 @@ function updateVideoColorStatus() {
   elements.videoColor.textContent = label;
   elements.videoColor.dataset.state = state;
   const sourceIsHlg = sourceTransfer === 18;
-  const applyLut = sourceIsHlg && currentToneMappingMode !== 'off' &&
-    (currentToneMappingMode === 'force' || currentVideoProperties.sdrInHlg);
+  const applyLut = sourceIsHlg && effectiveMode !== 'off' &&
+    (effectiveMode === 'force' || currentVideoProperties.sdrInHlg);
   setHlgSdrEnabled(applyLut);
 }
 
@@ -354,7 +362,7 @@ function toneMappingModeLabel(mode) {
 async function applyToneMappingMode(mode, announce = true) {
   if (!['auto', 'force', 'off'].includes(mode)) return;
   currentToneMappingMode = mode;
-  if (activeDemuxer) await activeDemuxer.setMseToneMappingMode(mode);
+  if (activeDemuxer) await activeDemuxer.setMseToneMappingMode(effectiveToneMappingMode(mode));
   updateVideoColorStatus();
   if (announce) {
     appendLog(`HLG-SDR 補正を ${toneMappingModeLabel(mode)} に変更しました` +
@@ -1410,7 +1418,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     audioPacketId: preferredAudioPacketId,
     subtitlePacketId: preferredSubtitlePacketId,
   });
-  await demuxer.setMseToneMappingMode(currentToneMappingMode);
+  await demuxer.setMseToneMappingMode(effectiveToneMappingMode());
   await demuxer.setSubtitlePassthroughEnabled(true);
   await demuxer.setMseOutputEnabled(!suppressOutput);
   activeDemuxer = demuxer;
