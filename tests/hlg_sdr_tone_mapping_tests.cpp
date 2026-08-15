@@ -156,6 +156,15 @@ int main() {
     check(tlvdemux::detail::prototype_sdr_luma_calibration(0.0) == 0.0 &&
               tlvdemux::detail::prototype_sdr_luma_calibration(1.0) == 1.0,
           "prototype luma calibration changed black or white");
+    const double neutral_recovery =
+        tlvdemux::detail::prototype_sdr_chroma_luma_recovery(
+            {0.5, 0.5, 0.5}, 0.5, 0.25);
+    const double saturated_recovery =
+        tlvdemux::detail::prototype_sdr_chroma_luma_recovery(
+            {0.8, 0.3, 0.1}, 0.5, 0.25);
+    check(std::abs(neutral_recovery - 0.25) < 1e-12 &&
+              std::abs(saturated_recovery - 0.35) < 1e-12,
+          "prototype chroma luma recovery changed neutral pixels or missed saturated pixels");
     const auto prototype_black =
         tlvdemux::detail::map_hlg_sdr_prototype_rgb({0.0, 0.0, 0.0});
     check(prototype_black.red == 0.0 && prototype_black.green == 0.0 &&

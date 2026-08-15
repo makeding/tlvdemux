@@ -167,6 +167,18 @@ inline double prototype_sdr_luma_refinement(const double luminance) {
     return 1.0;
 }
 
+inline double prototype_sdr_chroma_luma_recovery(
+    const HlgSdrRgb color, const double original_luma,
+    const double calibrated_luma) {
+    const double maximum = std::max({color.red, color.green, color.blue});
+    const double minimum = std::min({color.red, color.green, color.blue});
+    const double saturation = maximum > 0.0 ? (maximum - minimum) / maximum : 0.0;
+    const double ratio = clamp01((saturation - 0.25) / 0.40);
+    const double chroma_weight = ratio * ratio * (3.0 - 2.0 * ratio);
+    return calibrated_luma + 0.40 * chroma_weight *
+        (original_luma - calibrated_luma);
+}
+
 inline double srgb_oetf(const double linear) {
     const double value = clamp01(linear);
     return value <= 0.0031308 ? 12.92 * value
@@ -238,8 +250,10 @@ inline HlgSdrRgb map_hlg_sdr_prototype_rgb(const HlgSdrRgb input) {
     const double sdr_luma =
         0.2126 * sdr709.red + 0.7152 * sdr709.green + 0.0722 * sdr709.blue;
     if (sdr_luma <= 0.0) return {0.0, 0.0, 0.0};
-    const double calibrated_luma = prototype_sdr_luma_refinement(
+    double calibrated_luma = prototype_sdr_luma_refinement(
         prototype_sdr_luma_calibration(sdr_luma));
+    calibrated_luma = prototype_sdr_chroma_luma_recovery(
+        sdr709, sdr_luma, calibrated_luma);
     const double calibrated_scale = calibrated_luma / sdr_luma;
     sdr709 = clip_to_bt709_gamut({
         sdr709.red * calibrated_scale,
