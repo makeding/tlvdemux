@@ -273,12 +273,18 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 button.primary { border-color: #315e42; background: #315e42; color: #fff; }
 button.quiet { min-height: 30px; padding: 0 10px; background: transparent; font-size: 11px; }
 
-.results { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.results { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
 .metric { min-width: 0; padding: 9px 11px; }
 .metric span { display: block; margin-bottom: 3px; color: #758079; font-size: 10px; }
 .metric strong { display: block; overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .metric.highlight { background: #315e42; color: #fff; }
 .metric.highlight span { color: #c8d8cd; }
+.metric.video-color[data-state="hdr"] { background: #6a3d78; color: #fff; }
+.metric.video-color[data-state="hdr"] span { color: #eadcf0; }
+.metric.video-color[data-state="hlg-sdr"] { background: #a86722; color: #fff; }
+.metric.video-color[data-state="hlg-sdr"] span { color: #f8e1c2; }
+.metric.video-color[data-state="sdr"] { background: #315e42; color: #fff; }
+.metric.video-color[data-state="sdr"] span { color: #c8d8cd; }
 
 .log-panel { margin-top: 8px; overflow: hidden; }
 .log-title { display: flex; align-items: center; justify-content: space-between; padding: 7px 11px; border-bottom: 1px solid #e2e7e3; }

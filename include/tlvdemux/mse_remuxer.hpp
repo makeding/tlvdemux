@@ -80,6 +80,26 @@ struct MseVideoStart {
     bool signalled_random_access = false;
 };
 
+struct MseVideoColor {
+    std::uint16_t primaries = 0;
+    std::uint16_t transfer = 0;
+    std::uint16_t matrix = 0;
+    bool full_range = false;
+    bool operator==(const MseVideoColor&) const = default;
+};
+
+// Current HEVC presentation state at a parameter-set/RAP boundary.
+struct MseVideoProperties {
+    std::uint64_t track_id = 0;
+    std::int64_t presentation_time_us = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::string codec;
+    std::optional<MseVideoColor> source_color;
+    std::optional<MseVideoColor> output_color;
+    bool sdr_in_hlg = false;
+};
+
 enum class MseOutputMode {
     SeparateTracks,
     Multiplexed,
@@ -104,6 +124,7 @@ public:
     virtual void onMseLayerSwitch(const MseLayerSwitch&) {}
     virtual void onMseLayerSwitchCancelled(const MseLayerSwitchCancelled&) {}
     virtual void onMseVideoStart(const MseVideoStart&) {}
+    virtual void onMseVideoProperties(const MseVideoProperties&) {}
     virtual void onPlaybackDamage(const PlaybackDamage&) {}
 };
 
@@ -122,6 +143,8 @@ public:
                      std::int64_t earliest_presentation_time_us);
     void configureAutomaticLayerSwitch(MseAutomaticLayerPair pair);
     void clearAutomaticLayerSwitch();
+    // Reinterpret an explicitly identified HLG video track as UHD SDR.
+    void setSdrInHlg(std::uint64_t video_track_id, bool enabled);
     void setOutputEnabled(bool enabled);
     std::optional<MseAutomaticLayerSwitchRequest> push(const AccessUnit& unit);
     void observeDamage(const aribtlv::DamageSpan& damage);

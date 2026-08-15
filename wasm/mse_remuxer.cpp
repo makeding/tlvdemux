@@ -224,7 +224,7 @@ public:
 
     std::optional<MseLayerSwitchCancelled> reset() {
         auto cancelled = cancel_layer(MseLayerSwitchCancelReason::Reset);
-        video.reset();
+        video.reset(true);
         video_history.clear();
         audio.clear();
         active_audio = nullptr;
@@ -340,6 +340,11 @@ void tlvdemux::MseRemuxer::configureAutomaticLayerSwitch(
 
 void tlvdemux::MseRemuxer::clearAutomaticLayerSwitch() {
     impl_->automatic_layers.clearConfiguration();
+}
+
+void tlvdemux::MseRemuxer::setSdrInHlg(
+    const std::uint64_t video_track_id, const bool enabled) {
+    impl_->video.set_sdr_in_hlg(video_track_id, enabled);
 }
 
 void tlvdemux::MseRemuxer::setOutputEnabled(const bool enabled) {

@@ -323,6 +323,10 @@ declare namespace createTlvDemuxModule {
     freeCaMode: boolean;
     language: string;
     title: string;
+    /** Structured ARIB HDR icon from the MH-EIT short-event title field. */
+    hdrProgrammeIcon: boolean;
+    /** Positive HDR programme marker from MH-EIT; unknown is not SDR. */
+    videoPresentationHint: "hdr" | "unknown";
     description: string;
     extendedDescription: string;
     extendedItems: Array<{ description: string; value: string }>;
@@ -545,6 +549,24 @@ declare namespace createTlvDemuxModule {
     signalledRandomAccess: boolean;
   }
 
+  interface MseVideoColor {
+    primaries: number;
+    transfer: number;
+    matrix: number;
+    fullRange: boolean;
+  }
+
+  interface MseVideoProperties {
+    trackId: bigint;
+    presentationTimeUs: bigint;
+    width: number;
+    height: number;
+    codec: string;
+    sourceColor: MseVideoColor | null;
+    outputColor: MseVideoColor | null;
+    sdrInHlg: boolean;
+  }
+
   interface PlaybackDamage {
     code: "TLV_SOURCE_DAMAGE";
     videoTrackId: bigint;
@@ -600,6 +622,8 @@ declare namespace createTlvDemuxModule {
     onMseLayerSwitch?: (layer: MseLayerSwitch) => void;
     onMseLayerSwitchCancelled?: (cancelled: MseLayerSwitchCancelled) => void;
     onMseVideoStart?: (start: MseVideoStart) => void;
+    /** HEVC VUI/output colour state, pushed at each parameter-set/RAP boundary. */
+    onMseVideoProperties?: (properties: MseVideoProperties) => void;
     /** Selected-video recovery advice with a stable user-facing error code. */
     onPlaybackDamage?: (damage: PlaybackDamage) => void;
   }
@@ -625,6 +649,8 @@ declare namespace createTlvDemuxModule {
     ): boolean;
     setMseOutputEnabled(enabled: boolean): void;
     setSubtitlePassthroughEnabled(enabled: boolean): void;
+    /** Reinterpret an explicitly identified SDR-in-HLG video track as UHD SDR. */
+    setMseSdrInHlg(videoTrackId: bigint, enabled: boolean): void;
     drainApplicationResources(maxEvents: number): boolean;
     startIndex(growing: boolean): void;
     finalizeIndex(): boolean;

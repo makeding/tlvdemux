@@ -51,7 +51,7 @@ const EXPOSE_DEBUG_QUEUES = new URLSearchParams(location.search).has('tlvdemuxDe
 const elements = Object.fromEntries([
   'wasmStatus', 'fileInput', 'urlInput', 'initialRange', 'maxRange',
   'videoPacketId', 'probeButton', 'cancelButton', 'clearButton',
-  'probeState', 'duration', 'sourceSize', 'transferred', 'log',
+  'probeState', 'duration', 'videoColor', 'sourceSize', 'transferred', 'log',
   'video', 'mediaInfo', 'liveMode', 'videoTrack', 'audioTrack', 'subtitleTrack', 'subtitleOverlay',
   'playbackNotice',
   'captionVisible', 'superimposeVisible',
@@ -96,6 +96,8 @@ let selectedAudioGroupId = null;
 let preferredAudioPacketId = null;
 let selectedVideoPacketId = null;
 let knownVideoTracks = new Map();
+let currentVideoPresentationHint = null;
+let currentVideoProperties = null;
 let knownAudioTracks = new Map();
 let selectedSubtitlePacketId = null;
 let preferredSubtitlePacketId = null;
@@ -253,6 +255,33 @@ function appendLog(message) {
   if (elements.log.textContent === '読み込み待ち…') elements.log.textContent = '';
   elements.log.textContent += `${message}\n`;
   elements.log.scrollTop = elements.log.scrollHeight;
+}
+
+function updateVideoColorStatus() {
+  if (!currentVideoProperties) {
+    elements.videoColor.textContent = '—';
+    delete elements.videoColor.dataset.state;
+    return;
+  }
+  const sourceTransfer = currentVideoProperties.sourceColor?.transfer;
+  const outputTransfer = currentVideoProperties.outputColor?.transfer;
+  let label = '色彩情報なし';
+  let state = 'unknown';
+  if (currentVideoProperties.sdrInHlg || (sourceTransfer === 18 && outputTransfer === 14)) {
+    label = 'HLG-SDR';
+    state = 'hlg-sdr';
+  } else if (sourceTransfer === 16) {
+    label = 'HDR · PQ';
+    state = 'hdr';
+  } else if (sourceTransfer === 18) {
+    label = currentVideoPresentationHint === 'hdr' ? 'HDR · HLG' : 'HLG（判定不能）';
+    state = currentVideoPresentationHint === 'hdr' ? 'hdr' : 'hlg-unknown';
+  } else if (sourceTransfer === 1 || sourceTransfer === 11 || sourceTransfer === 14) {
+    label = 'SDR';
+    state = 'sdr';
+  }
+  elements.videoColor.textContent = label;
+  elements.videoColor.dataset.state = state;
 }
 
 function mediaErrorMessage(error = elements.video.error) {
@@ -492,6 +521,9 @@ function stopPlayback(quiet = false, preserveMedia = false) {
   activeSubtitleSwitch = null;
   activeGapRecovery = null;
   activeSubtitleRenderer?.reset();
+  currentVideoPresentationHint = null;
+  currentVideoProperties = null;
+  updateVideoColorStatus();
   if (!preserveMedia) releaseMedia();
   setRunning(false);
   if (!quiet) {
@@ -1055,6 +1087,15 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     onMseVideoStart(detail) {
       appendLog(`映像開始 HEVC NAL=${detail.nalType} シグナルRAP=${detail.signalledRandomAccess}`);
     },
+    onMseVideoProperties(properties) {
+      currentVideoProperties = properties;
+      updateVideoColorStatus();
+      const sourceTransfer = properties.sourceColor?.transfer ?? '不明';
+      const outputTransfer = properties.outputColor?.transfer ?? '不明';
+      appendLog(`映像属性更新 PTS=${properties.presentationTimeUs}us ` +
+        `入力transfer=${sourceTransfer} 出力transfer=${outputTransfer} ` +
+        `SDR解釈=${properties.sdrInHlg ? '有効' : '無効'}`);
+    },
     onMseInit,
     onMseSegment,
     onMseAudioSplice,
@@ -1172,7 +1213,18 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       catch (error) { callbackError = error; }
     },
     onEventInfo(event) {
-      try { dataBroadcast.eventInformationChanged(event); }
+      try {
+        if (Number(event.tableId) === 0x8b && event.currentNext &&
+            Number(event.sectionNumber) === 0 &&
+            currentVideoPresentationHint !== event.videoPresentationHint) {
+          currentVideoPresentationHint = event.videoPresentationHint;
+          updateVideoColorStatus();
+          appendLog(event.videoPresentationHint === 'hdr'
+            ? '現在の番組に HDR マークがあります：ブラウザの HLG 表示を維持します'
+            : '現在の番組に明確な SDR/HDR マークがありません：元の映像信号を維持します');
+        }
+        dataBroadcast.eventInformationChanged(event);
+      }
       catch (error) { callbackError = error; }
     },
     onViewerParticipationNotification(notification) {
@@ -1539,6 +1591,9 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false, operationLa
     releaseMedia();
     knownAudioTracks = new Map();
     knownVideoTracks = new Map();
+    currentVideoPresentationHint = null;
+    currentVideoProperties = null;
+    updateVideoColorStatus();
     selectedVideoPacketId = null;
     selectedAudioPacketId = null;
     selectedAudioGroupId = null;
@@ -1554,6 +1609,10 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false, operationLa
   setRunning(true);
   if (startTimeSeconds === 0) elements.duration.textContent = '—';
   elements.sourceSize.textContent = '—';
+  if (startTimeSeconds === 0) {
+    currentVideoProperties = null;
+    updateVideoColorStatus();
+  }
   elements.transferred.textContent = '—';
   elements.probeState.textContent = '入力情報を確認中';
   elements.mediaInfo.textContent = '準備中';

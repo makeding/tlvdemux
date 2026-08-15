@@ -169,6 +169,9 @@ class WorkerDemuxer extends WorkerObject {
     ]);
   }
   clearAutomaticLayerSwitch() { return this.call('clearAutomaticLayerSwitch'); }
+  setMseSdrInHlg(videoTrackId, enabled) {
+    return this.call('setMseSdrInHlg', [videoTrackId, enabled]);
+  }
   setMseOutputEnabled(enabled) { return this.call('setMseOutputEnabled', [enabled]); }
   setSubtitlePassthroughEnabled(enabled) {
     return this.call('setSubtitlePassthroughEnabled', [enabled]);

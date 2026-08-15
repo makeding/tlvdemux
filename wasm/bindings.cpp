@@ -2,6 +2,7 @@
 #include <aribtlv/demuxer.hpp>
 #include <aribtlv/duration_probe.hpp>
 #include <aribtlv/recording.hpp>
+#include <aribtlv/video_presentation.hpp>
 
 #include "mse_remuxer.hpp"
 
@@ -10,6 +11,7 @@
 #include <cstdint>
 #include <deque>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <variant>
@@ -307,6 +309,12 @@ val event_info_value(const aribtlv::EventInfo& info) {
     result.set("freeCaMode", info.free_ca_mode);
     result.set("language", info.language);
     result.set("title", info.title);
+    result.set("hdrProgrammeIcon", info.hdr_programme_icon);
+    result.set("videoPresentationHint",
+               aribtlv::video_presentation_hint(info) ==
+                       aribtlv::VideoPresentationHint::Hdr
+                   ? "hdr"
+                   : "unknown");
     result.set("description", info.description);
     result.set("extendedDescription", info.extended_description);
     auto extended_items = val::array();
@@ -556,7 +564,8 @@ public:
                        [this](const tlvdemux::MseLayerSwitchCancelled& cancelled) {
                            restoreLayerSelectionState(cancelled);
                        }) {
-        mse_enabled_ = has_callback("onMseInit") || has_callback("onMseSegment");
+        mse_enabled_ = has_callback("onMseInit") || has_callback("onMseSegment") ||
+            has_callback("onMseVideoProperties");
     }
 
     bool push(const val& bytes) {
@@ -583,6 +592,9 @@ public:
     }
     void reset() {
         reset_application_resources();
+        video_track_ids_.clear();
+        explicit_sdr_video_track_ids_.clear();
+        current_video_presentation_hint_.reset();
         const auto cancelled = mse_enabled_ ? mse_remuxer_.reset() : std::nullopt;
         demuxer_.reset();
         restoreLayerSelection(cancelled);
@@ -603,6 +615,9 @@ public:
 
     void selectService(const val& context_id) {
         reset_application_resources();
+        video_track_ids_.clear();
+        explicit_sdr_video_track_ids_.clear();
+        current_video_presentation_hint_.reset();
         demuxer_.selectService(optional_number<std::uint32_t>(context_id));
         if (index_active_) recording_index_.begin(index_growing_);
     }
@@ -677,6 +692,10 @@ public:
 
     void clearAutomaticLayerSwitch() {
         mse_remuxer_.clearAutomaticLayerSwitch();
+    }
+
+    void setMseSdrInHlg(const std::uint64_t video_track_id, const bool enabled) {
+        if (mse_enabled_) mse_remuxer_.setSdrInHlg(video_track_id, enabled);
     }
 
     void setMseOutputEnabled(const bool enabled) {
@@ -799,6 +818,15 @@ public:
     }
 
     void onTrack(const aribtlv::TrackInfo& info) override {
+        if (info.kind == aribtlv::TrackKind::Video) {
+            video_track_ids_.insert(info.track_id);
+            if (info.video && info.video->video_transfer_characteristics == 3) {
+                explicit_sdr_video_track_ids_.insert(info.track_id);
+            } else {
+                explicit_sdr_video_track_ids_.erase(info.track_id);
+            }
+            apply_video_presentation_policy(info.track_id);
+        }
         auto event = track_info_value(info);
         if (info.audio.has_value()) {
             auto audio = val::object();
@@ -841,6 +869,10 @@ public:
     }
 
     void onTrackRemoved(const aribtlv::TrackInfo& info) override {
+        if (info.kind == aribtlv::TrackKind::Video) {
+            video_track_ids_.erase(info.track_id);
+            explicit_sdr_video_track_ids_.erase(info.track_id);
+        }
         emit("onTrackRemoved", track_info_value(info));
     }
 
@@ -1048,6 +1080,16 @@ public:
     }
 
     void onEventInfo(const aribtlv::EventInfo& info) override {
+        if (info.table_id == 0x8b && info.current_next && info.section_number == 0) {
+            const auto hint = aribtlv::video_presentation_hint(info);
+            if (!current_video_presentation_hint_.has_value() ||
+                *current_video_presentation_hint_ != hint) {
+                current_video_presentation_hint_ = hint;
+                for (const auto track_id : video_track_ids_) {
+                    apply_video_presentation_policy(track_id);
+                }
+            }
+        }
         emit("onEventInfo", event_info_value(info));
     }
 
@@ -1104,6 +1146,14 @@ public:
     }
 
 private:
+    void apply_video_presentation_policy(const std::uint64_t track_id) {
+        const bool programme_is_hdr = current_video_presentation_hint_.has_value() &&
+            *current_video_presentation_hint_ == aribtlv::VideoPresentationHint::Hdr;
+        const bool sdr_in_hlg = !programme_is_hdr &&
+            explicit_sdr_video_track_ids_.count(track_id) != 0;
+        mse_remuxer_.setSdrInHlg(track_id, sdr_in_hlg);
+    }
+
     static std::uint32_t mse_max_audio_channels(const val& options) {
         if (options.isNull() || options.isUndefined()) return 0;
         const auto value = options["mseMaxAudioChannels"];
@@ -1360,6 +1410,9 @@ private:
     bool mse_enabled_ = false;
     std::optional<std::uint64_t> selected_video_track_;
     std::optional<std::uint64_t> selected_audio_track_;
+    std::set<std::uint64_t> video_track_ids_;
+    std::set<std::uint64_t> explicit_sdr_video_track_ids_;
+    std::optional<aribtlv::VideoPresentationHint> current_video_presentation_hint_;
 };
 
 } // namespace
@@ -1380,6 +1433,7 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
                   &WasmDemuxer::configureAutomaticLayerSwitch)
         .function("clearAutomaticLayerSwitch",
                   &WasmDemuxer::clearAutomaticLayerSwitch)
+        .function("setMseSdrInHlg", &WasmDemuxer::setMseSdrInHlg)
         .function("setMseOutputEnabled", &WasmDemuxer::setMseOutputEnabled)
         .function("setSubtitlePassthroughEnabled", &WasmDemuxer::setSubtitlePassthroughEnabled)
         .function("drainApplicationResources", &WasmDemuxer::drainApplicationResources)

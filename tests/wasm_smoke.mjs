@@ -57,6 +57,8 @@ const mseDemuxer = new module.TlvDemuxer({
     onMseLayerSwitchCancelled: event => cancellations.push(event),
 });
 mseDemuxer.selectTrack('video', 2n);
+mseDemuxer.setMseSdrInHlg(2n, true);
+mseDemuxer.setMseSdrInHlg(2n, false);
 mseDemuxer.selectTrack('audio', 1n);
 assert.equal(mseDemuxer.switchLayer(3n, 9n, 0n), true);
 mseDemuxer.flush();

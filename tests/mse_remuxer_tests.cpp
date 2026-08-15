@@ -37,6 +37,10 @@ public:
         events.push_back("video-splice");
         video_splices.push_back(splice);
     }
+    void onMseVideoProperties(
+        const tlvdemux::MseVideoProperties& properties) override {
+        video_properties.push_back(properties);
+    }
     void onMseLayerSwitch(const tlvdemux::MseLayerSwitch& layer) override {
         events.push_back("layer-switch");
         layer_switches.push_back(layer);
@@ -51,6 +55,7 @@ public:
     std::vector<tlvdemux::MseMediaSegment> segments;
     std::vector<tlvdemux::MseAudioSplice> splices;
     std::vector<tlvdemux::MseVideoSplice> video_splices;
+    std::vector<tlvdemux::MseVideoProperties> video_properties;
     std::vector<tlvdemux::MseLayerSwitch> layer_switches;
     std::vector<tlvdemux::MseLayerSwitchCancelled> layer_switch_cancellations;
     std::vector<std::string> events;
@@ -1411,6 +1416,55 @@ void test_video_only_output_does_not_wait_for_audio() {
           "video-only fragment must reference the video track");
 }
 
+void test_sdr_in_hlg_rewrites_video_colour_signalling() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.setSdrInHlg(2, true);
+    remuxer.push(hevc_unit_with_transfer(2, 0, 0, true, true, 18));
+    remuxer.flush();
+
+    check(sink.inits.size() == 1,
+          "SDR-in-HLG video did not emit exactly one init segment");
+    check(video_color_information(sink.inits.front().data) ==
+              ParsedColorInformation{9, 14, 9, false},
+          "SDR-in-HLG video was not rewritten to UHD SDR nclx signalling");
+}
+
+void test_sdr_in_hlg_policy_change_reconfigures_at_next_rap() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.push(hevc_unit_with_transfer(2, 0, 0, true, true, 18));
+    remuxer.push(hevc_unit_with_transfer(2, 100000, 100000, false, false, 18));
+    remuxer.setSdrInHlg(2, true);
+    remuxer.push(hevc_unit_with_transfer(2, 200000, 200000, true, false, 18));
+    remuxer.flush();
+
+    check(sink.inits.size() == 2,
+          "late SDR-in-HLG policy change did not emit a new init at the next RAP");
+    check(video_color_information(sink.inits[1].data) ==
+              ParsedColorInformation{9, 14, 9, false},
+          "late SDR-in-HLG policy change did not update the new init colour signalling");
+    check(sink.video_properties.size() == 2 &&
+              sink.video_properties[0].output_color->transfer == 18 &&
+              sink.video_properties[1].output_color->transfer == 14 &&
+              sink.video_properties[1].sdr_in_hlg,
+          "late SDR-in-HLG policy change did not push the effective video state");
+
+    remuxer.setSdrInHlg(2, false);
+    remuxer.push(hevc_unit_with_transfer(2, 300000, 300000, true, false, 18));
+    remuxer.flush();
+    check(sink.inits.size() == 3 &&
+              video_color_information(sink.inits[2].data) ==
+                  ParsedColorInformation{9, 18, 9, false},
+          "disabling SDR-in-HLG did not restore HLG at the next RAP");
+    check(sink.video_properties.size() == 3 &&
+              sink.video_properties[2].output_color->transfer == 18 &&
+              !sink.video_properties[2].sdr_in_hlg,
+          "disabling SDR-in-HLG did not push the restored HLG state");
+}
+
 } // namespace
 
 int main() {
@@ -1433,6 +1487,8 @@ int main() {
     test_video_track_switch_same_configuration_is_a_splice_without_new_init();
     test_multiplexed_output_has_two_tracks_and_global_sequences();
     test_video_only_output_does_not_wait_for_audio();
+    test_sdr_in_hlg_rewrites_video_colour_signalling();
+    test_sdr_in_hlg_policy_change_reconfigures_at_next_rap();
     test_audio_drops_non_advancing_dts();
     test_audio_forward_gap_keeps_decoder_timeline_contiguous();
     test_audio_configuration_change_emits_matching_init();

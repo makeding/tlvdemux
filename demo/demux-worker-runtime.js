@@ -195,6 +195,7 @@ function createDemuxer(module, objectId, options) {
   record.instance = new module.TlvDemuxer({
     mseMaxAudioChannels: record.selection.maxAudioChannels,
     onMseVideoStart: event('onMseVideoStart'),
+    onMseVideoProperties: event('onMseVideoProperties'),
     onPlaybackDamage: event('onPlaybackDamage'),
     onMseVideoSplice: event('onMseVideoSplice'),
     onMseAudioSplice: event('onMseAudioSplice'),

@@ -20,12 +20,14 @@ struct HevcConfiguration {
     std::uint32_t height = 0;
     std::string codec;
     Bytes hvcc;
+    std::optional<ColorInformation> source_color;
     std::optional<ColorInformation> color;
 };
 
 std::vector<NaluView> annex_b_views(const Bytes& data);
 Bytes copy_nalu(const Bytes& data, const NaluView& view);
 HevcConfiguration hevc_configuration(const Bytes& vps, const Bytes& sps,
-                                     const Bytes& pps);
+                                     const Bytes& pps,
+                                     bool sdr_in_hlg = false);
 
 } // namespace tlvdemux::detail::mse

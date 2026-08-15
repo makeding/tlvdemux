@@ -14,6 +14,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -23,6 +24,7 @@
 namespace tlvdemux::detail::mse::remux {
 
 using tlvdemux::detail::mse::Bytes;
+using tlvdemux::detail::mse::ColorInformation;
 using tlvdemux::detail::mse::HevcConfiguration;
 using tlvdemux::detail::mse::LatmParser;
 using tlvdemux::detail::mse::Mp4Track;
@@ -109,6 +111,8 @@ public:
                     sink_.onMseSegment(std::move(value));
                 } else if constexpr (std::is_same_v<Event, tlvdemux::MseVideoSplice>) {
                     sink_.onMseVideoSplice(value);
+                } else if constexpr (std::is_same_v<Event, tlvdemux::MseVideoProperties>) {
+                    sink_.onMseVideoProperties(value);
                 } else {
                     sink_.onMseVideoStart(value);
                 }
@@ -205,6 +209,14 @@ public:
         sink_.onMseVideoStart(event);
     }
 
+    void video_properties(const tlvdemux::MseVideoProperties& properties) {
+        if (stage_video_) {
+            staged_video_events_.push_back(properties);
+            return;
+        }
+        sink_.onMseVideoProperties(properties);
+    }
+
 private:
     void emit_multiplexed_init() {
         if (multiplexed_init_emitted_ || tracks_.count("video") == 0 ||
@@ -235,7 +247,8 @@ private:
     bool enabled_ = true;
     using StagedVideoEvent = std::variant<
         tlvdemux::MseVideoSplice, tlvdemux::MseTrackInit,
-        tlvdemux::MseVideoStart, tlvdemux::MseMediaSegment>;
+        tlvdemux::MseVideoStart, tlvdemux::MseVideoProperties,
+        tlvdemux::MseMediaSegment>;
     std::vector<StagedVideoEvent> staged_video_events_;
     bool stage_video_ = false;
 };
@@ -382,6 +395,15 @@ public:
     explicit HevcMuxer(Output& output) : BaseMuxer("video", 1, output), output_(output) {}
 
     bool started() const noexcept { return started_; }
+    void set_sdr_in_hlg(const std::uint64_t track_id, const bool enabled) {
+        const bool was_enabled = sdr_in_hlg_tracks_.count(track_id) != 0;
+        if (enabled == was_enabled) return;
+        if (enabled) sdr_in_hlg_tracks_.insert(track_id);
+        else sdr_in_hlg_tracks_.erase(track_id);
+        if (track_ && input_track_id_.has_value() && *input_track_id_ == track_id) {
+            configuration_policy_dirty_ = true;
+        }
+    }
     bool is_input_track_switch(const aribtlv::AccessUnit& unit) const noexcept {
         return unit.discontinuity && input_track_id_.has_value() &&
             *input_track_id_ != unit.track_id;
@@ -406,7 +428,7 @@ public:
         return scaled(*timeline_offset_ticks_, track_->timescale, 1000000);
     }
 
-    void reset() {
+    void reset(const bool clear_policy = false) {
         reset_samples();
         parameter_sets_.clear();
         track_.reset();
@@ -417,6 +439,9 @@ public:
         input_track_id_.reset();
         splice_boundary_us_.reset();
         stage_next_switch_ = false;
+        configuration_policy_dirty_ = false;
+        current_video_properties_.reset();
+        if (clear_policy) sdr_in_hlg_tracks_.clear();
     }
 
     void push(const aribtlv::AccessUnit& unit, const bool output_enabled) {
@@ -453,11 +478,15 @@ public:
         if (parameter_sets_.count(32) != 0 && parameter_sets_.count(33) != 0 &&
             parameter_sets_.count(34) != 0) {
             const auto config = hevc_configuration(
-                parameter_sets_[32], parameter_sets_[33], parameter_sets_[34]);
+                parameter_sets_[32], parameter_sets_[33], parameter_sets_[34],
+                sdr_in_hlg_tracks_.count(unit.track_id) != 0);
             auto candidate = video_track(config, unit);
+            const auto properties = video_properties(config, unit);
             if (!track_) {
                 set_track(std::move(candidate));
-            } else if (has_parameter_set && irap >= 0 && configuration_differs(candidate)) {
+                emit_video_properties(properties);
+            } else if ((has_parameter_set || configuration_policy_dirty_) && irap >= 0 &&
+                       configuration_differs(candidate)) {
                 if (output_enabled && !output_.supports_video_reconfiguration()) {
                     throw std::runtime_error(
                         "HEVC configuration changes require SeparateTracks MSE output");
@@ -480,10 +509,17 @@ public:
                 output_.video_splice(*splice_boundary_us_);
                 candidate.timescale = track_->timescale;
                 replace_track(std::move(candidate));
+                emit_video_properties(properties);
                 started_ = false;
                 no_rasl_output_ = false;
                 sequence_start_ = true;
                 configuration_boundary = true;
+            } else if ((has_parameter_set || configuration_policy_dirty_) && irap >= 0 &&
+                       video_properties_differ(properties)) {
+                emit_video_properties(properties);
+            }
+            if (configuration_policy_dirty_ && irap >= 0) {
+                configuration_policy_dirty_ = false;
             }
         }
         if ((track_switch_boundary || requested_switch_boundary) &&
@@ -575,6 +611,44 @@ public:
     }
 
 private:
+    static tlvdemux::MseVideoColor video_color(const ColorInformation& color) {
+        return {color.primaries, color.transfer, color.matrix, color.full_range};
+    }
+
+    static tlvdemux::MseVideoProperties video_properties(
+        const HevcConfiguration& config, const aribtlv::AccessUnit& unit) {
+        tlvdemux::MseVideoProperties properties;
+        properties.track_id = unit.track_id;
+        properties.presentation_time_us = scaled(
+            unit.pts.value, unit.pts.timescale, 1000000);
+        properties.width = config.width;
+        properties.height = config.height;
+        properties.codec = config.codec;
+        if (config.source_color) properties.source_color = video_color(*config.source_color);
+        if (config.color) properties.output_color = video_color(*config.color);
+        properties.sdr_in_hlg = config.source_color.has_value() &&
+            config.color.has_value() && config.source_color->transfer == 18 &&
+            config.color->transfer == 14;
+        return properties;
+    }
+
+    bool video_properties_differ(
+        const tlvdemux::MseVideoProperties& properties) const {
+        return !current_video_properties_.has_value() ||
+            current_video_properties_->track_id != properties.track_id ||
+            current_video_properties_->width != properties.width ||
+            current_video_properties_->height != properties.height ||
+            current_video_properties_->codec != properties.codec ||
+            current_video_properties_->source_color != properties.source_color ||
+            current_video_properties_->output_color != properties.output_color ||
+            current_video_properties_->sdr_in_hlg != properties.sdr_in_hlg;
+    }
+
+    void emit_video_properties(const tlvdemux::MseVideoProperties& properties) {
+        current_video_properties_ = properties;
+        output_.video_properties(properties);
+    }
+
     static Mp4Track video_track(const HevcConfiguration& config,
                                 const aribtlv::AccessUnit& unit) {
         Mp4Track track;
@@ -614,6 +688,8 @@ private:
 
     Output& output_;
     std::map<int, Bytes> parameter_sets_;
+    std::set<std::uint64_t> sdr_in_hlg_tracks_;
+    std::optional<tlvdemux::MseVideoProperties> current_video_properties_;
     bool started_ = false;
     bool no_rasl_output_ = false;
     bool sequence_start_ = true;
@@ -621,6 +697,7 @@ private:
     std::optional<std::uint64_t> input_track_id_;
     std::optional<std::int64_t> splice_boundary_us_;
     bool stage_next_switch_ = false;
+    bool configuration_policy_dirty_ = false;
 };
 
 class AacMuxer final : public BaseMuxer {

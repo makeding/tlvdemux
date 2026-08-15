@@ -44,6 +44,16 @@ if (!present?.title || !following?.title ||
     !(present.durationSeconds > 0) || !(following.durationSeconds > 0)) {
   throw new Error('WASM did not expose complete MH-EIT present/following events')
 }
+for (const event of [present, following]) {
+  if (typeof event.hdrProgrammeIcon !== 'boolean' ||
+      (event.videoPresentationHint === 'hdr') !== event.hdrProgrammeIcon) {
+    throw new Error('WASM did not expose the structured HDR programme icon')
+  }
+  if (event.videoPresentationHint !== 'hdr' &&
+      event.videoPresentationHint !== 'unknown') {
+    throw new Error('WASM did not expose the video presentation hint')
+  }
+}
 
 console.log(`present:   ${present.title}`)
 console.log(`following: ${following.title}`)

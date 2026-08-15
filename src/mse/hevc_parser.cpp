@@ -62,6 +62,7 @@ struct SpsInfo {
     Bytes constraints;
     std::string codec;
     std::optional<ColorInformation> color;
+    std::optional<std::size_t> color_offset;
 };
 
 void skip_scaling_list_data(BitReader& reader) {
@@ -109,7 +110,12 @@ void skip_short_term_reference_picture_set(
     }
 }
 
-std::optional<ColorInformation> parse_vui_color(BitReader& reader) {
+struct ParsedVuiColor {
+    ColorInformation color;
+    std::size_t offset = 0;
+};
+
+std::optional<ParsedVuiColor> parse_vui_color(BitReader& reader) {
     if (reader.boolean()) {
         const auto aspect_ratio_idc = reader.bits(8);
         if (aspect_ratio_idc == 255) reader.bits(32);
@@ -120,11 +126,12 @@ std::optional<ColorInformation> parse_vui_color(BitReader& reader) {
     reader.bits(3);
     const bool full_range = reader.boolean();
     if (!reader.boolean()) return std::nullopt;
-    return ColorInformation{
-        static_cast<std::uint16_t>(reader.bits(8)),
-        static_cast<std::uint16_t>(reader.bits(8)),
-        static_cast<std::uint16_t>(reader.bits(8)),
-        full_range,
+    const auto offset = reader.offset();
+    return ParsedVuiColor{
+        ColorInformation{static_cast<std::uint16_t>(reader.bits(8)),
+                         static_cast<std::uint16_t>(reader.bits(8)),
+                         static_cast<std::uint16_t>(reader.bits(8)), full_range},
+        offset,
     };
 }
 
@@ -216,7 +223,13 @@ SpsInfo parse_sps(const Bytes& nalu) {
     }
     reader.bits(1);
     reader.bits(1);
-    if (reader.boolean()) output.color = parse_vui_color(reader);
+    if (reader.boolean()) {
+        const auto vui_color = parse_vui_color(reader);
+        if (vui_color) {
+            output.color = vui_color->color;
+            output.color_offset = vui_color->offset;
+        }
+    }
     const auto sub_width = output.chroma == 1 || output.chroma == 2 ? 2U : 1U;
     const auto sub_height = output.chroma == 1 ? 2U : 1U;
     output.width = coded_width - sub_width * (left + right);
@@ -243,6 +256,47 @@ SpsInfo parse_sps(const Bytes& nalu) {
         output.codec += buffer;
     }
     output.layers = static_cast<std::uint8_t>(max_layers + 1U);
+    return output;
+}
+
+void write_bits(Bytes& data, const std::size_t offset, const unsigned count,
+                const std::uint32_t value) {
+    for (unsigned index = 0; index < count; ++index) {
+        const auto bit = (value >> (count - index - 1U)) & 1U;
+        const auto position = offset + index;
+        const auto mask = static_cast<std::uint8_t>(1U << (7U - (position & 7U)));
+        if (bit != 0) data[position >> 3U] |= mask;
+        else data[position >> 3U] &= static_cast<std::uint8_t>(~mask);
+    }
+}
+
+Bytes escape_rbsp(const Bytes& data) {
+    Bytes output;
+    output.reserve(data.size());
+    unsigned zero_run = 0;
+    for (const auto value : data) {
+        if (zero_run >= 2 && value <= 3) {
+            output.push_back(3);
+            zero_run = 0;
+        }
+        output.push_back(value);
+        zero_run = value == 0 ? zero_run + 1U : 0U;
+    }
+    return output;
+}
+
+Bytes sdr_interpreted_sps(const Bytes& sps) {
+    if (sps.size() < 2) return sps;
+    const auto original = parse_sps(sps);
+    if (!original.color || !original.color_offset ||
+        *original.color != ColorInformation{9, 18, 9, false}) {
+        return sps;
+    }
+    auto data = rbsp(sps);
+    write_bits(data, *original.color_offset + 8U, 8, 14);
+    Bytes output{sps.begin(), sps.begin() + 2};
+    const Bytes payload(data.begin() + 2, data.end());
+    append(output, escape_rbsp(payload));
     return output;
 }
 
@@ -312,10 +366,13 @@ Bytes copy_nalu(const Bytes& data, const NaluView& view) {
 }
 
 HevcConfiguration hevc_configuration(const Bytes& vps, const Bytes& sps,
-                                     const Bytes& pps) {
-    const auto info = parse_sps(sps);
-    return {info.width, info.height, info.codec, make_hvcc(vps, sps, pps, info),
-            info.color};
+                                     const Bytes& pps, const bool sdr_in_hlg) {
+    const auto source_info = parse_sps(sps);
+    const auto effective_sps = sdr_in_hlg ? sdr_interpreted_sps(sps) : sps;
+    const auto info = parse_sps(effective_sps);
+    return {info.width, info.height, info.codec,
+            make_hvcc(vps, effective_sps, pps, info),
+            source_info.color, info.color};
 }
 
 } // namespace tlvdemux::detail::mse

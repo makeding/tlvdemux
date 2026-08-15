@@ -21,6 +21,16 @@ val copy_bytes(const std::vector<std::uint8_t>& bytes) {
     return output;
 }
 
+val video_color_value(const std::optional<tlvdemux::MseVideoColor>& color) {
+    if (!color) return val::null();
+    auto result = val::object();
+    result.set("primaries", color->primaries);
+    result.set("transfer", color->transfer);
+    result.set("matrix", color->matrix);
+    result.set("fullRange", color->full_range);
+    return result;
+}
+
 const char* cancel_reason_name(
     const tlvdemux::MseLayerSwitchCancelReason reason) noexcept {
     switch (reason) {
@@ -130,6 +140,21 @@ public:
         emit("onMseVideoStart", event);
     }
 
+    void onMseVideoProperties(
+        const tlvdemux::MseVideoProperties& properties) override {
+        if (!has("onMseVideoProperties")) return;
+        auto event = val::object();
+        event.set("trackId", properties.track_id);
+        event.set("presentationTimeUs", properties.presentation_time_us);
+        event.set("width", properties.width);
+        event.set("height", properties.height);
+        event.set("codec", properties.codec);
+        event.set("sourceColor", video_color_value(properties.source_color));
+        event.set("outputColor", video_color_value(properties.output_color));
+        event.set("sdrInHlg", properties.sdr_in_hlg);
+        emit("onMseVideoProperties", event);
+    }
+
     void onPlaybackDamage(const tlvdemux::PlaybackDamage& damage) override {
         if (!has("onPlaybackDamage")) return;
         auto event = val::object();
@@ -196,6 +221,11 @@ void WasmMseRemuxer::configureAutomaticLayerSwitch(
 
 void WasmMseRemuxer::clearAutomaticLayerSwitch() {
     impl_->remuxer().clearAutomaticLayerSwitch();
+}
+
+void WasmMseRemuxer::setSdrInHlg(
+    const std::uint64_t video_track_id, const bool enabled) {
+    impl_->remuxer().setSdrInHlg(video_track_id, enabled);
 }
 
 void WasmMseRemuxer::setOutputEnabled(const bool enabled) {

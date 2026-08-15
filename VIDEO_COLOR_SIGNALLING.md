@@ -34,12 +34,22 @@ ARIB STD-B60 Version 1.14-E1 separately describes programme-level MMT-SI:
 The B60 descriptors classify the announced component, but they do not contain
 the complete CICP tuple needed by an MP4 `nclx` box.
 
+Real BS4K captures show that `HDR_WCG_idc` may be absent even when the HEVC
+SPS is HLG. The maintained `libaribtlv` API therefore exposes the positive
+MH-EIT HDR programme icon as `VideoPresentationHint::Hdr`; absence is
+`Unknown`, not a negative HDR assertion. The browser demo uses the current
+present-event hint as a positive signal: a positive HDR hint preserves native
+HLG, while an unknown programme leaves the source untouched. An explicit B60
+video transfer value of `3` (UHD SDR) may enable the SDR-in-HLG rewrite when
+the coded SPS nevertheless declares HLG. Absence of both signals is not a
+negative HDR assertion.
+
 ## Ownership and precedence
 
 | Layer | Responsibility | Must not do |
 | --- | --- | --- |
 | `libaribtlv` | Parse B60 `0x800A` and `0x8010`; expose their colour-relevant fields on `TrackInfo.video` | Parse codec SPS bytes or invent missing CICP values |
-| `tlvdemux` HEVC parser | Parse the active SPS VUI, including range, primaries, transfer, and matrix | Infer colour from resolution, bit depth, or B60 classification |
+| `tlvdemux` HEVC parser | Parse the active SPS VUI, including range, primaries, transfer, and matrix; rewrite only an explicitly selected SDR-in-HLG SPS for browser MSE | Infer colour from resolution, bit depth, or absent metadata |
 | `tlvdemux` MP4 builder | Serialize the SPS-derived tuple as `colr`/`nclx` beside `hvcC` | Emit a partially guessed `nclx` tuple |
 | Browser | Interpret the MP4 sample entry and render to the output display | Recover omitted source signalling reliably |
 
@@ -60,7 +70,9 @@ not filled from resolution or an HDR label.
 2. In `tlvdemux`, finish the HEVC SPS syntax walk through VUI and expose a
    complete optional CICP tuple from `hevc_configuration()`.
 3. Add an MP4 `colr` box with colour type `nclx`, three unsigned 16-bit CICP
-   indices, and the one-bit full-range flag.  Keep `hvcC` unchanged.
+   indices, and the one-bit full-range flag. For an explicitly selected
+   SDR-in-HLG track, update the matching SPS in `hvcC` from transfer 18 to 14
+   as well, so browser decoder state and container metadata agree.
 4. Validate an ARIB HLG sample as `9/18/9`, limited range, in both the parsed
    configuration and generated init segment.
 
@@ -72,9 +84,20 @@ random-access unit activates a different SPS or changes its CICP tuple, old
 samples must be flushed before a new configuration boundary; samples described
 by different tuples must never be placed under one sample entry.
 
-The first patch covers initial configuration signalling.  Reconfiguration is a
-separate lifecycle change and requires an explicit init-segment replacement
-path in the MSE consumer rather than silently appending another init segment.
+An SDR-in-HLG policy change is applied at the next RAP. The remuxer emits a
+new init segment and a video splice at that boundary; it does not reinterpret
+already-appended samples under a different colour declaration.
+
+The WASM layer also emits `onMseVideoProperties` at the first active parameter
+set and whenever the source or effective presentation state changes at a RAP.
+The event is timeline-scoped: it carries the video track, the input PTS in
+microseconds, the HEVC VUI colour tuple before and after remuxing, and the
+`sdrInHlg` decision. A single recording may therefore emit HLG, SDR-in-HLG,
+and HLG again; consumers must replace their current state rather than cache a
+file-wide HDR boolean. A changed SPS without a corresponding metadata change
+still updates this state from the coded stream. If neither SPS signalling nor
+the structured programme metadata changes, the content cannot be classified
+reliably from the byte stream alone.
 
 ## Verification boundary
 
