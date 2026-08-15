@@ -4,10 +4,26 @@
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
+#include <utility>
+#include <vector>
 
 namespace tlvdemux {
 
 inline constexpr std::size_t kHlgSdrToneMappingLutSize = 1024;
+inline constexpr std::size_t kHlgSdrColorLutSize = 33;
+
+struct HlgSdrRgb {
+    double red;
+    double green;
+    double blue;
+};
+
+struct HlgSdrColorLut {
+    std::size_t size;
+    std::size_t width;
+    std::size_t height;
+    std::vector<std::uint8_t> rgba;
+};
 
 namespace detail {
 
@@ -60,6 +76,20 @@ inline double map_hlg_sdr_display_signal(const double value) {
     return map_hlg_sdr_signal(lift_hlg_sdr_midtones(value));
 }
 
+// Keep the colour operation here rather than in individual GPU backends. The
+// browser renderers consume the generated 3D LUT and therefore cannot drift
+// between per-channel and luminance-based mappings.
+inline HlgSdrRgb map_hlg_sdr_display_rgb(const HlgSdrRgb input) {
+    const double red = clamp01(input.red);
+    const double green = clamp01(input.green);
+    const double blue = clamp01(input.blue);
+    const double luma = 0.2627 * red + 0.6780 * green + 0.0593 * blue;
+    if (luma <= 0.0001) return {0.0, 0.0, 0.0};
+    const double scale = map_hlg_sdr_display_signal(luma) / luma;
+    return {clamp01(red * scale), clamp01(green * scale),
+            clamp01(blue * scale)};
+}
+
 } // namespace detail
 
 // Returns an 8-bit lookup table because the browser video texture exposed to
@@ -74,6 +104,34 @@ hlg_sdr_tone_mapping_lut() {
         lut[index] = static_cast<std::uint8_t>(output * 255.0 + 0.5);
     }
     return lut;
+}
+
+// Blue slices are laid out horizontally. Each slice is size x size with red
+// along x and green along y. Both WebGL and WebGPU can perform the same
+// trilinear lookup by bilinearly sampling two adjacent blue slices.
+inline HlgSdrColorLut hlg_sdr_color_lut() {
+    constexpr auto size = kHlgSdrColorLutSize;
+    const auto width = size * size;
+    std::vector<std::uint8_t> rgba(width * size * 4U);
+    for (std::size_t green = 0; green < size; ++green) {
+        for (std::size_t blue = 0; blue < size; ++blue) {
+            for (std::size_t red = 0; red < size; ++red) {
+                const auto mapped = detail::map_hlg_sdr_display_rgb({
+                    static_cast<double>(red) / static_cast<double>(size - 1U),
+                    static_cast<double>(green) / static_cast<double>(size - 1U),
+                    static_cast<double>(blue) / static_cast<double>(size - 1U),
+                });
+                const auto offset = (green * width + blue * size + red) * 4U;
+                rgba[offset] = static_cast<std::uint8_t>(mapped.red * 255.0 + 0.5);
+                rgba[offset + 1U] =
+                    static_cast<std::uint8_t>(mapped.green * 255.0 + 0.5);
+                rgba[offset + 2U] =
+                    static_cast<std::uint8_t>(mapped.blue * 255.0 + 0.5);
+                rgba[offset + 3U] = 255U;
+            }
+        }
+    }
+    return {size, width, size, std::move(rgba)};
 }
 
 } // namespace tlvdemux

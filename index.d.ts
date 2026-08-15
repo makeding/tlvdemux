@@ -8,6 +8,17 @@ declare namespace createTlvDemuxModule {
   type TrackKind = "video" | "audio" | "subtitle";
   type Codec = "hevc" | "aac-latm" | "ttml";
   type MseToneMappingMode = "auto" | "force" | "off";
+
+  interface HlgSdrColorLut {
+    /** Number of samples on each RGB axis. */
+    size: number;
+    /** Packed texture width: size * size blue slices. */
+    width: number;
+    /** Packed texture height: size green samples. */
+    height: number;
+    /** Row-major RGBA8 texture data. */
+    data: Uint8Array;
+  }
   type ErrorCode =
     | "malformed-input"
     | "unsupported-feature"
@@ -654,8 +665,10 @@ declare namespace createTlvDemuxModule {
     setMseSdrInHlg(videoTrackId: bigint, enabled: boolean): void;
     /** Select automatic, forced, or disabled HLG-SDR colour reinterpretation. */
     setMseToneMappingMode(mode: MseToneMappingMode): void;
-    /** Return the canonical C++ HLG-SDR 8-bit lookup table for the renderer. */
+    /** @deprecated Use hlgSdrColorLut so colour processing stays in C++. */
     hlgSdrToneMappingLut(): Uint8Array;
+    /** Return the canonical C++ HLG-SDR packed RGB 3D LUT. */
+    hlgSdrColorLut(): HlgSdrColorLut;
     drainApplicationResources(maxEvents: number): boolean;
     startIndex(growing: boolean): void;
     finalizeIndex(): boolean;

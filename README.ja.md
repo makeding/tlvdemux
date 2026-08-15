@@ -393,6 +393,15 @@ module、callback、event、duration probe、recording index の TypeScript 型�
 含まれます。npm パッケージには WebAssembly binary を埋め込んだ生成済み wrapper が
 含まれるため、利用側に Emscripten は不要で、別の `.wasm` request も発生しません。
 
+### HLG → SDR renderer
+
+`TlvDemuxer.hlgSdrColorLut()` は、C++ の色変換実装から生成した packed RGB 3D LUT を
+返します。`tlvdemux/hlg-sdr-renderer` から `HlgSdrRenderer` を import し、その LUT を
+`setColorLut()` へ渡してください。WebGPU と WebGL は同じ三線形補間だけを行うため、
+tone curve や色変換が JavaScript shader ごとに分岐しません。従来の
+`hlgSdrToneMappingLut()` 1D API は互換性のため一時的に残しますが、新規 integration
+では使用しないでください。
+
 ### iOS／iPadOS Safari
 
 WASM demuxer 自体は、公開 API で使用する `BigInt` を含め、現在の iOS Safari で

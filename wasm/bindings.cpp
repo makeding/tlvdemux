@@ -43,6 +43,16 @@ val hlg_sdr_tone_mapping_lut_value() {
     return result;
 }
 
+val hlg_sdr_color_lut_value() {
+    const auto lut = tlvdemux::hlg_sdr_color_lut();
+    auto result = val::object();
+    result.set("size", lut.size);
+    result.set("width", lut.width);
+    result.set("height", lut.height);
+    result.set("data", copy_bytes(lut.rgba));
+    return result;
+}
+
 val view_bytes(const std::vector<std::uint8_t>& source) {
     if (source.empty()) return val::global("Uint8Array").new_(0);
     return val(emscripten::typed_memory_view(source.size(), source.data()));
@@ -718,6 +728,10 @@ public:
 
     val hlgSdrToneMappingLut() const {
         return hlg_sdr_tone_mapping_lut_value();
+    }
+
+    val hlgSdrColorLut() const {
+        return hlg_sdr_color_lut_value();
     }
 
     void setMseOutputEnabled(const bool enabled) {
@@ -1470,6 +1484,7 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("setMseSdrInHlg", &WasmDemuxer::setMseSdrInHlg)
         .function("setMseToneMappingMode", &WasmDemuxer::setMseToneMappingMode)
         .function("hlgSdrToneMappingLut", &WasmDemuxer::hlgSdrToneMappingLut)
+        .function("hlgSdrColorLut", &WasmDemuxer::hlgSdrColorLut)
         .function("setMseOutputEnabled", &WasmDemuxer::setMseOutputEnabled)
         .function("setSubtitlePassthroughEnabled", &WasmDemuxer::setSubtitlePassthroughEnabled)
         .function("drainApplicationResources", &WasmDemuxer::drainApplicationResources)
