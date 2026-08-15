@@ -321,6 +321,20 @@ configuration が両方届いてから出力を開始します。pipe には拡�
 curl 'http://MIRAKURUN/api/services/SERVICE_ID/stream?decode=0' > test.tlv
 ```
 
+ライブ入力の色基準を採取する場合、`scripts/compare_qvc_color.py` は QVC の
+CS161（MPEG-TS service `700161`）と BS4K 221（MMT/TLV service `1100221`）を
+同時に受信し、画面内容から時刻差を求め、既定で 10 分間のリニア光統計を記録します。
+
+```sh
+python3 scripts/compare_qvc_color.py --tlvdemux ./build/tlvdemux
+```
+
+放送ストリームとデコード済みフレームは保存しません。完全なプロセスログ、レポート、
+小さい整列済み PPM preview は `color-comparisons/` 以下に保存します。CS は BT.709
+SDR、BS4K は BT.2020 HLG としてデコードし、解析時だけ双方を linear BT.709 に
+変換します。source baseline に被疑実装を混ぜないため、tlvdemux の SDR-in-HLG
+rewrite と HLG-to-SDR LUT は適用しません。
+
 同じ種類のトラックが複数ある場合、診断用 dumper は最初に検出した対応トラックを
 書き出します。`--trace-au` では、引き続き出力されたすべてのトラックを表示します。
 

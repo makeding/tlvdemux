@@ -337,6 +337,22 @@ Use Mirakurun's raw 4K path with `decode=0` when capturing validation input:
 curl 'http://MIRAKURUN/api/services/SERVICE_ID/stream?decode=0' > test.tlv
 ```
 
+For a live source-colour baseline, `scripts/compare_qvc_color.py` pulls QVC
+CS161 (MPEG-TS service `700161`) and BS4K 221 (MMT/TLV service `1100221`) at
+the same time, aligns their picture content, and records ten minutes of
+linear-light statistics by default:
+
+```sh
+python3 scripts/compare_qvc_color.py --tlvdemux ./build/tlvdemux
+```
+
+Raw broadcast bytes and decoded frames are not saved. The report, complete
+process logs and small aligned PPM previews are written below
+`color-comparisons/`. The CS source is decoded as BT.709 SDR and the BS4K
+source as BT.2020 HLG, then both are converted to linear BT.709 for analysis.
+This diagnostic deliberately does not apply tlvdemux's SDR-in-HLG rewrite or
+HLG-to-SDR LUT; those are candidate implementations, not the source baseline.
+
 When more than one track of a kind is present, the diagnostic dumper writes the
 first discovered supported track of that kind. `--trace-au` still reports every
 emitted track.
