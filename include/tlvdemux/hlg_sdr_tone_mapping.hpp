@@ -178,7 +178,7 @@ inline double prototype_sdr_chroma_luma_recovery(
     const double highlight_ratio = clamp01((original_luma - 0.75) / 0.20);
     const double highlight_weight = highlight_ratio * highlight_ratio *
         (3.0 - 2.0 * highlight_ratio);
-    const double recovery = 0.50 + 0.50 * highlight_weight;
+    const double recovery = 0.20 + 0.80 * highlight_weight;
     return calibrated_luma + recovery * chroma_weight *
         (original_luma - calibrated_luma);
 }
