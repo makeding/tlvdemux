@@ -1427,7 +1427,7 @@ void test_sdr_in_hlg_rewrites_video_colour_signalling() {
     check(sink.inits.size() == 1,
           "SDR-in-HLG video did not emit exactly one init segment");
     check(video_color_information(sink.inits.front().data) ==
-              ParsedColorInformation{1, 1, 9, false},
+              ParsedColorInformation{1, 1, 1, false},
           "SDR-in-HLG video did not remove HLG nclx signalling");
 }
 
@@ -1444,7 +1444,7 @@ void test_sdr_in_hlg_policy_change_reconfigures_at_next_rap() {
     check(sink.inits.size() == 2,
           "late SDR-in-HLG policy change did not emit a new init at the next RAP");
     check(video_color_information(sink.inits[1].data) ==
-              ParsedColorInformation{1, 1, 9, false},
+              ParsedColorInformation{1, 1, 1, false},
           "late SDR-in-HLG policy change did not remove HLG nclx signalling");
     check(sink.video_properties.size() == 2 &&
               sink.video_properties[0].output_color->transfer == 18 &&

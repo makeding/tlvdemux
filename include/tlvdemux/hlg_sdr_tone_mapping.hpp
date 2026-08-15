@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 
 namespace tlvdemux {
 
@@ -41,6 +42,21 @@ constexpr double map_hlg_sdr_signal(const double value) {
     return 1.0;
 }
 
+// The reference player keeps the HLG/SDR 75% white anchor but lifts the
+// lower SDR-like range. This is deliberately applied before the ARIB/ITU
+// signal anchors so highlights do not gain a second boost.
+inline double lift_hlg_sdr_midtones(const double value) {
+    constexpr double pivot = 0.75;
+    constexpr double gamma = 0.83;
+    const double input = clamp01(value);
+    if (input >= pivot) return input;
+    return pivot * std::pow(input / pivot, gamma);
+}
+
+inline double map_hlg_sdr_display_signal(const double value) {
+    return map_hlg_sdr_signal(lift_hlg_sdr_midtones(value));
+}
+
 } // namespace detail
 
 // Returns an 8-bit lookup table because the browser video texture exposed to
@@ -51,7 +67,7 @@ hlg_sdr_tone_mapping_lut() {
     for (std::size_t index = 0; index < lut.size(); ++index) {
         const double input = static_cast<double>(index) /
             static_cast<double>(lut.size() - 1);
-        const double output = detail::map_hlg_sdr_signal(input);
+        const double output = detail::map_hlg_sdr_display_signal(input);
         lut[index] = static_cast<std::uint8_t>(output * 255.0 + 0.5);
     }
     return lut;

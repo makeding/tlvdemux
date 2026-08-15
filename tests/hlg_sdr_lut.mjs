@@ -11,7 +11,7 @@ const lut = demuxer.hlgSdrToneMappingLut();
 assert.ok(lut instanceof Uint8Array);
 assert.equal(lut.length, 1024);
 assert.equal(lut[0], 0);
-assert.equal(lut[409], 102);
+assert.equal(lut[409], 118);
 assert.equal(lut[767], 229);
 assert.equal(lut[808], 255);
 assert.equal(lut[1023], 255);

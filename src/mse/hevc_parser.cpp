@@ -293,10 +293,12 @@ Bytes sdr_interpreted_sps(const Bytes& sps) {
         return sps;
     }
     auto data = rbsp(sps);
-    // Match the MMTS player workaround: remove HLG/HDR signalling from the
-    // SPS while retaining the BT.2020-NCL matrix used by the coded YUV.
+    // Remove HLG/HDR signalling and publish a self-consistent BT.709 SDR
+    // description. Keeping BT.2020-NCL with BT.709 primaries produces a
+    // visibly over-saturated blue/purple result in the browser.
     write_bits(data, *original.color_offset, 8, 1);
     write_bits(data, *original.color_offset + 8U, 8, 1);
+    write_bits(data, *original.color_offset + 16U, 8, 1);
     Bytes output{sps.begin(), sps.begin() + 2};
     const Bytes payload(data.begin() + 2, data.end());
     append(output, escape_rbsp(payload));
