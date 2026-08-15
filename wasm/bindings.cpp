@@ -4,6 +4,8 @@
 #include <aribtlv/recording.hpp>
 #include <aribtlv/video_presentation.hpp>
 
+#include <tlvdemux/hlg_sdr_tone_mapping.hpp>
+
 #include "mse_remuxer.hpp"
 
 #include <cmath>
@@ -31,6 +33,13 @@ val copy_bytes(const std::vector<std::uint8_t>& source) {
     if (!source.empty()) {
         result.call<void>("set", val(emscripten::typed_memory_view(source.size(), source.data())));
     }
+    return result;
+}
+
+val hlg_sdr_tone_mapping_lut_value() {
+    const auto lut = tlvdemux::hlg_sdr_tone_mapping_lut();
+    auto result = val::global("Uint8Array").new_(lut.size());
+    result.call<void>("set", val(emscripten::typed_memory_view(lut.size(), lut.data())));
     return result;
 }
 
@@ -705,6 +714,10 @@ public:
         }
         tone_mapping_mode_ = mode;
         for (const auto track_id : video_track_ids_) apply_video_presentation_policy(track_id);
+    }
+
+    val hlgSdrToneMappingLut() const {
+        return hlg_sdr_tone_mapping_lut_value();
     }
 
     void setMseOutputEnabled(const bool enabled) {
@@ -1453,6 +1466,7 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
                   &WasmDemuxer::clearAutomaticLayerSwitch)
         .function("setMseSdrInHlg", &WasmDemuxer::setMseSdrInHlg)
         .function("setMseToneMappingMode", &WasmDemuxer::setMseToneMappingMode)
+        .function("hlgSdrToneMappingLut", &WasmDemuxer::hlgSdrToneMappingLut)
         .function("setMseOutputEnabled", &WasmDemuxer::setMseOutputEnabled)
         .function("setSubtitlePassthroughEnabled", &WasmDemuxer::setSubtitlePassthroughEnabled)
         .function("drainApplicationResources", &WasmDemuxer::drainApplicationResources)

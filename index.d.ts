@@ -654,6 +654,8 @@ declare namespace createTlvDemuxModule {
     setMseSdrInHlg(videoTrackId: bigint, enabled: boolean): void;
     /** Select automatic, forced, or disabled HLG-SDR colour reinterpretation. */
     setMseToneMappingMode(mode: MseToneMappingMode): void;
+    /** Return the canonical C++ HLG-SDR 8-bit lookup table for the renderer. */
+    hlgSdrToneMappingLut(): Uint8Array;
     drainApplicationResources(maxEvents: number): boolean;
     startIndex(growing: boolean): void;
     finalizeIndex(): boolean;

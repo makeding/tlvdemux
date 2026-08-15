@@ -112,6 +112,16 @@ h2 { font-size: 15px; }
   background: #080b09;
 }
 
+.hlg-sdr-canvas {
+  position: absolute;
+  z-index: 0;
+  inset: 0 0 42px;
+  width: 100%;
+  height: calc(100% - 42px);
+  pointer-events: none;
+  background: #080b09;
+}
+
 #broadcastFrame {
   position: absolute;
   z-index: 1;

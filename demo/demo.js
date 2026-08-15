@@ -1,4 +1,5 @@
 import { DataBroadcastController } from './data-broadcast.js?v=webkit-canvas-plane-v4';
+import { HlgSdrRenderer } from './hlg-sdr-lut.js?v=arib-hlg-sdr-lut-v1';
 import {
   audioTrackChoices,
   correspondingAudioTrack,
@@ -53,7 +54,7 @@ const elements = Object.fromEntries([
   'videoPacketId', 'probeButton', 'cancelButton', 'clearButton',
   'probeState', 'duration', 'videoColor', 'sourceSize', 'transferred', 'log',
   'video', 'mediaInfo', 'liveMode', 'videoTrack', 'audioTrack', 'subtitleTrack', 'subtitleOverlay',
-  'toneMappingMode',
+  'toneMappingMode', 'hlgSdrCanvas',
   'playbackNotice',
   'captionVisible', 'superimposeVisible',
   'broadcastViewport', 'broadcastVideoSurface', 'broadcastMediaPlane', 'broadcastFrame', 'dataRemote',
@@ -72,6 +73,11 @@ const dataBroadcast = new DataBroadcastController({
   url: elements.dataUrl,
 });
 dataBroadcast.setLogger(appendLog);
+const hlgSdrRenderer = new HlgSdrRenderer({
+  video: elements.video,
+  canvas: elements.hlgSdrCanvas,
+  onError: error => appendLog(`HLG-SDR 輝度補正を利用できません: ${error.message || error}`),
+});
 
 let wasmModule = null;
 let activeProbe = null;
@@ -263,6 +269,7 @@ function updateVideoColorStatus() {
   if (!currentVideoProperties) {
     elements.videoColor.textContent = '—';
     delete elements.videoColor.dataset.state;
+    hlgSdrRenderer.setEnabled(false);
     return;
   }
   const sourceTransfer = currentVideoProperties.sourceColor?.transfer;
@@ -289,6 +296,10 @@ function updateVideoColorStatus() {
   }
   elements.videoColor.textContent = label;
   elements.videoColor.dataset.state = state;
+  const sourceIsHlg = sourceTransfer === 18;
+  const applyLut = sourceIsHlg && currentToneMappingMode !== 'off' &&
+    (currentToneMappingMode === 'force' || currentVideoProperties.sdrInHlg);
+  hlgSdrRenderer.setEnabled(applyLut);
 }
 
 function toneMappingModeLabel(mode) {
@@ -1348,6 +1359,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       }
     },
   });
+  hlgSdrRenderer.setLut(await demuxer.hlgSdrToneMappingLut());
   await demuxer.configureTrackSelection({
     videoPacketId: initialVideoPacketId,
     audioPacketId: preferredAudioPacketId,

@@ -278,6 +278,31 @@ if(BUILD_TESTING)
     add_test(NAME tlvdemux-chromium-coded-frame-policy-tests
         COMMAND tlvdemux-chromium-coded-frame-policy-tests)
 
+    add_executable(tlvdemux-hlg-sdr-tone-mapping-tests
+        tests/hlg_sdr_tone_mapping_tests.cpp)
+    target_link_libraries(tlvdemux-hlg-sdr-tone-mapping-tests PRIVATE
+        tlvdemux::tlvdemux)
+    if(MSVC)
+        target_compile_options(tlvdemux-hlg-sdr-tone-mapping-tests PRIVATE
+            /W4 /permissive-)
+    else()
+        target_compile_options(tlvdemux-hlg-sdr-tone-mapping-tests PRIVATE
+            -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME tlvdemux-hlg-sdr-tone-mapping-tests
+        COMMAND tlvdemux-hlg-sdr-tone-mapping-tests)
+
+    if(TLVDEMUX_BUILD_WASM_BINDINGS)
+        find_program(NODE_EXECUTABLE node)
+        if(NODE_EXECUTABLE)
+            add_test(
+                NAME tlvdemux-hlg-sdr-lut
+                COMMAND ${NODE_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/tests/hlg_sdr_lut.mjs
+                        $<TARGET_FILE:tlvdemux-wasm>)
+        endif()
+    endif()
+
     if(TLVDEMUX_BUILD_WASM_BINDINGS)
         find_program(NODE_EXECUTABLE node)
         if(NODE_EXECUTABLE)
