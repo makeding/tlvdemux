@@ -7,7 +7,7 @@ declare function createTlvDemuxModule(
 declare namespace createTlvDemuxModule {
   type TrackKind = "video" | "audio" | "subtitle";
   type Codec = "hevc" | "aac-latm" | "ttml";
-  type MseToneMappingMode = "auto" | "force" | "off";
+  type MseToneMappingMode = "auto" | "force" | "on_compare" | "off";
 
   interface HlgSdrColorLut {
     /** Number of samples on each RGB axis. */
@@ -663,7 +663,7 @@ declare namespace createTlvDemuxModule {
     setSubtitlePassthroughEnabled(enabled: boolean): void;
     /** Reinterpret an explicitly identified SDR-in-HLG video track as UHD SDR. */
     setMseSdrInHlg(videoTrackId: bigint, enabled: boolean): void;
-    /** Select automatic, forced, or disabled HLG-SDR colour reinterpretation. */
+    /** Select automatic, forced, split comparison, or disabled HLG-SDR rendering. */
     setMseToneMappingMode(mode: MseToneMappingMode): void;
     /** @deprecated Use hlgSdrColorLut so colour processing stays in C++. */
     hlgSdrToneMappingLut(): Uint8Array;

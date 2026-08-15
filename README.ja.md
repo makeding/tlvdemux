@@ -400,7 +400,9 @@ module、callback、event、duration probe、recording index の TypeScript 型�
 `setColorLut()` へ渡してください。WebGPU と WebGL は同じ三線形補間だけを行うため、
 tone curve や色変換が JavaScript shader ごとに分岐しません。従来の
 `hlgSdrToneMappingLut()` 1D API は互換性のため一時的に残しますが、新規 integration
-では使用しないでください。
+では使用しないでください。`setMseToneMappingMode('on_compare')` は `force` と同じ
+MSE 信令を使い、`HlgSdrRenderer.setComparisonEnabled(true)` で左半分を LUT 未適用、
+右半分を LUT 適用として表示できます。
 
 ### iOS／iPadOS Safari
 

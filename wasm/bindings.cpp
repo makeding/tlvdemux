@@ -719,7 +719,7 @@ public:
     }
 
     void setMseToneMappingMode(const std::string& mode) {
-        if (mode != "auto" && mode != "force" && mode != "off") {
+        if (mode != "auto" && mode != "force" && mode != "on_compare" && mode != "off") {
             throw std::invalid_argument("invalid MSE tone mapping mode");
         }
         tone_mapping_mode_ = mode;
@@ -1183,7 +1183,7 @@ public:
 
 private:
     void apply_video_presentation_policy(const std::uint64_t track_id) {
-        if (tone_mapping_mode_ == "force") {
+        if (tone_mapping_mode_ == "force" || tone_mapping_mode_ == "on_compare") {
             mse_remuxer_.setSdrInHlg(track_id, true);
             return;
         }

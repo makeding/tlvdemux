@@ -116,7 +116,7 @@ let selectedVideoPacketId = null;
 let knownVideoTracks = new Map();
 let currentVideoPresentationHint = null;
 let currentVideoProperties = null;
-let currentToneMappingMode = 'auto';
+let currentToneMappingMode = 'on_compare';
 let knownAudioTracks = new Map();
 let selectedSubtitlePacketId = null;
 let preferredSubtitlePacketId = null;
@@ -283,7 +283,13 @@ function effectiveToneMappingMode(mode = currentToneMappingMode) {
   return hdrOutput ? 'off' : 'force';
 }
 
+function isForcedToneMapping(mode) {
+  return mode === 'force' || mode === 'on_compare';
+}
+
 function updateVideoColorStatus() {
+  const effectiveMode = effectiveToneMappingMode();
+  hlgSdrRenderer.setComparisonEnabled(effectiveMode === 'on_compare');
   if (!currentVideoProperties) {
     elements.videoColor.textContent = '—';
     delete elements.videoColor.dataset.state;
@@ -292,7 +298,6 @@ function updateVideoColorStatus() {
   }
   const sourceTransfer = currentVideoProperties.sourceColor?.transfer;
   const outputTransfer = currentVideoProperties.outputColor?.transfer;
-  const effectiveMode = effectiveToneMappingMode();
   let label = '色彩情報なし';
   let state = 'unknown';
   if (currentVideoProperties.sdrInHlg || (sourceTransfer === 18 && outputTransfer === 1)) {
@@ -302,7 +307,7 @@ function updateVideoColorStatus() {
     label = 'HDR · PQ';
     state = 'hdr';
   } else if (sourceTransfer === 18) {
-    if (effectiveMode === 'force') {
+    if (isForcedToneMapping(effectiveMode)) {
       label = 'HLG-SDR（適用待ち）';
       state = 'hlg-sdr';
     } else {
@@ -317,16 +322,18 @@ function updateVideoColorStatus() {
   elements.videoColor.dataset.state = state;
   const sourceIsHlg = sourceTransfer === 18;
   const applyLut = sourceIsHlg && effectiveMode !== 'off' &&
-    (effectiveMode === 'force' || currentVideoProperties.sdrInHlg);
+    (isForcedToneMapping(effectiveMode) || currentVideoProperties.sdrInHlg);
   setHlgSdrEnabled(applyLut);
 }
 
 function toneMappingModeLabel(mode) {
-  return mode === 'force' ? '強制 SDR 解釈' : mode === 'off' ? '無効（原信号）' : '自動';
+  if (mode === 'force') return '強制 SDR 解釈';
+  if (mode === 'on_compare') return '強制比較（左: 未補正 / 右: 補正）';
+  return mode === 'off' ? '無効（原信号）' : '自動';
 }
 
 async function applyToneMappingMode(mode, announce = true) {
-  if (!['auto', 'force', 'off'].includes(mode)) return;
+  if (!['auto', 'force', 'on_compare', 'off'].includes(mode)) return;
   currentToneMappingMode = mode;
   if (activeDemuxer) await activeDemuxer.setMseToneMappingMode(effectiveToneMappingMode(mode));
   updateVideoColorStatus();

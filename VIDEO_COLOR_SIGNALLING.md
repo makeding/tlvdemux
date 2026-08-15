@@ -53,12 +53,13 @@ flag: changing it would change the decoded colours. A true tone
 mapper would need to process decoded pixels through HLG inverse OETF, display
 mapping, and gamut conversion; MSE metadata cannot perform that operation.
 
-The demo exposes three policies:
+The demo exposes four policies:
 
 | Policy | Behaviour |
 | --- | --- |
 | `auto` | Use structured programme hints and explicit B60 SDR metadata; otherwise preserve HLG. |
 | `force` | Remove the HLG transfer signalling from each HLG SPS and advertise SDR transfer `9/1/9`. This is user-controlled and is not a definitive SDR classification. |
+| `on_compare` | Apply the same signalling policy as `force`; the renderer leaves the left half without the 3D LUT and applies the C++-generated LUT to the right half. |
 | `off` | Preserve source signalling and let the browser handle HLG/HDR. |
 
 ## Ownership and precedence

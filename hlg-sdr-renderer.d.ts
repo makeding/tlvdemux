@@ -14,6 +14,7 @@ export class HlgSdrRenderer {
     height: number;
     data: Uint8Array;
   }): void;
+  setComparisonEnabled(enabled: boolean): void;
   setEnabled(enabled: boolean): void;
   destroy(): void;
 }

@@ -420,7 +420,10 @@ colour implementation. Import `HlgSdrRenderer` from
 WebGL backends then perform the same trilinear lookup; tone curves and colour
 transforms do not live in separate JavaScript shaders. The older
 `hlgSdrToneMappingLut()` 1D API remains temporarily available for compatibility
-but should not be used by new integrations.
+but should not be used by new integrations. `setMseToneMappingMode('on_compare')`
+uses the same MSE signalling as `force`; pair it with
+`HlgSdrRenderer.setComparisonEnabled(true)` to leave the left half without the
+LUT and apply the LUT to the right half.
 
 ### iOS and iPadOS Safari
 

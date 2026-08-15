@@ -12,6 +12,7 @@ precision highp float;
 uniform sampler2D uVideo;
 uniform sampler2D uColorLut;
 uniform float uLutSize;
+uniform float uComparison;
 varying vec2 vTextureCoordinate;
 
 vec3 sampleColorLut(vec3 color) {
@@ -36,6 +37,7 @@ vec3 sampleColorLut(vec3 color) {
 }
 
 void main() {
+  if (uComparison > 0.5 && vTextureCoordinate.x < 0.5) discard;
   vec4 sample = texture2D(uVideo, vTextureCoordinate);
   gl_FragColor = vec4(sampleColorLut(sample.rgb), sample.a);
 }
@@ -49,6 +51,7 @@ struct VertexOutput {
 
 struct LutParameters {
   size: f32,
+  comparison: f32,
 }
 
 @group(0) @binding(0) var videoFrame: texture_external;
@@ -88,6 +91,7 @@ fn vertex(@builtin(vertex_index) index: u32) -> VertexOutput {
 
 @fragment
 fn fragment(input: VertexOutput) -> @location(0) vec4f {
+  if (lut.comparison > 0.5 && input.uv.x < 0.5) { discard; }
   let sample = textureSampleBaseClampToEdge(videoFrame, linearSampler, input.uv);
   return vec4f(sampleColorLut(sample.rgb), sample.a);
 }
@@ -133,6 +137,7 @@ class WebGlBackend {
     this.videoTexture = null;
     this.lutTexture = null;
     this.lut = null;
+    this.comparison = false;
     this.failed = false;
   }
 
@@ -141,12 +146,21 @@ class WebGlBackend {
     if (this.gl) this.uploadColorLut();
   }
 
+  setComparisonEnabled(enabled) {
+    this.comparison = enabled;
+    if (!this.gl) return;
+    this.gl.useProgram(this.program);
+    this.gl.uniform1f(
+      this.gl.getUniformLocation(this.program, 'uComparison'), enabled ? 1 : 0,
+    );
+  }
+
   initialize() {
     if (this.gl) return true;
     if (this.failed) return false;
     try {
       const gl = this.canvas.getContext('webgl', {
-        alpha: false,
+        alpha: true,
         antialias: false,
         premultipliedAlpha: false,
       });
@@ -169,6 +183,7 @@ class WebGlBackend {
       this.lutTexture = this.createTexture();
       gl.uniform1i(gl.getUniformLocation(program, 'uVideo'), 0);
       gl.uniform1i(gl.getUniformLocation(program, 'uColorLut'), 1);
+      gl.uniform1f(gl.getUniformLocation(program, 'uComparison'), this.comparison ? 1 : 0);
       this.uploadColorLut();
       return true;
     } catch (error) {
@@ -213,6 +228,8 @@ class WebGlBackend {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.video);
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.lutTexture);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
   }
 
@@ -247,6 +264,7 @@ class WebGpuBackend {
     this.lutTexture = null;
     this.lutUniform = null;
     this.lut = null;
+    this.comparison = false;
     this.initializing = null;
     this.failed = false;
   }
@@ -254,6 +272,11 @@ class WebGpuBackend {
   setColorLut(lut) {
     this.lut = lut;
     if (this.device) this.uploadColorLut();
+  }
+
+  setComparisonEnabled(enabled) {
+    this.comparison = enabled;
+    this.uploadParameters();
   }
 
   initialize() {
@@ -321,8 +344,14 @@ class WebGpuBackend {
       {texture: this.lutTexture}, bytes, {bytesPerRow, rowsPerImage: this.lut.height},
       {width: this.lut.width, height: this.lut.height},
     );
+    this.uploadParameters();
+  }
+
+  uploadParameters() {
+    if (!this.device || !this.lut || !this.lutUniform) return;
     this.device.queue.writeBuffer(
-      this.lutUniform, 0, new Float32Array([this.lut.size, 0, 0, 0]),
+      this.lutUniform, 0,
+      new Float32Array([this.lut.size, this.comparison ? 1 : 0, 0, 0]),
     );
   }
 
@@ -345,7 +374,7 @@ class WebGpuBackend {
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
         view: this.context.getCurrentTexture().createView(),
-        clearValue: {r: 0, g: 0, b: 0, a: 1},
+        clearValue: {r: 0, g: 0, b: 0, a: 0},
         loadOp: 'clear',
         storeOp: 'store',
       }],
@@ -365,7 +394,11 @@ class WebGpuBackend {
     if (this.canvas.width === width && this.canvas.height === height) return;
     this.canvas.width = width;
     this.canvas.height = height;
-    this.context.configure({device: this.device, format: this.format, alphaMode: 'opaque'});
+    this.context.configure({
+      device: this.device,
+      format: this.format,
+      alphaMode: 'premultiplied',
+    });
   }
 
   destroy() {
@@ -408,6 +441,12 @@ export class HlgSdrRenderer {
     this.webGl.setColorLut(lut);
     this.webGpu.setColorLut(lut);
     if (this.enabled && !this.activeBackend) void this.selectBackend(++this.generation);
+  }
+
+  setComparisonEnabled(enabled) {
+    this.webGl.setComparisonEnabled(enabled);
+    this.webGpu.setComparisonEnabled(enabled);
+    if (this.enabled) this.draw();
   }
 
   setEnabled(enabled) {
