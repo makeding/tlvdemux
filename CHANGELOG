@@ -1,0 +1,127 @@
+# Changelog
+
+> Before the core parsing and demuxing implementation moved to `libaribtlv` on
+> 2026-08-05, the project used the `tlvdemux` namespace. Those entries are
+> labelled **legacy `tlvdemux` implementation**; this is a historical name,
+> not a separate product line.
+
+## [0.2.1] - 2026-08-15
+
+Commit range: `e960417..1adff6b`
+
+- Ignore recoverable filler bytes before the first validated TLV packet so
+  startup resynchronization does not become an MSE error.
+- Keep AAC decode time contiguous across missing frames, and reinitialize MSE
+  audio when a LATM StreamMuxConfig changes, including 5.1 ↔ stereo transitions.
+- Add regression coverage for initial TLV resynchronization, AAC forward
+  timestamp gaps, repeated audio configuration changes, and sample-based WASM
+  audio configuration switching.
+
+## [0.2.0] - 2026-08-15
+
+Commit range: `7c47b47..55796ec`
+
+- Introduce dedicated HEVC/AAC MSE track muxers, Chromium coded-frame policy
+  tests, safer cross-layer seeking, and playback-damage reporting and recovery
+  guidance.
+- Expand VideoToolbox diagnostics and refine video-layer reprobe and seek
+  behavior for broadcast playback.
+
+## [0.1.11] - 2026-08-14
+
+Commit range: `239cb25..9a34f78`
+
+- Add richer subtitle metadata, subtitle rendering and selection, audio
+  asset-group selection, coordinated video/audio layer switching, staging, and
+  synchronization.
+
+## [0.1.10] - 2026-08-14
+
+Commit range: `4e353a4..60369de`
+
+- Consolidate command-line tools into a unified executable and improve static
+  linking.
+- Preserve HEVC colour information in MP4 output and add MSE audio-track
+  switching with splice events.
+
+## [0.1.9] - 2026-08-11
+
+Commit range: `3c6d800..e232e11`
+
+- Add the `tlvanalyze` and `tlvdemux-pipe` tools plus native build/release
+  automation.
+- Move the core parsing and demuxing implementation into `libaribtlv`, then
+  migrate `tlvdemux` integration to the `aribtlv` public types and namespace.
+
+## [0.1.8] - 2026-08-03
+
+Commit range: `d1ff955..ed55f37`
+
+- Harden MSE timing and coded-frame handling: drop non-advancing DTS, cut
+  fragments at safe composition boundaries, preserve source timescales, and
+  prevent invalid leading HEVC pictures from reaching decoders.
+- Correct ARIB B60 access-unit timestamp derivation, leap-second anchoring,
+  subtitle reference-time validation, and MPU consistency checks.
+
+## [0.1.7] - 2026-08-03
+
+Commit range: `49c5a63..73451a1`
+
+- Add `MseAppendQueue`, SourceBuffer lifecycle finalization, media-segment
+  validation, and a browser queue example.
+
+## [0.1.6] - 2026-08-03
+
+Commit range: `4b7e9e1..18f44e4`
+
+- Add viewer-participation notifications, MPT/MH-AIT snapshots, MH-SDT/MH-TOT
+  parsing, extended events, and related data-broadcast support.
+
+## [0.1.5] - 2026-08-01
+
+Commit range: `c187e51..e66a821`
+
+- Coalesce live-stream reads and document and measure WASM input and memory
+  behavior for improved playback throughput.
+
+## [0.1.4] - 2026-08-01
+
+Commit range: `ab4f4a6..4cdc744`
+
+- Add a WebKit media-plane fallback, improve MSE callback handling and demo
+  documentation, and refine keyboard and viewport behavior.
+
+## [0.1.3] - 2026-08-01
+
+Commit range: `3363bdc..7b47136`
+
+- Expand ARIB signalling support and enable `ManagedMediaSource` for Safari
+  demos.
+
+## [0.1.2] - 2026-08-01
+
+Commit range: `eaef4cf..27cd7ae`
+
+- Add stream events, subtitle passthrough, application descriptors and
+  profiles, plus data-broadcast caption integration.
+
+## [0.1.1] - 2026-07-31
+
+Commit range: `c06b2f8..e4684b0` — **legacy `tlvdemux` implementation**
+
+- Add WASM demo playback, seeking and range support; introduce initial HEVC MSE
+  remuxing, live-start buffering, RASL handling, VideoToolbox probing, and
+  recording seek support.
+- Add application-resource management, broadcast clock and program events,
+  broadcast-resource handling, and B62 subtitle resources and timing metadata.
+
+## Initial development - 2026-07-19 to 2026-07-30
+
+Commit range: `050f800..02e6b9b` — **legacy `tlvdemux` implementation**
+
+- Establish the MMT/TLV demuxer, compressed-IP and MMTP parsing, service
+  selection, timestamp mapping, resource limits, CMake packaging, CLI
+  inspection, audio metadata, recording indexing, and seek primitives.
+- Add B62 subtitle resources and timing metadata, application/data-asset
+  parsing and extraction, decompression, duration probing, and the initial
+  Emscripten/WASM bindings.

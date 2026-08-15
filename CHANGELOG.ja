@@ -1,0 +1,119 @@
+# 変更履歴
+
+> 2026-08-05 にコアの解析・demux 実装を `libaribtlv` へ移す前は、
+> プロジェクトで `tlvdemux` 名前空間を使用していました。該当項目は
+> **旧 `tlvdemux` 実装**と表記します。これは別製品ではなく、歴史上の名称です。
+
+## [0.2.1] - 2026-08-15
+
+Commit range: `e960417..1adff6b`
+
+- 最初の検証済み TLV パケット前にある回復可能なフィラーバイトを無視し、起動時の
+  再同期を MSE エラーにしないようにしました。
+- AAC の欠落フレームでデコード時刻を連続に保ち、LATM StreamMuxConfig が変化した
+  場合（5.1ch ↔ ステレオを含む）は MSE 音声を再初期化します。
+- 初期 TLV 再同期、AAC の前方向タイムスタンプギャップ、繰り返される音声設定変更、
+  実サンプルを使う WASM 音声設定切替の回帰テストを追加しました。
+
+## [0.2.0] - 2026-08-15
+
+Commit range: `7c47b47..55796ec`
+
+- 専用の HEVC/AAC MSE トラック muxer、Chromium の coded-frame policy テスト、
+  安全なレイヤー横断シーク、再生損傷の報告と復旧ガイダンスを導入しました。
+- VideoToolbox 診断を拡充し、放送再生向けの映像レイヤー再プローブとシーク動作を
+  改善しました。
+
+## [0.1.11] - 2026-08-14
+
+Commit range: `239cb25..9a34f78`
+
+- 詳細な字幕メタデータ、字幕描画と選択、音声アセットグループ選択、映像・音声
+  レイヤーの協調切替、ステージング、同期を追加しました。
+
+## [0.1.10] - 2026-08-14
+
+Commit range: `4e353a4..60369de`
+
+- コマンドラインツールを単一実行ファイルに統合し、静的リンクを改善しました。
+- MP4 出力で HEVC の色情報を保持し、splice event を伴う MSE 音声トラック切替を
+  追加しました。
+
+## [0.1.9] - 2026-08-11
+
+Commit range: `3c6d800..e232e11`
+
+- `tlvanalyze` と `tlvdemux-pipe`、ネイティブビルド・リリースの自動化を
+  追加しました。
+- コアの解析・demux 実装を `libaribtlv` へ移し、`tlvdemux` 統合を
+  `aribtlv` の公開型と名前空間へ移行しました。
+
+## [0.1.8] - 2026-08-03
+
+Commit range: `d1ff955..ed55f37`
+
+- 非前進 DTS の破棄、安全な composition 境界でのフラグメント分割、ソース
+  timescale の保持、無効な先行 HEVC ピクチャのデコーダ到達防止により、MSE の
+  時刻処理と coded-frame 処理を強化しました。
+- ARIB B60 の access unit 時刻導出、うるう秒アンカー、字幕参照時刻の検証、MPU
+  整合性チェックを修正しました。
+
+## [0.1.7] - 2026-08-03
+
+Commit range: `49c5a63..73451a1`
+
+- `MseAppendQueue`、SourceBuffer ライフサイクルの終了処理、メディアセグメント
+  検証、ブラウザ向けキューの例を追加しました。
+
+## [0.1.6] - 2026-08-03
+
+Commit range: `4b7e9e1..18f44e4`
+
+- 視聴者参加通知、MPT/MH-AIT スナップショット、MH-SDT/MH-TOT 解析、拡張イベント、
+  関連するデータ放送対応を追加しました。
+
+## [0.1.5] - 2026-08-01
+
+Commit range: `c187e51..e66a821`
+
+- ライブストリーム読み込みを coalesce し、再生スループット向上のため WASM 入力と
+  メモリ動作を文書化・計測しました。
+
+## [0.1.4] - 2026-08-01
+
+Commit range: `ab4f4a6..4cdc744`
+
+- WebKit の media-plane フォールバックを追加し、MSE callback 処理とデモ文書を
+  改善、キーボードと viewport の動作を調整しました。
+
+## [0.1.3] - 2026-08-01
+
+Commit range: `3363bdc..7b47136`
+
+- ARIB シグナリング対応を拡充し、Safari デモで `ManagedMediaSource` を有効にしました。
+
+## [0.1.2] - 2026-08-01
+
+Commit range: `eaef4cf..27cd7ae`
+
+- ストリームイベント、字幕 passthrough、アプリケーション descriptor と profile、
+  データ放送の字幕統合を追加しました。
+
+## [0.1.1] - 2026-07-31
+
+Commit range: `c06b2f8..e4684b0` — **旧 `tlvdemux` 実装**
+
+- WASM デモ再生、シーク、Range 対応を追加し、初期 HEVC MSE remuxer、ライブ開始
+  バッファ、RASL 処理、VideoToolbox プローブ、録画シーク対応を導入しました。
+- アプリケーションリソース管理、放送時計・番組イベント、放送リソース処理、B62
+  字幕リソースと timing metadata を追加しました。
+
+## 初期開発 - 2026-07-19 から 2026-07-30
+
+Commit range: `050f800..02e6b9b` — **旧 `tlvdemux` 実装**
+
+- MMT/TLV demuxer、compressed-IP/MMTP 解析、サービス選択、時刻マッピング、
+  リソース制限、CMake packaging、CLI 検査、音声メタデータ、録画インデックス、
+  シーク基盤を整備しました。
+- B62 字幕リソースと timing metadata、アプリケーション/データアセットの解析と
+  抽出、展開、duration probe、初期 Emscripten/WASM binding を追加しました。
