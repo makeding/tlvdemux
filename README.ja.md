@@ -334,6 +334,30 @@ python3 scripts/compare_qvc_color.py --tlvdemux ./build/tlvdemux
 SDR、BS4K は BT.2020 HLG としてデコードし、解析時だけ双方を linear BT.709 に
 変換します。source baseline に被疑実装を混ぜないため、tlvdemux の SDR-in-HLG
 rewrite と HLG-to-SDR LUT は適用しません。
+QVC CS161 は低ビットレートの MPEG-2 service であり、BS4K の HEVC よりも
+本質的にぼやけます。SDR の低周波輝度基準としてのみ使用し、BS4K の空間 detail や
+局所的な色の豊かさを CS に合わせないでください。
+
+現在の project SDR 出力を同じ基準で測定するには、明示的な candidate path を
+選択します。厳密な HLG `9/18/9` 信号を `9/1/9` に rewrite し、C++ と同一の
+8-bit 3D LUT を export して trilinear 補間で適用します。
+
+```sh
+python3 scripts/compare_qvc_color.py --tlvdemux ./build/tlvdemux \
+  --bs-mode current-sdr
+```
+
+低 level tool も直接使用できます。
+
+```sh
+tlvdemux hlg-sdr-lut > current-hlg-sdr.cube
+curl 'http://MIRAKURUN/api/services/SERVICE_ID/stream?decode=0' |
+  tlvdemux pipe --video-only --sdr-in-hlg - |
+  ffmpeg -f mp4 -i pipe:0 -f null -
+```
+
+`--sdr-in-hlg` は選択した video track に対する固定の明示設定です。browser demo の
+display 依存 `auto` policy は CLI に持ち込みません。
 
 同じ種類のトラックが複数ある場合、診断用 dumper は最初に検出した対応トラックを
 書き出します。`--trace-au` では、引き続き出力されたすべてのトラックを表示します。

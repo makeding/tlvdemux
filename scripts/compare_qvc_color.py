@@ -627,6 +627,7 @@ def main() -> int:
                 ("FFmpeg trilinear LUT application reproduces the project transform but not the browser's exact video-texture pipeline."
                  if args.bs_mode == "current-sdr" else
                  "The source baseline does not measure the current project SDR output."),
+                "CS161 is bitrate-limited MPEG-2: use it as a low-frequency SDR luma reference, not as spatial-detail or local-chroma ground truth.",
                 "Inspect the complete process logs before trusting results if source signalling differs from the declared inputs.",
             ],
         }

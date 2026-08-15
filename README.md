@@ -352,6 +352,31 @@ process logs and small aligned PPM previews are written below
 source as BT.2020 HLG, then both are converted to linear BT.709 for analysis.
 This diagnostic deliberately does not apply tlvdemux's SDR-in-HLG rewrite or
 HLG-to-SDR LUT; those are candidate implementations, not the source baseline.
+QVC CS161 is a bitrate-limited MPEG-2 service and is naturally softer than the
+BS4K HEVC service. Use it as the simulcast SDR luma reference, not as a target
+for BS4K spatial detail or local colour richness.
+
+To measure the current project SDR result against that reference, enable the
+explicit candidate path. This makes `tlvdemux pipe` rewrite strict HLG
+`9/18/9` signalling to `9/1/9`, exports the exact C++ 8-bit 3D LUT, and applies
+it with trilinear interpolation before the same analysis:
+
+```sh
+python3 scripts/compare_qvc_color.py --tlvdemux ./build/tlvdemux \
+  --bs-mode current-sdr
+```
+
+The corresponding low-level tools are also available directly:
+
+```sh
+tlvdemux hlg-sdr-lut > current-hlg-sdr.cube
+curl 'http://MIRAKURUN/api/services/SERVICE_ID/stream?decode=0' |
+  tlvdemux pipe --video-only --sdr-in-hlg - |
+  ffmpeg -f mp4 -i pipe:0 -f null -
+```
+
+`--sdr-in-hlg` is explicit and fixed for the selected video track. It does not
+copy the browser demo's display-dependent `auto` policy into the CLI.
 
 When more than one track of a kind is present, the diagnostic dumper writes the
 first discovered supported track of that kind. `--trace-au` still reports every
