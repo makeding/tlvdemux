@@ -628,7 +628,7 @@ private:
         if (config.color) properties.output_color = video_color(*config.color);
         properties.sdr_in_hlg = config.source_color.has_value() &&
             config.color.has_value() && config.source_color->transfer == 18 &&
-            config.color->transfer == 14;
+            config.color->primaries == 1 && config.color->transfer == 1;
         return properties;
     }
 

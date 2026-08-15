@@ -46,17 +46,19 @@ is not a negative HDR assertion.
 
 This is a signalling reinterpretation, not a pixel tone-mapping algorithm.
 The practical case is SDR programme material carried with an HLG transfer
-declaration: changing the effective transfer declaration from HLG (`18`) to
-UHD SDR (`14`) lets the browser apply the SDR display curve. A true tone mapper
-would need to process decoded pixels through HLG inverse OETF, display mapping,
-and gamut conversion; MSE metadata cannot perform that operation.
+declaration: removing the HLG/HDR declaration (`9/18/9`) and advertising
+ordinary SDR (`1/1/9`) lets the browser avoid its HLG HDR path and apply the
+normal SDR display curve. The BT.2020-NCL matrix (`9`) remains unchanged so
+the coded YUV components are not decoded with the wrong matrix. A true tone
+mapper would need to process decoded pixels through HLG inverse OETF, display
+mapping, and gamut conversion; MSE metadata cannot perform that operation.
 
 The demo exposes three policies:
 
 | Policy | Behaviour |
 | --- | --- |
 | `auto` | Use structured programme hints and explicit B60 SDR metadata; otherwise preserve HLG. |
-| `force` | Request HLG-to-SDR signalling reinterpretation for each HLG SPS. This is user-controlled and is not a definitive SDR classification. |
+| `force` | Remove HLG/HDR signalling from each HLG SPS and advertise SDR `1/1/9`. This is user-controlled and is not a definitive SDR classification. |
 | `off` | Preserve source signalling and let the browser handle HLG/HDR. |
 
 ## Ownership and precedence
@@ -86,8 +88,8 @@ not filled from resolution or an HDR label.
    complete optional CICP tuple from `hevc_configuration()`.
 3. Add an MP4 `colr` box with colour type `nclx`, three unsigned 16-bit CICP
    indices, and the one-bit full-range flag. For an explicitly selected
-   SDR-in-HLG track, update the matching SPS in `hvcC` from transfer 18 to 14
-   as well, so browser decoder state and container metadata agree.
+   SDR-in-HLG track, update the matching SPS in `hvcC` from HLG `9/18/9` to
+   SDR `1/1/9` as well, so browser decoder state and container metadata agree.
 4. Validate an ARIB HLG sample as `9/18/9`, limited range, in both the parsed
    configuration and generated init segment.
 

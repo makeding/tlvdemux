@@ -269,7 +269,7 @@ function updateVideoColorStatus() {
   const outputTransfer = currentVideoProperties.outputColor?.transfer;
   let label = '色彩情報なし';
   let state = 'unknown';
-  if (currentVideoProperties.sdrInHlg || (sourceTransfer === 18 && outputTransfer === 14)) {
+  if (currentVideoProperties.sdrInHlg || (sourceTransfer === 18 && outputTransfer === 1)) {
     label = 'HLG-SDR';
     state = 'hlg-sdr';
   } else if (sourceTransfer === 16) {
