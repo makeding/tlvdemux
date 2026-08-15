@@ -14,6 +14,7 @@ uniform sampler2D uToneMap;
 varying vec2 vTextureCoordinate;
 
 void main() {
+  if (vTextureCoordinate.x < 0.5) discard;
   vec4 sample = texture2D(uVideo, vTextureCoordinate);
   float toneMapR = texture2D(uToneMap, vec2(sample.r, 0.5)).r;
   float toneMapG = texture2D(uToneMap, vec2(sample.g, 0.5)).r;
@@ -102,7 +103,7 @@ export class HlgSdrRenderer {
     if (this.failed) return false;
     try {
       const gl = this.canvas.getContext('webgl', {
-        alpha: false,
+        alpha: true,
         antialias: false,
         premultipliedAlpha: false,
       });
@@ -167,6 +168,8 @@ export class HlgSdrRenderer {
         this.video.videoWidth === 0 || this.video.videoHeight === 0) return;
     const gl = this.gl;
     this.resize();
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
     gl.useProgram(this.program);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.texture);

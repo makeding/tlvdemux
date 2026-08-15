@@ -1,5 +1,5 @@
 import { DataBroadcastController } from './data-broadcast.js?v=webkit-canvas-plane-v4';
-import { HlgSdrRenderer } from './hlg-sdr-lut.js?v=arib-hlg-sdr-lut-v1';
+import { HlgSdrRenderer } from './hlg-sdr-lut.js?v=arib-hlg-sdr-lut-v4';
 import {
   audioTrackChoices,
   correspondingAudioTrack,
