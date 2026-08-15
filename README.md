@@ -366,12 +366,25 @@ python3 scripts/compare_qvc_color.py --tlvdemux ./build/tlvdemux \
   --bs-mode current-sdr
 ```
 
+To measure the same `1/13/9` carrier and prototype LUT as the browser demo,
+select `prototype-sdr`.
+
+```sh
+python3 scripts/compare_qvc_color.py --tlvdemux ./build/tlvdemux \
+  --duration 15 --fps 4 --max-offset 5 --snapshot-interval 5 \
+  --bs-mode prototype-sdr
+```
+
 The corresponding low-level tools are also available directly:
 
 ```sh
 tlvdemux hlg-sdr-lut > current-hlg-sdr.cube
+tlvdemux hlg-sdr-lut --prototype > prototype-hlg-sdr.cube
 curl 'http://MIRAKURUN/api/services/SERVICE_ID/stream?decode=0' |
   tlvdemux pipe --video-only --sdr-in-hlg - |
+  ffmpeg -f mp4 -i pipe:0 -f null -
+curl 'http://MIRAKURUN/api/services/SERVICE_ID/stream?decode=0' |
+  tlvdemux pipe --video-only --hlg-sdr-prototype - |
   ffmpeg -f mp4 -i pipe:0 -f null -
 ```
 

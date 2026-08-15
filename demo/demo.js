@@ -45,6 +45,8 @@ const LAYER_HEALTH_CRITICAL_LAG_US = 500000n;
 const DEFAULT_PLAYBACK_RATE = 2;
 const LIVE_PLAYBACK_RATE = 1;
 const SHORT_RECORDING_THRESHOLD_SECONDS = 60;
+const DEFAULT_DEMO_SEEK_SECONDS = 3 * 60 + 19;
+const DEFAULT_DEMO_PAUSE_SECONDS = 3 * 60 + 20;
 const URL_STORAGE_KEY = 'tlvdemux.demo.httpUrl';
 const AUDIO_STORAGE_KEY = 'tlvdemux.demo.audioPacketId';
 const SUBTITLE_STORAGE_KEY = 'tlvdemux.demo.subtitlePacketId';
@@ -116,7 +118,7 @@ let selectedVideoPacketId = null;
 let knownVideoTracks = new Map();
 let currentVideoPresentationHint = null;
 let currentVideoProperties = null;
-let currentToneMappingMode = 'on_compare';
+let currentToneMappingMode = 'prototype';
 let currentHlgSdrLut = null;
 let prototypeHlgSdrLut = null;
 let knownAudioTracks = new Map();
@@ -291,7 +293,8 @@ function isForcedToneMapping(mode) {
 
 function updateVideoColorStatus() {
   const effectiveMode = effectiveToneMappingMode();
-  hlgSdrRenderer.setComparisonEnabled(effectiveMode === 'on_compare');
+  hlgSdrRenderer.setComparisonEnabled(
+    effectiveMode === 'on_compare' || effectiveMode === 'prototype');
   if (!currentVideoProperties) {
     elements.videoColor.textContent = '—';
     delete elements.videoColor.dataset.state;
@@ -303,7 +306,7 @@ function updateVideoColorStatus() {
   let label = '色彩情報なし';
   let state = 'unknown';
   if (currentVideoProperties.hlgSdrPrototype) {
-    label = 'HLG-SDR 原型';
+    label = 'HLG-SDR 原型（左: carrier / 右: BT.2446）';
     state = 'hlg-sdr';
   } else if (currentVideoProperties.sdrInHlg ||
              (sourceTransfer === 18 && outputTransfer === 1)) {
@@ -339,7 +342,7 @@ function updateVideoColorStatus() {
 function toneMappingModeLabel(mode) {
   if (mode === 'force') return '強制 SDR 解釈';
   if (mode === 'on_compare') return '強制比較（左: 未補正 / 右: 補正）';
-  if (mode === 'prototype') return '受控 HLG→SDR 原型';
+  if (mode === 'prototype') return '受控原型（左: carrier / 右: BT.2446）';
   return mode === 'off' ? '無効（原信号）' : '自動';
 }
 
@@ -711,7 +714,8 @@ async function playbackBackpressure(generation) {
 }
 
 async function playSource(source, probeResult, generation, startTimeSeconds = 0,
-                          liveMode = false, reuseMedia = false) {
+                          liveMode = false, reuseMedia = false,
+                          pauseAtSeconds = null) {
   const recordingDurationSeconds = liveMode ? Infinity : durationSeconds(probeResult.duration);
   const playbackRate = liveMode || recordingDurationSeconds < SHORT_RECORDING_THRESHOLD_SECONDS
     ? LIVE_PLAYBACK_RATE
@@ -861,6 +865,26 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     }
     played = true;
     monitorPlaybackQuality(generation);
+    if (pauseAtSeconds !== null) {
+      const pauseAtPresentedFrame = (_now, metadata) => {
+        if (generation !== runGeneration) return;
+        if (metadata.mediaTime < pauseAtSeconds) {
+          elements.video.requestVideoFrameCallback(pauseAtPresentedFrame);
+          return;
+        }
+        elements.video.pause();
+        elements.video.playbackRate = playbackRate;
+        elements.probeState.textContent = '03:20 描画完了・一時停止';
+        appendLog('03:19 から再生し、03:20 の描画フレームで一時停止しました');
+      };
+      elements.video.playbackRate = 1;
+      elements.probeState.textContent = '03:20 まで描画中';
+      elements.video.requestVideoFrameCallback(pauseAtPresentedFrame);
+      elements.video.play().catch(() => {
+        appendLog('自動再生がブロックされました。再生ボタンを押してください');
+      });
+      return;
+    }
     elements.probeState.textContent = liveMode ? 'Live 再生中' : '再生中';
     if (liveMode) appendLog(`Live 共通バッファ ${commonAhead.toFixed(1)}s で再生開始 (1×)`);
     elements.video.play().catch(() => {
@@ -1663,8 +1687,10 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   appendLog(liveMode ? 'Live ストリームが終了しました' : 'ストリーム終端です');
 }
 
-async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false, operationLabel = null) {
-  if (!reuseMedia && startTimeSeconds === 0) dataBroadcast.beginSession();
+async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false,
+                           operationLabel = null, pauseAtSeconds = null,
+                           initialLoad = false) {
+  if (initialLoad) dataBroadcast.beginSession();
   if (!reuseMedia) {
     releaseMedia();
     knownAudioTracks = new Map();
@@ -1685,9 +1711,9 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false, operationLa
   const controller = new AbortController();
   activeController = controller;
   setRunning(true);
-  if (startTimeSeconds === 0) elements.duration.textContent = '—';
+  if (initialLoad) elements.duration.textContent = '—';
   elements.sourceSize.textContent = '—';
-  if (startTimeSeconds === 0) {
+  if (initialLoad) {
     currentVideoProperties = null;
     updateVideoColorStatus();
   }
@@ -1734,7 +1760,10 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false, operationLa
       elements.duration.textContent = formatDuration(probeResult.duration);
       appendLog(`再生時間 ${durationSeconds(probeResult.duration).toFixed(6)}s、検出読み込み ${formatBytes(probeResult.transferred)}`);
     }
-    await playSource(source, probeResult, generation, startTimeSeconds, liveMode, reuseMedia);
+    await playSource(
+      source, probeResult, generation, startTimeSeconds, liveMode, reuseMedia,
+      pauseAtSeconds,
+    );
   } catch (error) {
     if (generation !== runGeneration || error.name === 'AbortError') return;
     elements.probeState.textContent = '失敗';
@@ -1753,7 +1782,13 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false, operationLa
   }
 }
 
-elements.probeButton.addEventListener('click', () => loadAndPlay(0));
+const loadComparisonFrame = () => loadAndPlay(
+  DEFAULT_DEMO_SEEK_SECONDS, false,
+  '03:19 から比較フレーム 03:20 まで描画します',
+  DEFAULT_DEMO_PAUSE_SECONDS, true,
+);
+
+elements.probeButton.addEventListener('click', loadComparisonFrame);
 elements.cancelButton.addEventListener('click', stopPlayback);
 elements.clearButton.addEventListener('click', () => { elements.log.textContent = ''; });
 elements.toneMappingMode.addEventListener('change', () => {
@@ -1863,6 +1898,7 @@ createWorkerTlvDemuxModule().then(module => {
   elements.wasmStatus.textContent = 'WASM Worker 準備完了';
   elements.wasmStatus.className = 'badge';
   setRunning(false);
+  loadComparisonFrame();
 }).catch(error => {
   elements.wasmStatus.textContent = 'WASM Worker 読み込み失敗';
   elements.wasmStatus.className = 'badge error';

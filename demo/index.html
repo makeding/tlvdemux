@@ -113,8 +113,8 @@
         <select id="toneMappingMode">
           <option value="auto">自動</option>
           <option value="force">強制 SDR 解釈</option>
-          <option value="on_compare" selected>強制（左: 未補正 / 右: 補正）</option>
-          <option value="prototype">受控 HLG→SDR 原型</option>
+          <option value="on_compare">強制（左: 未補正 / 右: 補正）</option>
+          <option value="prototype" selected>受控比較（左: carrier / 右: BT.2446）</option>
           <option value="off">無効（原信号）</option>
         </select>
       </label>
@@ -145,7 +145,7 @@
     </section>
 
     <div class="actions">
-      <button id="probeButton" class="primary" disabled>読み込んで再生</button>
+      <button id="probeButton" class="primary" disabled>読み込んで 03:20 へ</button>
       <button id="cancelButton" disabled>停止</button>
     </div>
 
@@ -183,6 +183,6 @@
 
   <script src="demux-worker-protocol.js"></script>
   <script src="/libaribhtml5/libaribhtml5.js"></script>
-  <script type="module" src="demo.js?v=playback-damage-v1"></script>
+  <script type="module" src="demo.js?v=hlg-sdr-preroll-v2"></script>
 </body>
 </html>

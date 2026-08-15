@@ -122,6 +122,40 @@ int main() {
     check(maximum_error <= 3.0 / 255.0,
           "3D LUT interpolation error exceeds three 8-bit levels");
 
+    const std::array<std::pair<double, double>, 4> calibration_points{{
+        {0.0886, 0.0315},
+        {0.5480, 0.2696},
+        {0.9208, 0.7662},
+        {0.9368, 0.9256},
+    }};
+    for (const auto& [input, expected] : calibration_points) {
+        check(std::abs(tlvdemux::detail::prototype_sdr_luma_calibration(input) -
+                       expected) < 0.02,
+              "prototype luma calibration missed a QVC anchor");
+    }
+    const std::array<std::pair<double, double>, 4> refinement_points{{
+        {0.0304, 0.0326},
+        {0.2504, 0.2346},
+        {0.8403, 0.7528},
+        {0.9355, 0.9256},
+    }};
+    for (const auto& [input, expected] : refinement_points) {
+        check(std::abs(tlvdemux::detail::prototype_sdr_luma_refinement(input) -
+                       expected) < 0.0001,
+              "prototype luma refinement missed a QVC anchor");
+    }
+    double previous_calibrated = 0.0;
+    for (unsigned index = 0; index <= 1000; ++index) {
+        const double calibrated =
+            tlvdemux::detail::prototype_sdr_luma_refinement(
+                tlvdemux::detail::prototype_sdr_luma_calibration(index / 1000.0));
+        check(calibrated + 1e-12 >= previous_calibrated,
+              "prototype luma calibration is not monotonic");
+        previous_calibrated = calibrated;
+    }
+    check(tlvdemux::detail::prototype_sdr_luma_calibration(0.0) == 0.0 &&
+              tlvdemux::detail::prototype_sdr_luma_calibration(1.0) == 1.0,
+          "prototype luma calibration changed black or white");
     const auto prototype_black =
         tlvdemux::detail::map_hlg_sdr_prototype_rgb({0.0, 0.0, 0.0});
     check(prototype_black.red == 0.0 && prototype_black.green == 0.0 &&
@@ -129,16 +163,16 @@ int main() {
           "prototype mapper changed black");
     const auto prototype_mid =
         tlvdemux::detail::map_hlg_sdr_prototype_rgb({0.5, 0.5, 0.5});
-    check(prototype_mid.red > 0.65 && prototype_mid.red < 0.73 &&
+    check(prototype_mid.red > 0.43 && prototype_mid.red < 0.47 &&
               std::abs(prototype_mid.red - prototype_mid.green) < 0.0001 &&
               std::abs(prototype_mid.green - prototype_mid.blue) < 0.0001,
-          "prototype mapper does not preserve the Method C mid-grey anchor");
+          "prototype mapper does not apply the calibrated mid-grey anchor");
     const auto prototype_reference =
         tlvdemux::detail::map_hlg_sdr_prototype_rgb({0.75, 0.75, 0.75});
-    check(prototype_reference.red > 0.93 && prototype_reference.red < 0.99 &&
+    check(prototype_reference.red > 0.82 && prototype_reference.red < 0.87 &&
               std::abs(prototype_reference.red - prototype_reference.green) < 0.0001 &&
               std::abs(prototype_reference.green - prototype_reference.blue) < 0.0001,
-          "prototype mapper does not preserve HLG reference white");
+          "prototype mapper does not apply the calibrated reference anchor");
     const auto prototype_white =
         tlvdemux::detail::map_hlg_sdr_prototype_rgb({1.0, 1.0, 1.0});
     check(prototype_white.red > 0.995 && prototype_white.green > 0.995 &&

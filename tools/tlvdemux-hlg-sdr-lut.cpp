@@ -9,7 +9,7 @@
 namespace {
 
 void usage(std::ostream& output) {
-    output << "usage: tlvdemux hlg-sdr-lut\n";
+    output << "usage: tlvdemux hlg-sdr-lut [--prototype]\n";
 }
 
 double channel(const tlvdemux::HlgSdrColorLut& lut, const std::size_t red,
@@ -28,13 +28,16 @@ int tlvdemux_cli::run_hlg_sdr_lut(const int argc, char** argv) {
         usage(std::cout);
         return 0;
     }
-    if (argc != 1) {
+    const bool prototype = argc == 2 && std::string(argv[1]) == "--prototype";
+    if (argc != 1 && !prototype) {
         usage(std::cerr);
         return 2;
     }
 
-    const auto lut = tlvdemux::hlg_sdr_color_lut();
-    std::cout << "TITLE \"tlvdemux HLG-SDR\"\n"
+    const auto lut = prototype ? tlvdemux::hlg_sdr_prototype_color_lut()
+                               : tlvdemux::hlg_sdr_color_lut();
+    std::cout << "TITLE \"tlvdemux HLG-SDR"
+              << (prototype ? " prototype" : "") << "\"\n"
                  "LUT_3D_SIZE "
               << lut.size << "\n"
               << "DOMAIN_MIN 0 0 0\n"

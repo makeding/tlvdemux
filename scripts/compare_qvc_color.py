@@ -128,12 +128,16 @@ def decoder_command(ffmpeg: str, input_format: str, frames: int, fps: float,
     else:
         if lut_path is None:
             raise RuntimeError("current-sdr analysis requires the exported 3D LUT")
+        prototype = bs_mode == "prototype-sdr"
+        transfer = "iec61966-2-1" if prototype else "709"
+        primaries = "709" if prototype else "2020"
         conversion = (
             f"fps={fps},zscale=w={WIDTH}:h={HEIGHT}:filter=bilinear:"
-            "matrixin=2020_ncl:transferin=709:primariesin=2020:rangein=limited:"
-            "matrix=gbr:transfer=709:primaries=709:range=full:npl=100,"
+            f"matrixin=2020_ncl:transferin={transfer}:primariesin={primaries}:"
+            f"rangein=limited:matrix=gbr:transfer={transfer}:primaries=709:"
+            "range=full:npl=100,"
             f"format=gbrpf32le,lut3d=file='{filter_path(lut_path)}':interp=trilinear,"
-            "zscale=matrixin=gbr:transferin=709:primariesin=709:rangein=full:"
+            f"zscale=matrixin=gbr:transferin={transfer}:primariesin=709:rangein=full:"
             "matrix=gbr:transfer=linear:primaries=709:range=full:npl=100,"
             "format=gbrpf32le"
         )
@@ -434,6 +438,11 @@ def self_test() -> None:
                               Path("current.cube"))
     if "lut3d=" not in command[command.index("-vf") + 1]:
         raise AssertionError("current SDR filter test failed")
+    prototype_command = decoder_command(
+        "ffmpeg", "mp4", 10, 1.0, "bs", "prototype-sdr",
+        Path("prototype.cube"))
+    if "primariesin=709" not in prototype_command[prototype_command.index("-vf") + 1]:
+        raise AssertionError("prototype carrier filter test failed")
     print("qvc color comparison self-test passed")
 
 
@@ -453,7 +462,8 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--tlvdemux")
     parser.add_argument("--video-packet-id", help="optional BS4K MMTP video packet ID")
     parser.add_argument(
-        "--bs-mode", choices=["source", "current-sdr"], default="source",
+        "--bs-mode", choices=["source", "current-sdr", "prototype-sdr"],
+        default="source",
         help="compare the HLG source baseline or the current tlvdemux SDR result",
     )
     parser.add_argument("--self-test", action="store_true")
@@ -483,9 +493,11 @@ def main() -> int:
 
     lut_path: Path | None = None
     lut_command: list[str] | None = None
-    if args.bs_mode == "current-sdr":
+    if args.bs_mode != "source":
         lut_path = output_dir / "current-hlg-sdr.cube"
         lut_command = [tlvdemux, "hlg-sdr-lut"]
+        if args.bs_mode == "prototype-sdr":
+            lut_command.append("--prototype")
         with lut_path.open("wb") as output, \
                 (output_dir / "hlg-sdr-lut.stderr.log").open("wb") as error:
             result = subprocess.run(lut_command, stdout=output, stderr=error, check=False)
@@ -500,6 +512,8 @@ def main() -> int:
     pipe_bs = [tlvdemux, "pipe", "--video-only"]
     if args.bs_mode == "current-sdr":
         pipe_bs.append("--sdr-in-hlg")
+    elif args.bs_mode == "prototype-sdr":
+        pipe_bs.append("--hlg-sdr-prototype")
     if args.video_packet_id:
         pipe_bs.extend(["--video-packet-id", args.video_packet_id])
     pipe_bs.append("-")
@@ -517,7 +531,7 @@ def main() -> int:
         "duration_seconds": args.duration,
         "sample_fps": args.fps,
         "raw_streams_saved": False,
-        "project_sdr_conversion_applied": args.bs_mode == "current-sdr",
+        "project_sdr_conversion_applied": args.bs_mode != "source",
         "bs_mode": args.bs_mode,
         "analysis_space": {
             "encoding": "linear RGB",
@@ -527,7 +541,9 @@ def main() -> int:
             "bs4k_input": (
                 "BT.2020/HLG/BT.2020 non-constant limited"
                 if args.bs_mode == "source" else
-                "BT.2020/BT.709/BT.2020 non-constant limited, then current 3D LUT"
+                ("BT.709/sRGB/BT.2020 non-constant limited, then prototype 3D LUT"
+                 if args.bs_mode == "prototype-sdr" else
+                 "BT.2020/BT.709/BT.2020 non-constant limited, then current 3D LUT")
             ),
         },
         "commands": {"cs161": cs_commands, "bs4k221": bs_commands},
@@ -584,14 +600,18 @@ def main() -> int:
             for record in pair_records:
                 records.write(json.dumps(record, ensure_ascii=False) + "\n")
         bs_label = ("BS4K221 HLG" if args.bs_mode == "source" else
-                    "BS4K221 current tlvdemux SDR")
+                    ("BS4K221 prototype tlvdemux SDR"
+                     if args.bs_mode == "prototype-sdr" else
+                     "BS4K221 current tlvdemux SDR"))
         snapshots = write_snapshots(
             output_dir, pairs, args.fps, args.snapshot_interval, bs_label)
         cs_signalling = observed_video_signalling(output_dir / "cs161-2.stderr.log")
         bs_signalling = observed_video_signalling(output_dir / "bs4k221-3.stderr.log")
         expected_bs_signalling = (
             "bt2020nc/bt2020/arib-std-b67" if args.bs_mode == "source" else
-            "bt2020nc/bt2020/bt709"
+            ("bt2020nc/bt709/iec61966-2-1"
+             if args.bs_mode == "prototype-sdr" else
+             "bt2020nc/bt2020/bt709")
         )
         signalling_matches = bool(cs_signalling and "bt709" in cs_signalling and
                                   bs_signalling and expected_bs_signalling in bs_signalling)
@@ -621,11 +641,13 @@ def main() -> int:
             "interpretation": [
                 ("No tlvdemux HLG-to-SDR LUT or SDR-in-HLG rewrite was applied."
                  if args.bs_mode == "source" else
-                 "The BS4K path used tlvdemux SDR-in-HLG signalling and the exact exported 8-bit 3D LUT."),
+                 ("The BS4K path used the tlvdemux prototype carrier and its exact exported 8-bit 3D LUT."
+                  if args.bs_mode == "prototype-sdr" else
+                  "The BS4K path used tlvdemux SDR-in-HLG signalling and the exact exported 8-bit 3D LUT.")),
                 "Both sources were linearized and converted to BT.709 primaries for analysis.",
                 "The 100-nit normalization makes the luma comparison reproducible; it is not a display tone map.",
                 ("FFmpeg trilinear LUT application reproduces the project transform but not the browser's exact video-texture pipeline."
-                 if args.bs_mode == "current-sdr" else
+                 if args.bs_mode != "source" else
                  "The source baseline does not measure the current project SDR output."),
                 "CS161 is bitrate-limited MPEG-2: use it as a low-frequency SDR luma reference, not as spatial-detail or local-chroma ground truth.",
                 "Inspect the complete process logs before trusting results if source signalling differs from the declared inputs.",

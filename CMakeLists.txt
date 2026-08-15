@@ -207,6 +207,10 @@ if(BUILD_TESTING)
                  COMMAND tlvdemux-cli hlg-sdr-lut)
         set_tests_properties(tlvdemux-cli-hlg-sdr-lut-output PROPERTIES
             PASS_REGULAR_EXPRESSION "LUT_3D_SIZE 33")
+        add_test(NAME tlvdemux-cli-hlg-sdr-prototype-lut-output
+                 COMMAND tlvdemux-cli hlg-sdr-lut --prototype)
+        set_tests_properties(tlvdemux-cli-hlg-sdr-prototype-lut-output PROPERTIES
+            PASS_REGULAR_EXPRESSION "TITLE \"tlvdemux HLG-SDR prototype\"")
         add_test(NAME tlvdemux-cli-missing-command COMMAND tlvdemux-cli)
         set_tests_properties(tlvdemux-cli-missing-command PROPERTIES WILL_FAIL TRUE)
         add_test(NAME tlvdemux-cli-unknown-command COMMAND tlvdemux-cli unknown)

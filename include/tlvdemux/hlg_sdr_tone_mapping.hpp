@@ -123,23 +123,48 @@ inline double prototype_tone_map(const double hdr_luminance) {
         (2.0 * ratio - ratio * ratio);
 }
 
-inline HlgSdrRgb compress_to_bt709_gamut(const HlgSdrRgb color) {
-    const double luma = clamp01(
-        0.2126 * color.red + 0.7152 * color.green + 0.0722 * color.blue);
-    double saturation = 1.0;
-    for (const double component : {color.red, color.green, color.blue}) {
-        if (component < 0.0) {
-            saturation = std::min(saturation, luma / (luma - component));
-        } else if (component > 1.0) {
-            saturation = std::min(
-                saturation, (1.0 - luma) / (component - luma));
+inline HlgSdrRgb clip_to_bt709_gamut(const HlgSdrRgb color) {
+    return {clamp01(color.red), clamp01(color.green), clamp01(color.blue)};
+}
+
+inline double prototype_sdr_luma_calibration(const double luminance) {
+    const double input = clamp01(luminance);
+    constexpr double contrast = 3.3;
+    const double compressed = input /
+        (input + contrast * (1.0 - input));
+
+    // QVC CS161/BS4K221 pairs agree at peak white but place the prototype's
+    // shadows and midtones too high. Preserve that white point by returning
+    // quickly to the identity curve only in the top 1.5% of linear light.
+    constexpr double shoulder_start = 0.925;
+    constexpr double shoulder_end = 0.940;
+    if (input <= shoulder_start) return compressed;
+    const double ratio = clamp01(
+        (input - shoulder_start) / (shoulder_end - shoulder_start));
+    const double blend = ratio * ratio * (3.0 - 2.0 * ratio);
+    return compressed + blend * (input - compressed);
+}
+
+inline double prototype_sdr_luma_refinement(const double luminance) {
+    constexpr std::array<HlgSdrToneMappingPoint, 6> points{{
+        {0.0000, 0.0000},
+        {0.0304, 0.0326},
+        {0.2504, 0.2346},
+        {0.8403, 0.7528},
+        {0.9355, 0.9256},
+        {1.0000, 1.0000},
+    }};
+    const double input = clamp01(luminance);
+    for (std::size_t index = 1; index < points.size(); ++index) {
+        if (input <= points[index].input) {
+            const auto& lower = points[index - 1];
+            const auto& upper = points[index];
+            const double ratio = (input - lower.input) /
+                (upper.input - lower.input);
+            return lower.output + ratio * (upper.output - lower.output);
         }
     }
-    return {
-        clamp01(luma + saturation * (color.red - luma)),
-        clamp01(luma + saturation * (color.green - luma)),
-        clamp01(luma + saturation * (color.blue - luma)),
-    };
+    return 1.0;
 }
 
 inline double srgb_oetf(const double linear) {
@@ -167,7 +192,7 @@ inline HlgSdrRgb map_hlg_sdr_prototype_rgb(const HlgSdrRgb input) {
         scene.blue * ootf_scale,
     };
 
-    constexpr double crosstalk = 0.05;
+    constexpr double crosstalk = 0.0;
     const double sum = display.red + display.green + display.blue;
     display = {
         (1.0 - 3.0 * crosstalk) * display.red + crosstalk * sum,
@@ -209,8 +234,18 @@ inline HlgSdrRgb map_hlg_sdr_prototype_rgb(const HlgSdrRgb input) {
         -0.124550, 1.132900, -0.008350,
         -0.018151, -0.100579, 1.118730,
     };
-    const auto sdr709 = compress_to_bt709_gamut(
-        multiply(bt2020_to_bt709, sdr2020));
+    auto sdr709 = multiply(bt2020_to_bt709, sdr2020);
+    const double sdr_luma =
+        0.2126 * sdr709.red + 0.7152 * sdr709.green + 0.0722 * sdr709.blue;
+    if (sdr_luma <= 0.0) return {0.0, 0.0, 0.0};
+    const double calibrated_luma = prototype_sdr_luma_refinement(
+        prototype_sdr_luma_calibration(sdr_luma));
+    const double calibrated_scale = calibrated_luma / sdr_luma;
+    sdr709 = clip_to_bt709_gamut({
+        sdr709.red * calibrated_scale,
+        sdr709.green * calibrated_scale,
+        sdr709.blue * calibrated_scale,
+    });
     return {srgb_oetf(sdr709.red), srgb_oetf(sdr709.green),
             srgb_oetf(sdr709.blue)};
 }
