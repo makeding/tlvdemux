@@ -1,5 +1,6 @@
 import { DataBroadcastController } from './data-broadcast.js?v=webkit-canvas-plane-v4';
-import { HlgSdrRenderer } from './hlg-sdr-lut.js?v=arib-hlg-sdr-lut-v4';
+import { HlgSdrRenderer } from './hlg-sdr-lut.js?v=arib-hlg-sdr-lut-v5';
+import { WebGpuHlgSdrRenderer } from './webgpu-hlg-sdr.js?v=external-texture-v1';
 import {
   audioTrackChoices,
   correspondingAudioTrack,
@@ -54,7 +55,7 @@ const elements = Object.fromEntries([
   'videoPacketId', 'probeButton', 'cancelButton', 'clearButton',
   'probeState', 'duration', 'videoColor', 'sourceSize', 'transferred', 'log',
   'video', 'mediaInfo', 'liveMode', 'videoTrack', 'audioTrack', 'subtitleTrack', 'subtitleOverlay',
-  'toneMappingMode', 'hlgSdrCanvas',
+  'toneMappingMode', 'hlgSdrCanvas', 'hlgSdrWebGpuCanvas',
   'playbackNotice',
   'captionVisible', 'superimposeVisible',
   'broadcastViewport', 'broadcastVideoSurface', 'broadcastMediaPlane', 'broadcastFrame', 'dataRemote',
@@ -78,6 +79,50 @@ const hlgSdrRenderer = new HlgSdrRenderer({
   canvas: elements.hlgSdrCanvas,
   onError: error => appendLog(`HLG-SDR 輝度補正を利用できません: ${error.message || error}`),
 });
+const webGpuHlgSdrRenderer = new WebGpuHlgSdrRenderer({
+  video: elements.video,
+  canvas: elements.hlgSdrWebGpuCanvas,
+  onError: error => appendLog(`WebGPU HLG-SDR 補正を利用できません: ${error.message || error}`),
+  onLost: () => {
+    if (hlgSdrWebGpuRequested) {
+      hlgSdrRenderer.setEnabled(true);
+      setHlgSdrRendererBackend('WebGL');
+    }
+  },
+});
+let hlgSdrWebGpuRequested = false;
+let hlgSdrRendererBackend = null;
+
+function setHlgSdrRendererBackend(backend) {
+  if (backend === hlgSdrRendererBackend) return;
+  hlgSdrRendererBackend = backend;
+  appendLog(`HLG-SDR 補正レンダラー: ${backend}`);
+}
+
+function preferWebGpuHlgSdr() {
+  void webGpuHlgSdrRenderer.setEnabled(true).then(active => {
+    if (!hlgSdrWebGpuRequested) return;
+    hlgSdrRenderer.setEnabled(!active);
+    setHlgSdrRendererBackend(active ? 'WebGPU ExternalTexture' : 'WebGL');
+  });
+}
+
+function setHlgSdrEnabled(enabled) {
+  hlgSdrWebGpuRequested = enabled;
+  if (!enabled) {
+    hlgSdrRenderer.setEnabled(false);
+    void webGpuHlgSdrRenderer.setEnabled(false);
+    hlgSdrRendererBackend = null;
+    return;
+  }
+  preferWebGpuHlgSdr();
+}
+
+function setHlgSdrLut(lut) {
+  hlgSdrRenderer.setLut(lut);
+  webGpuHlgSdrRenderer.setLut(lut);
+  if (hlgSdrWebGpuRequested) preferWebGpuHlgSdr();
+}
 
 let wasmModule = null;
 let activeProbe = null;
@@ -269,7 +314,7 @@ function updateVideoColorStatus() {
   if (!currentVideoProperties) {
     elements.videoColor.textContent = '—';
     delete elements.videoColor.dataset.state;
-    hlgSdrRenderer.setEnabled(false);
+    setHlgSdrEnabled(false);
     return;
   }
   const sourceTransfer = currentVideoProperties.sourceColor?.transfer;
@@ -299,7 +344,7 @@ function updateVideoColorStatus() {
   const sourceIsHlg = sourceTransfer === 18;
   const applyLut = sourceIsHlg && currentToneMappingMode !== 'off' &&
     (currentToneMappingMode === 'force' || currentVideoProperties.sdrInHlg);
-  hlgSdrRenderer.setEnabled(applyLut);
+  setHlgSdrEnabled(applyLut);
 }
 
 function toneMappingModeLabel(mode) {
@@ -1359,7 +1404,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       }
     },
   });
-  hlgSdrRenderer.setLut(await demuxer.hlgSdrToneMappingLut());
+  setHlgSdrLut(await demuxer.hlgSdrToneMappingLut());
   await demuxer.configureTrackSelection({
     videoPacketId: initialVideoPacketId,
     audioPacketId: preferredAudioPacketId,
