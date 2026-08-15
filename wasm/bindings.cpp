@@ -64,6 +64,12 @@ const char* error_code_name(const aribtlv::ErrorCode code) noexcept {
     return "unknown";
 }
 
+bool is_initial_tlv_resynchronization(const aribtlv::Error& error) noexcept {
+    return error.code == aribtlv::ErrorCode::MalformedInput &&
+        error.recoverable && error.input_offset == 0 &&
+        error.message == "discarded bytes while searching for a validated TLV boundary";
+}
+
 const char* duration_probe_state_name(const aribtlv::DurationProbeState state) noexcept {
     switch (state) {
     case aribtlv::DurationProbeState::Idle: return "idle";
@@ -998,6 +1004,10 @@ public:
     }
 
     void onError(const aribtlv::Error& error) override {
+        // Raw tuner streams can begin with null/filler bytes before the first
+        // validated TLV packet. The parser already discards that prefix; do
+        // not turn this expected startup resynchronization into an MSE error.
+        if (is_initial_tlv_resynchronization(error)) return;
         auto event = val::object();
         event.set("code", std::string(error_code_name(error.code)));
         event.set("inputOffset", error.input_offset);
