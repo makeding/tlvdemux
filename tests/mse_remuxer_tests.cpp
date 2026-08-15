@@ -567,23 +567,26 @@ void test_audio_configuration_change_emits_matching_init() {
     remuxer.push(audio_unit(1, 0, 6));
     remuxer.push(audio_unit(1, 1024, 6));
     remuxer.push(audio_unit(1, 2048, 2));
+    remuxer.push(audio_unit(1, 3072, 6));
     remuxer.flush();
 
     std::vector<tlvdemux::MseTrackInit> audio_inits;
     for (const auto& init : sink.inits) {
         if (init.type == "audio") audio_inits.push_back(init);
     }
-    check(audio_inits.size() == 2,
-          "AAC channel configuration change did not emit a replacement init segment");
-    check(audio_inits[0].channels == 6 && audio_inits[1].channels == 2,
-          "AAC replacement init segments have the wrong channel layouts");
-    check(sink.splices.size() == 1,
-          "AAC channel configuration change did not emit one audio splice");
+    check(audio_inits.size() == 3,
+          "AAC channel configuration changes did not emit replacement init segments");
+    check(audio_inits[0].channels == 6 && audio_inits[1].channels == 2 &&
+              audio_inits[2].channels == 6,
+          "AAC replacement init segments did not follow both channel transitions");
+    check(sink.splices.size() == 2,
+          "AAC channel configuration changes did not emit two audio splices");
     const auto segments = segments_of(sink.segments, "audio");
-    check(segments.size() == 2,
-          "AAC channel configuration change did not split old and new media");
-    check(segments[0].tfdt == 0 && segments[1].tfdt == 2048,
-          "AAC configuration change broke the decode timeline boundary");
+    check(segments.size() == 3,
+          "AAC channel configuration changes did not split each media generation");
+    check(segments[0].tfdt == 0 && segments[1].tfdt == 2048 &&
+              segments[2].tfdt == 3072,
+          "AAC configuration changes broke the decode timeline boundaries");
 }
 
 struct ReorderedFrame { std::int64_t dts, pts; bool keyframe; };
