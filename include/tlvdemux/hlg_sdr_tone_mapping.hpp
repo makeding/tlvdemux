@@ -13,7 +13,7 @@ namespace tlvdemux {
 
 inline constexpr std::size_t kHlgSdrToneMappingLutSize = 1024;
 inline constexpr std::size_t kHlgSdrColorLutSize = 33;
-inline constexpr std::size_t kHlgSdrPrototypeColorLutSize = 96;
+inline constexpr std::size_t kHlgSdrPrototypeColorLutSize = 128;
 
 struct HlgSdrRgb {
     double red;
@@ -127,11 +127,11 @@ inline double prototype_tone_map(const double hdr_luminance) {
 
 inline double prototype_sdr_luma_fit(const double luminance) {
     const double input = clamp01(luminance);
-    // A single smooth display-fit curve keeps the aligned SDR simulcast's
-    // midtone contrast without the former narrow highlight shoulder or the
-    // colour-dependent luma recovery. It fixes black and white and has a
-    // bounded slope across the complete nominal range.
-    constexpr double contrast = 3.6;
+    // Twenty-five aligned BS4K/ViuTV frames around the 06:08/05:37 programme
+    // positions showed that the stronger fit crushed the SDR master by about
+    // one tenth of the nominal range. Keep a single smooth curve, fixing black
+    // and white without the former narrow shoulder or chroma-dependent lift.
+    constexpr double contrast = 1.5;
     return input / (input + contrast * (1.0 - input));
 }
 
@@ -203,7 +203,7 @@ inline HlgSdrRgb map_hlg_sdr_prototype_rgb(const HlgSdrRgb input) {
         scene.blue * ootf_scale,
     };
 
-    constexpr double crosstalk = 0.05;
+    constexpr double crosstalk = 0.10;
     const double sum = display.red + display.green + display.blue;
     display = {
         (1.0 - 3.0 * crosstalk) * display.red + crosstalk * sum,

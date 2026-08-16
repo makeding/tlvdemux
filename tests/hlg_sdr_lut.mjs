@@ -35,9 +35,9 @@ const whiteY = Math.floor((colorLut.size - 1) / columns) * colorLut.size +
 const whiteOffset = (whiteY * colorLut.width + whiteX) * 4;
 assert.deepEqual([...colorLut.data.subarray(whiteOffset, whiteOffset + 4)],
   [255, 255, 255, 255]);
-assert.equal(prototypeColorLut.size, 96);
-assert.equal(prototypeColorLut.width, 960);
-assert.equal(prototypeColorLut.height, 960);
+assert.equal(prototypeColorLut.size, 128);
+assert.equal(prototypeColorLut.width, 1536);
+assert.equal(prototypeColorLut.height, 1408);
 assert.equal(prototypeColorLut.data.length,
   prototypeColorLut.width * prototypeColorLut.height * 4);
 demuxer.delete();
