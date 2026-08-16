@@ -103,9 +103,9 @@ const renderer = new HlgSdrRenderer({
   webGlCanvas,
   onBackendChange: backend => backends.push(backend),
 });
-const size = 128;
-const width = 1536;
-const height = 1408;
+const size = 96;
+const width = 960;
+const height = 960;
 renderer.setColorLut({
   size,
   width,
@@ -121,7 +121,7 @@ assert.equal(webGpuCanvas.hidden, true);
 assert.equal(webGlCanvas.hidden, false);
 assert.equal(calls.contextOptions.alpha, true);
 assert.equal(calls.lutUploads, 1);
-assert.deepEqual(calls.lutTextureSizes, [[1536, 1408]]);
+assert.deepEqual(calls.lutTextureSizes, [[960, 960]]);
 assert.equal(calls.videoUploads, 1);
 assert.equal(calls.draws, 1);
 assert.equal(calls.clears, 1);

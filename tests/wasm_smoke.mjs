@@ -62,7 +62,7 @@ mseDemuxer.setMseSdrInHlg(2n, false);
 for (const mode of ['auto', 'force', 'on_compare', 'prototype', 'off']) {
   mseDemuxer.setMseToneMappingMode(mode);
 }
-assert.equal(mseDemuxer.hlgSdrPrototypeColorLut().size, 128);
+assert.equal(mseDemuxer.hlgSdrPrototypeColorLut().size, 96);
 mseDemuxer.selectTrack('audio', 1n);
 assert.equal(mseDemuxer.switchLayer(3n, 9n, 0n), true);
 mseDemuxer.flush();
