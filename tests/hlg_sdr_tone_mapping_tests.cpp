@@ -182,7 +182,7 @@ int main() {
           "soft gamut map changed the linear RGB hue direction");
 
     constexpr double sample_luma = 0.60;
-    constexpr tlvdemux::HlgSdrRgb gold_direction{
+    static constexpr tlvdemux::HlgSdrRgb gold_direction{
         0.40, -0.05, -0.6825484764542936,
     };
     const auto along_gold = [](const double amount) {
