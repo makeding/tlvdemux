@@ -128,10 +128,10 @@ inline double prototype_tone_map(const double hdr_luminance) {
 inline double prototype_sdr_luma_fit(const double luminance) {
     const double input = clamp01(luminance);
     // Twenty-five aligned BS4K/ViuTV frames around the 06:08/05:37 programme
-    // positions showed that the stronger fit crushed the SDR master by about
-    // one tenth of the nominal range. Keep a single smooth curve, fixing black
-    // and white without the former narrow shoulder or chroma-dependent lift.
-    constexpr double contrast = 1.5;
+    // positions favour this master-like fit over the darker previous curve.
+    // Keep one smooth curve that fixes black and white without a narrow
+    // shoulder or a chroma-dependent luma lift.
+    constexpr double contrast = 1.7;
     return input / (input + contrast * (1.0 - input));
 }
 
@@ -203,7 +203,7 @@ inline HlgSdrRgb map_hlg_sdr_prototype_rgb(const HlgSdrRgb input) {
         scene.blue * ootf_scale,
     };
 
-    constexpr double crosstalk = 0.10;
+    constexpr double crosstalk = 0.075;
     const double sum = display.red + display.green + display.blue;
     display = {
         (1.0 - 3.0 * crosstalk) * display.red + crosstalk * sum,

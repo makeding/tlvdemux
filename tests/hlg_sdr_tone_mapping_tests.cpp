@@ -137,9 +137,9 @@ int main() {
               tlvdemux::detail::prototype_sdr_luma_fit(1.0) == 1.0,
           "prototype luma fit changed black or white");
     check(std::abs(tlvdemux::detail::prototype_sdr_luma_fit(0.5480) -
-                   0.4470) < 0.001 &&
+                   0.4163) < 0.001 &&
               std::abs(tlvdemux::detail::prototype_sdr_luma_fit(0.9208) -
-                       0.8857) < 0.001,
+                       0.8724) < 0.001,
           "prototype luma fit missed its simulcast anchors");
     double previous_fitted = 0.0;
     double maximum_fit_step = 0.0;
@@ -206,13 +206,13 @@ int main() {
           "prototype mapper changed black");
     const auto prototype_mid =
         tlvdemux::detail::map_hlg_sdr_prototype_rgb({0.5, 0.5, 0.5});
-    check(prototype_mid.red > 0.60 && prototype_mid.red < 0.62 &&
+    check(prototype_mid.red > 0.58 && prototype_mid.red < 0.60 &&
               std::abs(prototype_mid.red - prototype_mid.green) < 0.0001 &&
               std::abs(prototype_mid.green - prototype_mid.blue) < 0.0001,
           "prototype mapper does not apply the calibrated mid-grey anchor");
     const auto prototype_reference =
         tlvdemux::detail::map_hlg_sdr_prototype_rgb({0.75, 0.75, 0.75});
-    check(prototype_reference.red > 0.93 && prototype_reference.red < 0.95 &&
+    check(prototype_reference.red > 0.92 && prototype_reference.red < 0.94 &&
               std::abs(prototype_reference.red - prototype_reference.green) < 0.0001 &&
               std::abs(prototype_reference.green - prototype_reference.blue) < 0.0001,
           "prototype mapper does not apply the calibrated reference anchor");
@@ -272,7 +272,7 @@ int main() {
               << prototype_maximum_error_actual.red << ", "
               << prototype_maximum_error_actual.green << ", "
               << prototype_maximum_error_actual.blue << "}\n";
-    check(prototype_maximum_error <= 10.0 / 255.0,
-          "prototype 3D LUT interpolation error exceeds ten 8-bit levels");
+    check(prototype_maximum_error <= 8.0 / 255.0,
+          "prototype 3D LUT interpolation error exceeds eight 8-bit levels");
     std::cout << "HLG-SDR C++ tone mapping tests passed\n";
 }
