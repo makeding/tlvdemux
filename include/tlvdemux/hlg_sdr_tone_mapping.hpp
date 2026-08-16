@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -123,64 +124,57 @@ inline double prototype_tone_map(const double hdr_luminance) {
         (2.0 * ratio - ratio * ratio);
 }
 
-inline HlgSdrRgb clip_to_bt709_gamut(const HlgSdrRgb color) {
-    return {clamp01(color.red), clamp01(color.green), clamp01(color.blue)};
+inline double prototype_sdr_luma_fit(const double luminance) {
+    const double input = clamp01(luminance);
+    // A single smooth display-fit curve keeps the aligned SDR simulcast's
+    // midtone contrast without the former narrow highlight shoulder or the
+    // colour-dependent luma recovery. It fixes black and white and has a
+    // bounded slope across the complete nominal range.
+    constexpr double contrast = 3.6;
+    return input / (input + contrast * (1.0 - input));
 }
 
-inline double prototype_sdr_luma_calibration(const double luminance) {
-    const double input = clamp01(luminance);
-    constexpr double contrast = 3.3;
-    const double compressed = input /
-        (input + contrast * (1.0 - input));
+inline HlgSdrRgb soft_map_bt709_gamut(const HlgSdrRgb color) {
+    constexpr double red_weight = 0.2126;
+    constexpr double green_weight = 0.7152;
+    constexpr double blue_weight = 0.0722;
+    const double luma = clamp01(red_weight * color.red +
+                                green_weight * color.green +
+                                blue_weight * color.blue);
+    if (luma <= 0.0) return {0.0, 0.0, 0.0};
+    if (luma >= 1.0) return {1.0, 1.0, 1.0};
 
-    // QVC CS161/BS4K221 pairs agree at peak white but place the prototype's
-    // shadows and midtones too high. Preserve that white point by returning
-    // quickly to the identity curve only in the top 1.5% of linear light.
-    constexpr double shoulder_start = 0.925;
-    constexpr double shoulder_end = 0.940;
-    if (input <= shoulder_start) return compressed;
-    const double ratio = clamp01(
-        (input - shoulder_start) / (shoulder_end - shoulder_start));
-    const double blend = ratio * ratio * (3.0 - 2.0 * ratio);
-    return compressed + blend * (input - compressed);
-}
-
-inline double prototype_sdr_luma_refinement(const double luminance) {
-    constexpr std::array<HlgSdrToneMappingPoint, 6> points{{
-        {0.0000, 0.0000},
-        {0.0304, 0.0326},
-        {0.2504, 0.2346},
-        {0.8403, 0.7528},
-        {0.9355, 0.9256},
-        {1.0000, 1.0000},
-    }};
-    const double input = clamp01(luminance);
-    for (std::size_t index = 1; index < points.size(); ++index) {
-        if (input <= points[index].input) {
-            const auto& lower = points[index - 1];
-            const auto& upper = points[index];
-            const double ratio = (input - lower.input) /
-                (upper.input - lower.input);
-            return lower.output + ratio * (upper.output - lower.output);
+    const std::array<double, 3> delta{
+        color.red - luma, color.green - luma, color.blue - luma,
+    };
+    double boundary_scale = std::numeric_limits<double>::infinity();
+    for (const double component : delta) {
+        if (component > 0.0) {
+            boundary_scale = std::min(
+                boundary_scale, (1.0 - luma) / component);
+        } else if (component < 0.0) {
+            boundary_scale = std::min(boundary_scale, -luma / component);
         }
     }
-    return 1.0;
-}
+    if (!std::isfinite(boundary_scale)) return {luma, luma, luma};
 
-inline double prototype_sdr_chroma_luma_recovery(
-    const HlgSdrRgb color, const double original_luma,
-    const double calibrated_luma) {
-    const double maximum = std::max({color.red, color.green, color.blue});
-    const double minimum = std::min({color.red, color.green, color.blue});
-    const double saturation = maximum > 0.0 ? (maximum - minimum) / maximum : 0.0;
-    const double ratio = clamp01((saturation - 0.25) / 0.40);
-    const double chroma_weight = ratio * ratio * (3.0 - 2.0 * ratio);
-    const double highlight_ratio = clamp01((original_luma - 0.75) / 0.20);
-    const double highlight_weight = highlight_ratio * highlight_ratio *
-        (3.0 - 2.0 * highlight_ratio);
-    const double recovery = 0.20 + 0.80 * highlight_weight;
-    return calibrated_luma + recovery * chroma_weight *
-        (original_luma - calibrated_luma);
+    const double normalized_chroma = 1.0 / boundary_scale;
+    constexpr double knee = 0.25;
+    if (normalized_chroma <= knee) return color;
+
+    // Roll chroma off before the effective BT.709 boundary instead of
+    // collapsing every out-of-gamut colour onto a per-channel hard clip.
+    // Scaling around the neutral point retains linear luminance and the RGB
+    // hue direction while the exponential tail preserves highlight detail.
+    const double distance = (normalized_chroma - knee) / (1.0 - knee);
+    const double mapped_chroma = knee + (1.0 - knee) *
+        (1.0 - std::exp(-distance));
+    const double scale = mapped_chroma / normalized_chroma;
+    return {
+        clamp01(luma + scale * delta[0]),
+        clamp01(luma + scale * delta[1]),
+        clamp01(luma + scale * delta[2]),
+    };
 }
 
 inline double srgb_oetf(const double linear) {
@@ -208,7 +202,7 @@ inline HlgSdrRgb map_hlg_sdr_prototype_rgb(const HlgSdrRgb input) {
         scene.blue * ootf_scale,
     };
 
-    constexpr double crosstalk = 0.0;
+    constexpr double crosstalk = 0.05;
     const double sum = display.red + display.green + display.blue;
     display = {
         (1.0 - 3.0 * crosstalk) * display.red + crosstalk * sum,
@@ -254,12 +248,9 @@ inline HlgSdrRgb map_hlg_sdr_prototype_rgb(const HlgSdrRgb input) {
     const double sdr_luma =
         0.2126 * sdr709.red + 0.7152 * sdr709.green + 0.0722 * sdr709.blue;
     if (sdr_luma <= 0.0) return {0.0, 0.0, 0.0};
-    double calibrated_luma = prototype_sdr_luma_refinement(
-        prototype_sdr_luma_calibration(sdr_luma));
-    calibrated_luma = prototype_sdr_chroma_luma_recovery(
-        sdr709, sdr_luma, calibrated_luma);
+    const double calibrated_luma = prototype_sdr_luma_fit(sdr_luma);
     const double calibrated_scale = calibrated_luma / sdr_luma;
-    sdr709 = clip_to_bt709_gamut({
+    sdr709 = soft_map_bt709_gamut({
         sdr709.red * calibrated_scale,
         sdr709.green * calibrated_scale,
         sdr709.blue * calibrated_scale,

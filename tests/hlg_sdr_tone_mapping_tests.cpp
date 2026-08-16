@@ -122,53 +122,72 @@ int main() {
     check(maximum_error <= 3.0 / 255.0,
           "3D LUT interpolation error exceeds three 8-bit levels");
 
-    const std::array<std::pair<double, double>, 4> calibration_points{{
-        {0.0886, 0.0315},
-        {0.5480, 0.2696},
-        {0.9208, 0.7662},
-        {0.9368, 0.9256},
-    }};
-    for (const auto& [input, expected] : calibration_points) {
-        check(std::abs(tlvdemux::detail::prototype_sdr_luma_calibration(input) -
-                       expected) < 0.02,
-              "prototype luma calibration missed a QVC anchor");
-    }
-    const std::array<std::pair<double, double>, 4> refinement_points{{
-        {0.0304, 0.0326},
-        {0.2504, 0.2346},
-        {0.8403, 0.7528},
-        {0.9355, 0.9256},
-    }};
-    for (const auto& [input, expected] : refinement_points) {
-        check(std::abs(tlvdemux::detail::prototype_sdr_luma_refinement(input) -
-                       expected) < 0.0001,
-              "prototype luma refinement missed a QVC anchor");
-    }
-    double previous_calibrated = 0.0;
+    check(tlvdemux::detail::prototype_sdr_luma_fit(0.0) == 0.0 &&
+              tlvdemux::detail::prototype_sdr_luma_fit(1.0) == 1.0,
+          "prototype luma fit changed black or white");
+    check(std::abs(tlvdemux::detail::prototype_sdr_luma_fit(0.5480) -
+                   0.2519) < 0.001 &&
+              std::abs(tlvdemux::detail::prototype_sdr_luma_fit(0.9208) -
+                       0.7636) < 0.001,
+          "prototype luma fit missed its simulcast anchors");
+    double previous_fitted = 0.0;
+    double maximum_fit_step = 0.0;
     for (unsigned index = 0; index <= 1000; ++index) {
-        const double calibrated =
-            tlvdemux::detail::prototype_sdr_luma_refinement(
-                tlvdemux::detail::prototype_sdr_luma_calibration(index / 1000.0));
-        check(calibrated + 1e-12 >= previous_calibrated,
-              "prototype luma calibration is not monotonic");
-        previous_calibrated = calibrated;
+        const double fitted = tlvdemux::detail::prototype_sdr_luma_fit(
+            static_cast<double>(index) / 1000.0);
+        check(fitted + 1e-12 >= previous_fitted,
+              "prototype luma fit is not monotonic");
+        maximum_fit_step = std::max(maximum_fit_step, fitted - previous_fitted);
+        previous_fitted = fitted;
     }
-    check(tlvdemux::detail::prototype_sdr_luma_calibration(0.0) == 0.0 &&
-              tlvdemux::detail::prototype_sdr_luma_calibration(1.0) == 1.0,
-          "prototype luma calibration changed black or white");
-    const double neutral_recovery =
-        tlvdemux::detail::prototype_sdr_chroma_luma_recovery(
-            {0.5, 0.5, 0.5}, 0.5, 0.25);
-    const double saturated_recovery =
-        tlvdemux::detail::prototype_sdr_chroma_luma_recovery(
-            {0.8, 0.3, 0.1}, 0.5, 0.25);
-    const double highlight_recovery =
-        tlvdemux::detail::prototype_sdr_chroma_luma_recovery(
-            {1.0, 0.8, 0.2}, 0.95, 0.70);
-    check(std::abs(neutral_recovery - 0.25) < 1e-12 &&
-              std::abs(saturated_recovery - 0.30) < 1e-12 &&
-              highlight_recovery > 0.94 && highlight_recovery < 0.96,
-          "prototype chroma luma recovery changed neutral pixels or missed saturated pixels");
+    check(maximum_fit_step < 0.004,
+          "prototype luma fit contains a narrow highlight shoulder");
+
+    const auto luma709 = [](const tlvdemux::HlgSdrRgb color) {
+        return 0.2126 * color.red + 0.7152 * color.green + 0.0722 * color.blue;
+    };
+    const tlvdemux::HlgSdrRgb ordinary{0.50, 0.45, 0.40};
+    const auto mapped_ordinary = tlvdemux::detail::soft_map_bt709_gamut(ordinary);
+    check(mapped_ordinary.red == ordinary.red &&
+              mapped_ordinary.green == ordinary.green &&
+              mapped_ordinary.blue == ordinary.blue,
+          "soft gamut map changed an interior BT.709 colour");
+
+    const tlvdemux::HlgSdrRgb gold{1.20, 0.85, 0.10};
+    const auto mapped_gold = tlvdemux::detail::soft_map_bt709_gamut(gold);
+    check(mapped_gold.red > 0.0 && mapped_gold.red < 1.0 &&
+              mapped_gold.green > 0.0 && mapped_gold.green < 1.0 &&
+              mapped_gold.blue > 0.0 && mapped_gold.blue < 1.0,
+          "soft gamut map hard-clipped a bright gold colour");
+    check(std::abs(luma709(mapped_gold) - luma709(gold)) < 1e-12,
+          "soft gamut map changed linear luminance");
+    const double gold_luma = luma709(gold);
+    const double gold_red_scale =
+        (mapped_gold.red - gold_luma) / (gold.red - gold_luma);
+    check(std::abs(mapped_gold.green - gold_luma -
+                   gold_red_scale * (gold.green - gold_luma)) < 1e-12 &&
+              std::abs(mapped_gold.blue - gold_luma -
+                       gold_red_scale * (gold.blue - gold_luma)) < 1e-12,
+          "soft gamut map changed the linear RGB hue direction");
+
+    constexpr double sample_luma = 0.60;
+    constexpr tlvdemux::HlgSdrRgb gold_direction{
+        0.40, -0.05, -0.6825484764542936,
+    };
+    const auto along_gold = [](const double amount) {
+        return tlvdemux::HlgSdrRgb{
+            sample_luma + amount * gold_direction.red,
+            sample_luma + amount * gold_direction.green,
+            sample_luma + amount * gold_direction.blue,
+        };
+    };
+    const auto mapped_near_gold =
+        tlvdemux::detail::soft_map_bt709_gamut(along_gold(0.90));
+    const auto mapped_far_gold =
+        tlvdemux::detail::soft_map_bt709_gamut(along_gold(1.30));
+    check(mapped_far_gold.red > mapped_near_gold.red &&
+              mapped_far_gold.red < 1.0 && mapped_far_gold.blue > 0.0,
+          "soft gamut map collapsed distinct bright gold colours");
     const auto prototype_black =
         tlvdemux::detail::map_hlg_sdr_prototype_rgb({0.0, 0.0, 0.0});
     check(prototype_black.red == 0.0 && prototype_black.green == 0.0 &&
@@ -176,13 +195,13 @@ int main() {
           "prototype mapper changed black");
     const auto prototype_mid =
         tlvdemux::detail::map_hlg_sdr_prototype_rgb({0.5, 0.5, 0.5});
-    check(prototype_mid.red > 0.43 && prototype_mid.red < 0.47 &&
+    check(prototype_mid.red > 0.43 && prototype_mid.red < 0.48 &&
               std::abs(prototype_mid.red - prototype_mid.green) < 0.0001 &&
               std::abs(prototype_mid.green - prototype_mid.blue) < 0.0001,
           "prototype mapper does not apply the calibrated mid-grey anchor");
     const auto prototype_reference =
         tlvdemux::detail::map_hlg_sdr_prototype_rgb({0.75, 0.75, 0.75});
-    check(prototype_reference.red > 0.82 && prototype_reference.red < 0.87 &&
+    check(prototype_reference.red > 0.84 && prototype_reference.red < 0.91 &&
               std::abs(prototype_reference.red - prototype_reference.green) < 0.0001 &&
               std::abs(prototype_reference.green - prototype_reference.blue) < 0.0001,
           "prototype mapper does not apply the calibrated reference anchor");
@@ -203,5 +222,46 @@ int main() {
               std::abs(prototype_mid_lut.green - prototype_mid.green) <= 4.0 / 255.0 &&
               std::abs(prototype_mid_lut.blue - prototype_mid.blue) <= 4.0 / 255.0,
           "prototype LUT interpolation changed its mid-grey output");
+    double prototype_maximum_error = 0.0;
+    tlvdemux::HlgSdrRgb prototype_maximum_error_input{};
+    tlvdemux::HlgSdrRgb prototype_maximum_error_expected{};
+    tlvdemux::HlgSdrRgb prototype_maximum_error_actual{};
+    for (unsigned red = 0; red <= 10; ++red) {
+        for (unsigned green = 0; green <= 10; ++green) {
+            for (unsigned blue = 0; blue <= 10; ++blue) {
+                const tlvdemux::HlgSdrRgb input{
+                    static_cast<double>(red) / 10.0,
+                    static_cast<double>(green) / 10.0,
+                    static_cast<double>(blue) / 10.0,
+                };
+                const auto expected =
+                    tlvdemux::detail::map_hlg_sdr_prototype_rgb(input);
+                const auto actual = sample_lut(prototype_lut, input);
+                const double error = std::max({
+                    std::abs(expected.red - actual.red),
+                    std::abs(expected.green - actual.green),
+                    std::abs(expected.blue - actual.blue)});
+                if (error > prototype_maximum_error) {
+                    prototype_maximum_error = error;
+                    prototype_maximum_error_input = input;
+                    prototype_maximum_error_expected = expected;
+                    prototype_maximum_error_actual = actual;
+                }
+            }
+        }
+    }
+    std::cout << "prototype maximum LUT error: "
+              << prototype_maximum_error * 255.0 << " 8-bit levels at {"
+              << prototype_maximum_error_input.red << ", "
+              << prototype_maximum_error_input.green << ", "
+              << prototype_maximum_error_input.blue << "}, expected {"
+              << prototype_maximum_error_expected.red << ", "
+              << prototype_maximum_error_expected.green << ", "
+              << prototype_maximum_error_expected.blue << "}, actual {"
+              << prototype_maximum_error_actual.red << ", "
+              << prototype_maximum_error_actual.green << ", "
+              << prototype_maximum_error_actual.blue << "}\n";
+    check(prototype_maximum_error <= 8.0 / 255.0,
+          "prototype 3D LUT interpolation error exceeds eight 8-bit levels");
     std::cout << "HLG-SDR C++ tone mapping tests passed\n";
 }
