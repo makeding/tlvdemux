@@ -47,13 +47,15 @@ const LIVE_PLAYBACK_RATE = 1;
 const SHORT_RECORDING_THRESHOLD_SECONDS = 60;
 const DEFAULT_DEMO_SEEK_SECONDS = 3 * 60 + 19;
 const DEFAULT_DEMO_PAUSE_SECONDS = 3 * 60 + 20;
+const HIGHLIGHT_DEMO_SEEK_SECONDS = 5 * 60 + 50;
+const HIGHLIGHT_DEMO_PAUSE_SECONDS = 5 * 60 + 51;
 const URL_STORAGE_KEY = 'tlvdemux.demo.httpUrl';
 const AUDIO_STORAGE_KEY = 'tlvdemux.demo.audioPacketId';
 const SUBTITLE_STORAGE_KEY = 'tlvdemux.demo.subtitlePacketId';
 const EXPOSE_DEBUG_QUEUES = new URLSearchParams(location.search).has('tlvdemuxDebug');
 const elements = Object.fromEntries([
   'wasmStatus', 'fileInput', 'urlInput', 'initialRange', 'maxRange',
-  'videoPacketId', 'probeButton', 'cancelButton', 'clearButton',
+  'videoPacketId', 'probeButton', 'highlightButton', 'cancelButton', 'clearButton',
   'probeState', 'duration', 'videoColor', 'sourceSize', 'transferred', 'log',
   'video', 'mediaInfo', 'liveMode', 'videoTrack', 'audioTrack', 'subtitleTrack', 'subtitleOverlay',
   'toneMappingMode', 'hlgSdrCanvas', 'hlgSdrWebGpuCanvas',
@@ -398,6 +400,12 @@ function formatDuration(duration) {
   return `${clock} (${seconds.toFixed(6)}s)`;
 }
 
+function formatClockSeconds(seconds) {
+  const whole = Math.max(0, Math.floor(seconds));
+  const minutes = Math.floor(whole / 60);
+  return `${String(minutes).padStart(2, '0')}:${String(whole % 60).padStart(2, '0')}`;
+}
+
 function toSafeNumber(value, label) {
   if (value < 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new Error(`${label} がブラウザーの安全な整数範囲を超えています`);
@@ -515,6 +523,7 @@ function once(target, event) {
 
 function setRunning(running) {
   elements.probeButton.disabled = running || !wasmModule;
+  elements.highlightButton.disabled = running || !wasmModule;
   elements.cancelButton.disabled = !running;
   elements.fileInput.disabled = running;
   elements.urlInput.disabled = running;
@@ -866,6 +875,8 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     played = true;
     monitorPlaybackQuality(generation);
     if (pauseAtSeconds !== null) {
+      const startLabel = formatClockSeconds(startTimeSeconds);
+      const pauseLabel = formatClockSeconds(pauseAtSeconds);
       const pauseAtPresentedFrame = (_now, metadata) => {
         if (generation !== runGeneration) return;
         if (metadata.mediaTime < pauseAtSeconds) {
@@ -874,11 +885,11 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         }
         elements.video.pause();
         elements.video.playbackRate = playbackRate;
-        elements.probeState.textContent = '03:20 描画完了・一時停止';
-        appendLog('03:19 から再生し、03:20 の描画フレームで一時停止しました');
+        elements.probeState.textContent = `${pauseLabel} 描画完了・一時停止`;
+        appendLog(`${startLabel} から再生し、${pauseLabel} の描画フレームで一時停止しました`);
       };
       elements.video.playbackRate = 1;
-      elements.probeState.textContent = '03:20 まで描画中';
+      elements.probeState.textContent = `${pauseLabel} まで描画中`;
       elements.video.requestVideoFrameCallback(pauseAtPresentedFrame);
       elements.video.play().catch(() => {
         appendLog('自動再生がブロックされました。再生ボタンを押してください');
@@ -1788,7 +1799,14 @@ const loadComparisonFrame = () => loadAndPlay(
   DEFAULT_DEMO_PAUSE_SECONDS, true,
 );
 
+const loadHighlightFrame = () => loadAndPlay(
+  HIGHLIGHT_DEMO_SEEK_SECONDS, false,
+  '05:50 から比較フレーム 05:51 まで描画します',
+  HIGHLIGHT_DEMO_PAUSE_SECONDS, true,
+);
+
 elements.probeButton.addEventListener('click', loadComparisonFrame);
+elements.highlightButton.addEventListener('click', loadHighlightFrame);
 elements.cancelButton.addEventListener('click', stopPlayback);
 elements.clearButton.addEventListener('click', () => { elements.log.textContent = ''; });
 elements.toneMappingMode.addEventListener('change', () => {

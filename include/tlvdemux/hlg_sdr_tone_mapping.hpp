@@ -13,6 +13,7 @@ namespace tlvdemux {
 
 inline constexpr std::size_t kHlgSdrToneMappingLutSize = 1024;
 inline constexpr std::size_t kHlgSdrColorLutSize = 33;
+inline constexpr std::size_t kHlgSdrPrototypeColorLutSize = 96;
 
 struct HlgSdrRgb {
     double red;
@@ -159,7 +160,7 @@ inline HlgSdrRgb soft_map_bt709_gamut(const HlgSdrRgb color) {
     if (!std::isfinite(boundary_scale)) return {luma, luma, luma};
 
     const double normalized_chroma = 1.0 / boundary_scale;
-    constexpr double knee = 0.25;
+    constexpr double knee = 0.50;
     if (normalized_chroma <= knee) return color;
 
     // Roll chroma off before the effective BT.709 boundary instead of
@@ -304,7 +305,7 @@ inline HlgSdrColorLut hlg_sdr_color_lut() {
 }
 
 inline HlgSdrColorLut hlg_sdr_prototype_color_lut() {
-    constexpr auto size = kHlgSdrColorLutSize;
+    constexpr auto size = kHlgSdrPrototypeColorLutSize;
     const auto width = size * size;
     std::vector<std::uint8_t> rgba(width * size * 4U);
     for (std::size_t green = 0; green < size; ++green) {
