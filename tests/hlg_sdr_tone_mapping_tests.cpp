@@ -16,8 +16,10 @@ void check(const bool condition, const char* message) {
 double lut_channel(const tlvdemux::HlgSdrColorLut& lut,
                    const std::size_t red, const std::size_t green,
                    const std::size_t blue, const std::size_t channel) {
-    const auto offset =
-        (green * lut.width + blue * lut.size + red) * 4U + channel;
+    const auto columns = lut.width / lut.size;
+    const auto x = (blue % columns) * lut.size + red;
+    const auto y = (blue / columns) * lut.size + green;
+    const auto offset = (y * lut.width + x) * 4U + channel;
     return static_cast<double>(lut.rgba[offset]) / 255.0;
 }
 
@@ -57,73 +59,6 @@ tlvdemux::HlgSdrRgb sample_lut_trilinear(
     return {channel(0), channel(1), channel(2)};
 }
 
-tlvdemux::HlgSdrRgb sample_lut_tetrahedral(
-    const tlvdemux::HlgSdrColorLut& lut, const tlvdemux::HlgSdrRgb input) {
-    const auto coordinate = [size = lut.size](const double value) {
-        return value * static_cast<double>(size - 1U);
-    };
-    const double red = coordinate(input.red);
-    const double green = coordinate(input.green);
-    const double blue = coordinate(input.blue);
-    const auto red0 = static_cast<std::size_t>(std::floor(red));
-    const auto green0 = static_cast<std::size_t>(std::floor(green));
-    const auto blue0 = static_cast<std::size_t>(std::floor(blue));
-    const auto red1 = std::min(red0 + 1U, lut.size - 1U);
-    const auto green1 = std::min(green0 + 1U, lut.size - 1U);
-    const auto blue1 = std::min(blue0 + 1U, lut.size - 1U);
-    const double red_fraction = red - static_cast<double>(red0);
-    const double green_fraction = green - static_cast<double>(green0);
-    const double blue_fraction = blue - static_cast<double>(blue0);
-    const auto channel = [&](const std::size_t index) {
-        const auto value = [&](const std::size_t r, const std::size_t g,
-                               const std::size_t b) {
-            return lut_channel(lut, r, g, b, index);
-        };
-        const double c000 = value(red0, green0, blue0);
-        if (red_fraction >= green_fraction) {
-            if (green_fraction >= blue_fraction) {
-                return c000 + red_fraction * (value(red1, green0, blue0) - c000) +
-                    green_fraction * (value(red1, green1, blue0) -
-                                      value(red1, green0, blue0)) +
-                    blue_fraction * (value(red1, green1, blue1) -
-                                     value(red1, green1, blue0));
-            }
-            if (red_fraction >= blue_fraction) {
-                return c000 + red_fraction * (value(red1, green0, blue0) - c000) +
-                    blue_fraction * (value(red1, green0, blue1) -
-                                     value(red1, green0, blue0)) +
-                    green_fraction * (value(red1, green1, blue1) -
-                                      value(red1, green0, blue1));
-            }
-            return c000 + blue_fraction * (value(red0, green0, blue1) - c000) +
-                red_fraction * (value(red1, green0, blue1) -
-                                value(red0, green0, blue1)) +
-                green_fraction * (value(red1, green1, blue1) -
-                                  value(red1, green0, blue1));
-        }
-        if (blue_fraction >= green_fraction) {
-            return c000 + blue_fraction * (value(red0, green0, blue1) - c000) +
-                green_fraction * (value(red0, green1, blue1) -
-                                  value(red0, green0, blue1)) +
-                red_fraction * (value(red1, green1, blue1) -
-                                value(red0, green1, blue1));
-        }
-        if (blue_fraction >= red_fraction) {
-            return c000 + green_fraction * (value(red0, green1, blue0) - c000) +
-                blue_fraction * (value(red0, green1, blue1) -
-                                 value(red0, green1, blue0)) +
-                red_fraction * (value(red1, green1, blue1) -
-                                value(red0, green1, blue1));
-        }
-        return c000 + green_fraction * (value(red0, green1, blue0) - c000) +
-            red_fraction * (value(red1, green1, blue0) -
-                            value(red0, green1, blue0)) +
-            blue_fraction * (value(red1, green1, blue1) -
-                             value(red1, green1, blue0));
-    };
-    return {channel(0), channel(1), channel(2)};
-}
-
 } // namespace
 
 int main() {
@@ -158,27 +93,33 @@ int main() {
     const auto color_lut = tlvdemux::hlg_sdr_color_lut();
     check(color_lut.size == tlvdemux::kHlgSdrColorLutSize,
           "3D LUT size changed");
-    check(color_lut.width == color_lut.size * color_lut.size &&
-              color_lut.height == color_lut.size,
+    check(color_lut.width % color_lut.size == 0U &&
+              color_lut.height % color_lut.size == 0U &&
+              color_lut.width / color_lut.size *
+                  (color_lut.height / color_lut.size) >= color_lut.size,
           "3D LUT texture layout is invalid");
     check(color_lut.rgba.size() == color_lut.width * color_lut.height * 4U,
           "3D LUT byte count is invalid");
     check(color_lut.rgba[0] == 0U && color_lut.rgba[1] == 0U &&
               color_lut.rgba[2] == 0U && color_lut.rgba[3] == 255U,
           "3D LUT black entry changed");
-    const auto white = color_lut.rgba.size() - 4U;
-    check(color_lut.rgba[white] == 255U && color_lut.rgba[white + 1U] == 255U &&
-              color_lut.rgba[white + 2U] == 255U &&
-              color_lut.rgba[white + 3U] == 255U,
+    check(lut_channel(color_lut, color_lut.size - 1U,
+                      color_lut.size - 1U, color_lut.size - 1U, 0U) == 1.0 &&
+              lut_channel(color_lut, color_lut.size - 1U,
+                          color_lut.size - 1U, color_lut.size - 1U, 1U) == 1.0 &&
+              lut_channel(color_lut, color_lut.size - 1U,
+                          color_lut.size - 1U, color_lut.size - 1U, 2U) == 1.0 &&
+              lut_channel(color_lut, color_lut.size - 1U,
+                          color_lut.size - 1U, color_lut.size - 1U, 3U) == 1.0,
           "3D LUT white entry changed");
     double maximum_error = 0.0;
-    for (unsigned red = 0; red <= 10; ++red) {
-        for (unsigned green = 0; green <= 10; ++green) {
-            for (unsigned blue = 0; blue <= 10; ++blue) {
+    for (unsigned red = 0; red <= 20; ++red) {
+        for (unsigned green = 0; green <= 20; ++green) {
+            for (unsigned blue = 0; blue <= 20; ++blue) {
                 const tlvdemux::HlgSdrRgb input{
-                    static_cast<double>(red) / 10.0,
-                    static_cast<double>(green) / 10.0,
-                    static_cast<double>(blue) / 10.0,
+                    static_cast<double>(red) / 20.0,
+                    static_cast<double>(green) / 20.0,
+                    static_cast<double>(blue) / 20.0,
                 };
                 const auto expected = tlvdemux::detail::map_hlg_sdr_display_rgb(input);
                 const auto actual = sample_lut_trilinear(color_lut, input);
@@ -296,13 +237,13 @@ int main() {
     tlvdemux::HlgSdrRgb prototype_maximum_error_input{};
     tlvdemux::HlgSdrRgb prototype_maximum_error_expected{};
     tlvdemux::HlgSdrRgb prototype_maximum_error_actual{};
-    for (unsigned red = 0; red <= 10; ++red) {
-        for (unsigned green = 0; green <= 10; ++green) {
-            for (unsigned blue = 0; blue <= 10; ++blue) {
+    for (unsigned red = 0; red <= 20; ++red) {
+        for (unsigned green = 0; green <= 20; ++green) {
+            for (unsigned blue = 0; blue <= 20; ++blue) {
                 const tlvdemux::HlgSdrRgb input{
-                    static_cast<double>(red) / 10.0,
-                    static_cast<double>(green) / 10.0,
-                    static_cast<double>(blue) / 10.0,
+                    static_cast<double>(red) / 20.0,
+                    static_cast<double>(green) / 20.0,
+                    static_cast<double>(blue) / 20.0,
                 };
                 const auto expected =
                     tlvdemux::detail::map_hlg_sdr_prototype_rgb(input);
@@ -331,7 +272,7 @@ int main() {
               << prototype_maximum_error_actual.red << ", "
               << prototype_maximum_error_actual.green << ", "
               << prototype_maximum_error_actual.blue << "}\n";
-    check(prototype_maximum_error <= 16.0 / 255.0,
-          "prototype 3D LUT interpolation error exceeds sixteen 8-bit levels");
+    check(prototype_maximum_error <= 8.0 / 255.0,
+          "prototype 3D LUT interpolation error exceeds eight 8-bit levels");
     std::cout << "HLG-SDR C++ tone mapping tests passed\n";
 }

@@ -12,6 +12,7 @@ precision highp float;
 uniform sampler2D uVideo;
 uniform sampler2D uColorLut;
 uniform float uLutSize;
+uniform vec2 uLutTextureSize;
 uniform float uComparison;
 varying vec2 vTextureCoordinate;
 
@@ -20,15 +21,17 @@ vec3 sampleColorLut(vec3 color) {
   vec3 coordinate = clamp(color, 0.0, 1.0) * maximum;
   float lowerBlue = floor(coordinate.b);
   float upperBlue = min(lowerBlue + 1.0, maximum);
-  vec2 textureSize = vec2(uLutSize * uLutSize, uLutSize);
+  float columns = uLutTextureSize.x / uLutSize;
+  vec2 lowerSlice = vec2(mod(lowerBlue, columns), floor(lowerBlue / columns));
+  vec2 upperSlice = vec2(mod(upperBlue, columns), floor(upperBlue / columns));
   vec2 lowerUv = vec2(
-    lowerBlue * uLutSize + coordinate.r + 0.5,
-    coordinate.g + 0.5
-  ) / textureSize;
+    lowerSlice.x * uLutSize + coordinate.r + 0.5,
+    lowerSlice.y * uLutSize + coordinate.g + 0.5
+  ) / uLutTextureSize;
   vec2 upperUv = vec2(
-    upperBlue * uLutSize + coordinate.r + 0.5,
-    coordinate.g + 0.5
-  ) / textureSize;
+    upperSlice.x * uLutSize + coordinate.r + 0.5,
+    upperSlice.y * uLutSize + coordinate.g + 0.5
+  ) / uLutTextureSize;
   return mix(
     texture2D(uColorLut, lowerUv).rgb,
     texture2D(uColorLut, upperUv).rgb,
@@ -52,6 +55,7 @@ struct VertexOutput {
 struct LutParameters {
   size: f32,
   comparison: f32,
+  textureSize: vec2f,
 }
 
 @group(0) @binding(0) var videoFrame: texture_external;
@@ -64,15 +68,19 @@ fn sampleColorLut(color: vec3f) -> vec3f {
   let coordinate = clamp(color, vec3f(0.0), vec3f(1.0)) * maximum;
   let lowerBlue = floor(coordinate.b);
   let upperBlue = min(lowerBlue + 1.0, maximum);
-  let textureSize = vec2f(lut.size * lut.size, lut.size);
+  let columns = lut.textureSize.x / lut.size;
+  let lowerRow = floor(lowerBlue / columns);
+  let upperRow = floor(upperBlue / columns);
+  let lowerSlice = vec2f(lowerBlue - lowerRow * columns, lowerRow);
+  let upperSlice = vec2f(upperBlue - upperRow * columns, upperRow);
   let lowerUv = vec2f(
-    lowerBlue * lut.size + coordinate.r + 0.5,
-    coordinate.g + 0.5
-  ) / textureSize;
+    lowerSlice.x * lut.size + coordinate.r + 0.5,
+    lowerSlice.y * lut.size + coordinate.g + 0.5
+  ) / lut.textureSize;
   let upperUv = vec2f(
-    upperBlue * lut.size + coordinate.r + 0.5,
-    coordinate.g + 0.5
-  ) / textureSize;
+    upperSlice.x * lut.size + coordinate.r + 0.5,
+    upperSlice.y * lut.size + coordinate.g + 0.5
+  ) / lut.textureSize;
   return mix(
     textureSampleLevel(colorLut, linearSampler, lowerUv, 0.0).rgb,
     textureSampleLevel(colorLut, linearSampler, upperUv, 0.0).rgb,
@@ -99,7 +107,9 @@ fn fragment(input: VertexOutput) -> @location(0) vec4f {
 
 function validateColorLut(lut) {
   if (!lut || !Number.isInteger(lut.size) || lut.size < 2 ||
-      lut.width !== lut.size * lut.size || lut.height !== lut.size ||
+      !Number.isInteger(lut.width) || !Number.isInteger(lut.height) ||
+      lut.width % lut.size !== 0 || lut.height % lut.size !== 0 ||
+      (lut.width / lut.size) * (lut.height / lut.size) < lut.size ||
       !(lut.data instanceof Uint8Array) ||
       lut.data.length !== lut.width * lut.height * 4) {
     throw new TypeError('invalid HLG-SDR color LUT');
@@ -214,6 +224,8 @@ class WebGlBackend {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.lut.width, this.lut.height,
       0, gl.RGBA, gl.UNSIGNED_BYTE, this.lut.data);
     gl.uniform1f(gl.getUniformLocation(this.program, 'uLutSize'), this.lut.size);
+    gl.uniform2f(gl.getUniformLocation(this.program, 'uLutTextureSize'),
+      this.lut.width, this.lut.height);
   }
 
   draw() {
@@ -351,7 +363,9 @@ class WebGpuBackend {
     if (!this.device || !this.lut || !this.lutUniform) return;
     this.device.queue.writeBuffer(
       this.lutUniform, 0,
-      new Float32Array([this.lut.size, this.comparison ? 1 : 0, 0, 0]),
+      new Float32Array([
+        this.lut.size, this.comparison ? 1 : 0, this.lut.width, this.lut.height,
+      ]),
     );
   }
 

@@ -15,8 +15,10 @@ void usage(std::ostream& output) {
 double channel(const tlvdemux::HlgSdrColorLut& lut, const std::size_t red,
                const std::size_t green, const std::size_t blue,
                const std::size_t component) {
-    const auto offset =
-        (green * lut.width + blue * lut.size + red) * 4U + component;
+    const auto columns = lut.width / lut.size;
+    const auto x = (blue % columns) * lut.size + red;
+    const auto y = (blue / columns) * lut.size + green;
+    const auto offset = (y * lut.width + x) * 4U + component;
     return static_cast<double>(lut.rgba[offset]) / 255.0;
 }
 

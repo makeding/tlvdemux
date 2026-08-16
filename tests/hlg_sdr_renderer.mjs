@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import { HlgSdrRenderer } from '../hlg-sdr-renderer.mjs';
 
 function fakeWebGl() {
-  const calls = {draws: 0, clears: 0, lutUploads: 0, videoUploads: 0, comparison: []};
+  const calls = {
+    draws: 0, clears: 0, lutUploads: 0, videoUploads: 0,
+    comparison: [], lutTextureSizes: [],
+  };
   const gl = {
     VERTEX_SHADER: 1,
     FRAGMENT_SHADER: 2,
@@ -54,6 +57,9 @@ function fakeWebGl() {
     uniform1f(location, value) {
       if (location === 'uComparison') calls.comparison.push(value);
     },
+    uniform2f(location, width, height) {
+      if (location === 'uLutTextureSize') calls.lutTextureSizes.push([width, height]);
+    },
     activeTexture() {},
     pixelStorei() {},
     texImage2D(...args) {
@@ -97,12 +103,14 @@ const renderer = new HlgSdrRenderer({
   webGlCanvas,
   onBackendChange: backend => backends.push(backend),
 });
-const size = 2;
+const size = 96;
+const width = 960;
+const height = 960;
 renderer.setColorLut({
   size,
-  width: size * size,
-  height: size,
-  data: new Uint8Array(size ** 3 * 4).fill(255),
+  width,
+  height,
+  data: new Uint8Array(width * height * 4).fill(255),
 });
 renderer.setComparisonEnabled(true);
 renderer.setEnabled(true);
@@ -113,6 +121,7 @@ assert.equal(webGpuCanvas.hidden, true);
 assert.equal(webGlCanvas.hidden, false);
 assert.equal(calls.contextOptions.alpha, true);
 assert.equal(calls.lutUploads, 1);
+assert.deepEqual(calls.lutTextureSizes, [[960, 960]]);
 assert.equal(calls.videoUploads, 1);
 assert.equal(calls.draws, 1);
 assert.equal(calls.clears, 1);

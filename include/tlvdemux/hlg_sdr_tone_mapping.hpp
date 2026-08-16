@@ -276,22 +276,28 @@ hlg_sdr_tone_mapping_lut() {
     return lut;
 }
 
-// Blue slices are laid out horizontally. Each slice is size x size with red
-// along x and green along y. Both WebGL and WebGPU can perform the same
-// trilinear lookup by bilinearly sampling two adjacent blue slices.
-inline HlgSdrColorLut hlg_sdr_color_lut() {
-    constexpr auto size = kHlgSdrColorLutSize;
-    const auto width = size * size;
-    std::vector<std::uint8_t> rgba(width * size * 4U);
+// Blue slices are packed into a near-square grid. Each slice is size x size,
+// with red along x and green along y. The compact layout lets the prototype
+// use a denser cube without exceeding conservative WebGL texture dimensions.
+template <typename Mapper>
+inline HlgSdrColorLut make_hlg_sdr_color_lut(const std::size_t size,
+                                              Mapper&& mapper) {
+    const auto columns = static_cast<std::size_t>(std::ceil(std::sqrt(size)));
+    const auto rows = (size + columns - 1U) / columns;
+    const auto width = size * columns;
+    const auto height = size * rows;
+    std::vector<std::uint8_t> rgba(width * height * 4U, 0U);
     for (std::size_t green = 0; green < size; ++green) {
         for (std::size_t blue = 0; blue < size; ++blue) {
             for (std::size_t red = 0; red < size; ++red) {
-                const auto mapped = detail::map_hlg_sdr_display_rgb({
+                const auto mapped = mapper({
                     static_cast<double>(red) / static_cast<double>(size - 1U),
                     static_cast<double>(green) / static_cast<double>(size - 1U),
                     static_cast<double>(blue) / static_cast<double>(size - 1U),
                 });
-                const auto offset = (green * width + blue * size + red) * 4U;
+                const auto x = (blue % columns) * size + red;
+                const auto y = (blue / columns) * size + green;
+                const auto offset = (y * width + x) * 4U;
                 rgba[offset] = static_cast<std::uint8_t>(mapped.red * 255.0 + 0.5);
                 rgba[offset + 1U] =
                     static_cast<std::uint8_t>(mapped.green * 255.0 + 0.5);
@@ -301,32 +307,17 @@ inline HlgSdrColorLut hlg_sdr_color_lut() {
             }
         }
     }
-    return {size, width, size, std::move(rgba)};
+    return {size, width, height, std::move(rgba)};
+}
+
+inline HlgSdrColorLut hlg_sdr_color_lut() {
+    return make_hlg_sdr_color_lut(kHlgSdrColorLutSize,
+                                  detail::map_hlg_sdr_display_rgb);
 }
 
 inline HlgSdrColorLut hlg_sdr_prototype_color_lut() {
-    constexpr auto size = kHlgSdrPrototypeColorLutSize;
-    const auto width = size * size;
-    std::vector<std::uint8_t> rgba(width * size * 4U);
-    for (std::size_t green = 0; green < size; ++green) {
-        for (std::size_t blue = 0; blue < size; ++blue) {
-            for (std::size_t red = 0; red < size; ++red) {
-                const auto mapped = detail::map_hlg_sdr_prototype_rgb({
-                    static_cast<double>(red) / static_cast<double>(size - 1U),
-                    static_cast<double>(green) / static_cast<double>(size - 1U),
-                    static_cast<double>(blue) / static_cast<double>(size - 1U),
-                });
-                const auto offset = (green * width + blue * size + red) * 4U;
-                rgba[offset] = static_cast<std::uint8_t>(mapped.red * 255.0 + 0.5);
-                rgba[offset + 1U] =
-                    static_cast<std::uint8_t>(mapped.green * 255.0 + 0.5);
-                rgba[offset + 2U] =
-                    static_cast<std::uint8_t>(mapped.blue * 255.0 + 0.5);
-                rgba[offset + 3U] = 255U;
-            }
-        }
-    }
-    return {size, width, size, std::move(rgba)};
+    return make_hlg_sdr_color_lut(kHlgSdrPrototypeColorLutSize,
+                                  detail::map_hlg_sdr_prototype_rgb);
 }
 
 } // namespace tlvdemux
