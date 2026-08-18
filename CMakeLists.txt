@@ -51,6 +51,7 @@ add_library(tlvdemux
     src/mse/hevc_parser.cpp
     src/mse/latm_parser.cpp
     src/mse/mp4_builder.cpp
+    src/mse/output_capabilities.cpp
     src/mse/video_access_unit_history.cpp
     src/mse/video_layer_state_machine.cpp
     wasm/mse_remuxer.cpp
@@ -313,6 +314,20 @@ if(BUILD_TESTING)
         PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     add_test(NAME tlvdemux-presentation-policy-tests
         COMMAND tlvdemux-presentation-policy-tests)
+
+    add_executable(tlvdemux-output-capabilities-tests
+        tests/output_capabilities_tests.cpp)
+    target_link_libraries(tlvdemux-output-capabilities-tests
+        PRIVATE tlvdemux::tlvdemux)
+    if(MSVC)
+        target_compile_options(tlvdemux-output-capabilities-tests PRIVATE
+            /W4 /permissive-)
+    else()
+        target_compile_options(tlvdemux-output-capabilities-tests PRIVATE
+            -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME tlvdemux-output-capabilities-tests
+        COMMAND tlvdemux-output-capabilities-tests)
 
     if(TLVDEMUX_BUILD_WASM_BINDINGS)
         find_program(NODE_EXECUTABLE node)

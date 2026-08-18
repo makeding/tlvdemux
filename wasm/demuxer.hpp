@@ -37,6 +37,7 @@ public:
     void reset() {
         reset_application_resources();
         video_track_ids_.clear();
+        hlg_video_track_ids_.clear();
         explicit_sdr_video_track_ids_.clear();
         presentation_policy_.clear_programme_hint();
         const auto cancelled = mse_enabled_ ? mse_remuxer_.reset() : std::nullopt;
@@ -60,6 +61,7 @@ public:
     void selectService(const val& context_id) {
         reset_application_resources();
         video_track_ids_.clear();
+        hlg_video_track_ids_.clear();
         explicit_sdr_video_track_ids_.clear();
         presentation_policy_.clear_programme_hint();
         demuxer_.selectService(optional_number<std::uint32_t>(context_id));
@@ -152,6 +154,18 @@ public:
         for (const auto track_id : video_track_ids_) {
             apply_video_presentation_policy(track_id);
         }
+    }
+
+    void setMseEdid(const val& bytes) {
+        if (bytes.isNull() || bytes.isUndefined()) return;
+        const auto byte_length = bytes["byteLength"].as<std::size_t>();
+        std::vector<std::uint8_t> copy(byte_length);
+        if (byte_length != 0) {
+            val(emscripten::typed_memory_view(copy.size(), copy.data())).call<void>("set", bytes);
+        }
+        presentation_policy_.set_output_capabilities(
+            tlvdemux::parse_mse_output_capabilities(copy));
+        for (const auto track_id : video_track_ids_) apply_video_presentation_policy(track_id);
     }
 
     val hlgSdrToneMappingLut() const {
@@ -288,6 +302,11 @@ public:
     void onTrack(const aribtlv::TrackInfo& info) override {
         if (info.kind == aribtlv::TrackKind::Video) {
             video_track_ids_.insert(info.track_id);
+            if (info.video && info.video->video_transfer_characteristics == 5) {
+                hlg_video_track_ids_.insert(info.track_id);
+            } else {
+                hlg_video_track_ids_.erase(info.track_id);
+            }
             mse_remuxer_.setVideoSignalling(info.track_id,
                 tlvdemux::MseVideoSignalling{
                     info.video ? info.video->hdr_wcg_idc : std::nullopt,
@@ -347,6 +366,7 @@ public:
     void onTrackRemoved(const aribtlv::TrackInfo& info) override {
         if (info.kind == aribtlv::TrackKind::Video) {
             video_track_ids_.erase(info.track_id);
+            hlg_video_track_ids_.erase(info.track_id);
             explicit_sdr_video_track_ids_.erase(info.track_id);
         }
         emit("onTrackRemoved", track_info_value(info));
@@ -622,7 +642,8 @@ public:
 private:
     void apply_video_presentation_policy(const std::uint64_t track_id) {
         const auto decision = presentation_policy_.decision(
-            explicit_sdr_video_track_ids_.count(track_id) != 0);
+            explicit_sdr_video_track_ids_.count(track_id) != 0,
+            hlg_video_track_ids_.count(track_id) != 0);
         mse_remuxer_.setSdrInHlg(track_id, decision.sdr_in_hlg);
         mse_remuxer_.setHlgSdrPrototype(track_id, decision.hlg_sdr_prototype);
     }
@@ -884,6 +905,7 @@ private:
     std::optional<std::uint64_t> selected_video_track_;
     std::optional<std::uint64_t> selected_audio_track_;
     std::set<std::uint64_t> video_track_ids_;
+    std::set<std::uint64_t> hlg_video_track_ids_;
     std::set<std::uint64_t> explicit_sdr_video_track_ids_;
     PresentationPolicy presentation_policy_;
 };

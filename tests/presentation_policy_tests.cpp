@@ -37,6 +37,26 @@ void test_auto_uses_programme_hint_and_output_capability() {
           "unsupported HLG output must not guess SDR for an unknown source");
 }
 
+void test_edid_controls_hlg_source_policy() {
+    tlvdemux::detail::mse::PresentationPolicy policy;
+    tlvdemux::MseOutputCapabilities capabilities;
+    capabilities.edid_valid = true;
+    capabilities.hdr_support = true;
+    capabilities.pq_eotf = true;
+    capabilities.hlg_eotf = false;
+    policy.set_output_capabilities(capabilities);
+
+    check(policy.decision(false, true) ==
+              tlvdemux::detail::mse::PresentationDecision{false, true},
+          "HLG source on an HLG-incompatible output did not select prototype");
+
+    capabilities.hlg_eotf = true;
+    policy.set_output_capabilities(capabilities);
+    check(policy.decision(false, true) ==
+              tlvdemux::detail::mse::PresentationDecision{false, false},
+          "HLG source on an HLG-capable output was unnecessarily remapped");
+}
+
 void test_explicit_modes_are_stable() {
     tlvdemux::detail::mse::PresentationPolicy policy;
     policy.set_mode("force");
@@ -73,6 +93,7 @@ void test_explicit_modes_are_stable() {
 
 int main() {
     test_auto_uses_programme_hint_and_output_capability();
+    test_edid_controls_hlg_source_policy();
     test_explicit_modes_are_stable();
     std::cout << "presentation policy tests passed\n";
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <aribtlv/video_presentation.hpp>
+#include <tlvdemux/output_capabilities.hpp>
 
 #include <stdexcept>
 #include <optional>
@@ -34,7 +35,14 @@ public:
     }
 
     void set_hlg_output_supported(const bool supported) noexcept {
-        output_supports_hlg_ = supported;
+        output_capabilities_.edid_valid = true;
+        output_capabilities_.hlg_eotf = supported;
+        output_capabilities_.hdr_support = supported || output_capabilities_.pq_eotf;
+    }
+
+    void set_output_capabilities(
+        const tlvdemux::MseOutputCapabilities capabilities) noexcept {
+        output_capabilities_ = capabilities;
     }
 
     bool set_programme_hint(const aribtlv::VideoPresentationHint hint) noexcept {
@@ -45,7 +53,8 @@ public:
 
     void clear_programme_hint() noexcept { programme_hint_.reset(); }
 
-    PresentationDecision decision(const bool explicit_sdr = false) const noexcept {
+    PresentationDecision decision(const bool explicit_sdr = false,
+                                  const bool source_hlg = false) const noexcept {
         switch (mode_) {
         case PresentationMode::Prototype:
             return {false, true};
@@ -55,6 +64,10 @@ public:
         case PresentationMode::Off:
             return {false, false};
         case PresentationMode::Auto:
+            if (source_hlg && output_capabilities_.edid_valid &&
+                !output_capabilities_.hlg_eotf) {
+                return {false, true};
+            }
             if (programme_hint_.has_value() &&
                 *programme_hint_ == aribtlv::VideoPresentationHint::Hdr) {
                 return {false, false};
@@ -69,7 +82,7 @@ public:
 
 private:
     PresentationMode mode_ = PresentationMode::Auto;
-    bool output_supports_hlg_ = true;
+    tlvdemux::MseOutputCapabilities output_capabilities_;
     std::optional<aribtlv::VideoPresentationHint> programme_hint_;
 };
 

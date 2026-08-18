@@ -568,6 +568,36 @@ declare namespace createTlvDemuxModule {
     fullRange: boolean;
   }
 
+  interface MseHdrStaticMetadata {
+    displayPrimariesX: [number, number, number];
+    displayPrimariesY: [number, number, number];
+    whitePointX: number;
+    whitePointY: number;
+    maxDisplayMasteringLuminance: number;
+    minDisplayMasteringLuminance: number;
+    maxContentLightLevel: number;
+    maxPicAverageLightLevel: number;
+    hasMasteringDisplay: boolean;
+    hasContentLight: boolean;
+  }
+
+  interface MseVideoSignalling {
+    hdrWcgIdc: number | null;
+    videoTransferCharacteristics: number | null;
+  }
+
+  interface MseOutputCapabilities {
+    edidValid: boolean;
+    hdrSupport: boolean;
+    pqEotf: boolean;
+    hlgEotf: boolean;
+    bt2020: boolean;
+    supports4k50_60: boolean;
+    colorSpaceMask: number;
+    maxDeepColorBits: number;
+    maxTmdsClockMhz: number;
+  }
+
   interface MseVideoProperties {
     trackId: bigint;
     presentationTimeUs: bigint;
@@ -576,6 +606,9 @@ declare namespace createTlvDemuxModule {
     codec: string;
     sourceColor: MseVideoColor | null;
     outputColor: MseVideoColor | null;
+    hdrStaticMetadata: MseHdrStaticMetadata | null;
+    sourceSignalling: MseVideoSignalling | null;
+    sourceSignallingMismatch: boolean;
     sdrInHlg: boolean;
     hlgSdrPrototype: boolean;
   }
@@ -675,6 +708,8 @@ declare namespace createTlvDemuxModule {
     setMseToneMappingMode(mode: MseToneMappingMode): void;
     /** Declare whether the MSE output path can present HLG directly. */
     setMseHlgOutputSupported(enabled: boolean): void;
+    /** Supply an EDID block; capability parsing stops at standard CTA fields. */
+    setMseEdid(edid: ArrayBufferView): void;
     /** @deprecated Use hlgSdrColorLut so colour processing stays in C++. */
     hlgSdrToneMappingLut(): Uint8Array;
     /** Return the canonical C++ HLG-SDR packed RGB 3D LUT. */
