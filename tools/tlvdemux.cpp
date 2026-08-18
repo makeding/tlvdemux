@@ -18,6 +18,7 @@ void usage(std::ostream& output) {
               "  hlg-sdr-lut  export the current HLG-to-SDR 3D LUT as .cube\n"
               "  pipe     remux HEVC and AAC-LATM to fragmented MP4 on stdout\n"
               "  probe    determine the physical duration of a recording\n"
+              "  calcseek calculate recording seek offsets interactively\n"
               "  inspect  list tracks or extract elementary streams\n"
               "  extract  extract ARIB-HTML5 application resources\n"
               "  analyze  analyze ARIB-HTML5 application resources\n"
@@ -47,6 +48,7 @@ int main(int argc, char** argv) {
         return tlvdemux_cli::run_hlg_sdr_lut(argc - 1, argv + 1);
     }
     if (command == "probe") return tlvdemux_cli::run_probe(argc - 1, argv + 1);
+    if (command == "calcseek") return tlvdemux_cli::run_calcseek(argc - 1, argv + 1);
     if (command == "inspect") return tlvdemux_cli::run_inspect(argc - 1, argv + 1);
     if (command == "extract") return tlvdemux_cli::run_extract(argc - 1, argv + 1);
     if (command == "analyze") return tlvdemux_cli::run_analyze(argc - 1, argv + 1);

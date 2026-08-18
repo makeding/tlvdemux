@@ -122,8 +122,11 @@ if(TLVDEMUX_BUILD_TOOLS)
         tools/tlvdemux-inspect.cpp
         tools/tlvdemux-extract.cpp
         tools/tlvdemux-probe.cpp
+        tools/tlvdemux-calcseek.cpp
+        tools/calcseek_time.cpp
         tools/tlvdemux-pipe.cpp
         tools/tlvanalyze.cpp
+        tools/recording_time_seek.cpp
     )
     target_link_libraries(tlvdemux-cli PRIVATE tlvdemux::tlvdemux)
     target_compile_definitions(tlvdemux-cli PRIVATE
@@ -205,7 +208,7 @@ if(BUILD_TESTING)
     if(TLVDEMUX_BUILD_TOOLS)
         add_test(NAME tlvdemux-cli-help COMMAND tlvdemux-cli --help)
         add_test(NAME tlvdemux-cli-version COMMAND tlvdemux-cli --version)
-        foreach(command hlg-sdr-lut pipe probe inspect extract analyze)
+        foreach(command hlg-sdr-lut pipe probe calcseek inspect extract analyze)
             add_test(NAME tlvdemux-cli-${command}-help
                      COMMAND tlvdemux-cli ${command} --help)
         endforeach()
@@ -222,6 +225,21 @@ if(BUILD_TESTING)
         add_test(NAME tlvdemux-cli-unknown-command COMMAND tlvdemux-cli unknown)
         set_tests_properties(tlvdemux-cli-unknown-command PROPERTIES WILL_FAIL TRUE)
     endif()
+
+    add_executable(tlvdemux-calcseek-time-tests
+        tests/calcseek_time_tests.cpp
+        tools/calcseek_time.cpp)
+    target_include_directories(tlvdemux-calcseek-time-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+    target_compile_features(tlvdemux-calcseek-time-tests PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(tlvdemux-calcseek-time-tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(tlvdemux-calcseek-time-tests PRIVATE
+            -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME tlvdemux-calcseek-time-tests
+        COMMAND tlvdemux-calcseek-time-tests)
 
     add_executable(tlvdemux-playback-tests tests/playback_tests.cpp)
     target_link_libraries(tlvdemux-playback-tests PRIVATE tlvdemux::tlvdemux)
