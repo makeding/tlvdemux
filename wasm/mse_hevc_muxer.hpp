@@ -1,0 +1,399 @@
+class HevcMuxer final : public BaseMuxer {
+public:
+    explicit HevcMuxer(Output& output) : BaseMuxer("video", 1, output), output_(output) {}
+
+    bool started() const noexcept { return started_; }
+    void set_sdr_in_hlg(const std::uint64_t track_id, const bool enabled) {
+        const auto previous = color_policy(track_id);
+        if (enabled) sdr_in_hlg_tracks_.insert(track_id);
+        else sdr_in_hlg_tracks_.erase(track_id);
+        if (enabled) hlg_sdr_prototype_tracks_.erase(track_id);
+        if (previous != color_policy(track_id) && track_ &&
+            input_track_id_.has_value() && *input_track_id_ == track_id) {
+            configuration_policy_dirty_ = true;
+        }
+    }
+    void set_hlg_sdr_prototype(const std::uint64_t track_id, const bool enabled) {
+        const auto previous = color_policy(track_id);
+        if (enabled) hlg_sdr_prototype_tracks_.insert(track_id);
+        else hlg_sdr_prototype_tracks_.erase(track_id);
+        if (enabled) sdr_in_hlg_tracks_.erase(track_id);
+        if (previous != color_policy(track_id) && track_ &&
+            input_track_id_.has_value() && *input_track_id_ == track_id) {
+            configuration_policy_dirty_ = true;
+        }
+    }
+    void set_video_signalling(const std::uint64_t track_id,
+                              const tlvdemux::MseVideoSignalling signalling) {
+        video_signalling_[track_id] = signalling;
+        if (track_ && input_track_id_.has_value() && *input_track_id_ == track_id) {
+            configuration_policy_dirty_ = true;
+        }
+    }
+    bool is_input_track_switch(const aribtlv::AccessUnit& unit) const noexcept {
+        return unit.discontinuity && input_track_id_.has_value() &&
+            *input_track_id_ != unit.track_id;
+    }
+    std::optional<std::int64_t> take_splice_boundary_us() noexcept {
+        return std::exchange(splice_boundary_us_, std::nullopt);
+    }
+    void stage_next_switch() noexcept { stage_next_switch_ = true; }
+    void cancel_staged_switch() noexcept { stage_next_switch_ = false; }
+    void retry_staged_switch() noexcept {
+        reset_samples();
+        started_ = false;
+        no_rasl_output_ = false;
+        sequence_start_ = true;
+        splice_boundary_us_.reset();
+        stage_next_switch_ = true;
+    }
+    // AacMuxer has its own (sample-rate) track timescale, so it needs this
+    // shared offset in microseconds regardless of the video track timescale.
+    std::optional<std::int64_t> timeline_offset_us() const noexcept {
+        if (!timeline_offset_ticks_) return std::nullopt;
+        return scaled(*timeline_offset_ticks_, track_->timescale, 1000000);
+    }
+
+    void reset(const bool clear_policy = false) {
+        reset_samples();
+        parameter_sets_.clear();
+        active_hdr_static_metadata_.reset();
+        track_.reset();
+        started_ = false;
+        no_rasl_output_ = false;
+        sequence_start_ = true;
+        timeline_offset_ticks_.reset();
+        input_track_id_.reset();
+        splice_boundary_us_.reset();
+        stage_next_switch_ = false;
+        configuration_policy_dirty_ = false;
+        current_video_properties_.reset();
+        if (clear_policy) {
+            sdr_in_hlg_tracks_.clear();
+            hlg_sdr_prototype_tracks_.clear();
+            video_signalling_.clear();
+        }
+    }
+
+    void push(const aribtlv::AccessUnit& unit, const bool output_enabled) {
+        splice_boundary_us_.reset();
+        const auto nalus = annex_b_views(unit.data);
+        if (const auto metadata = hdr_static_metadata(unit.data)) {
+            active_hdr_static_metadata_ = metadata;
+        }
+        bool has_parameter_set = false;
+        for (const auto& nalu : nalus) {
+            if (nalu.type >= 32 && nalu.type <= 34) {
+                parameter_sets_[nalu.type] = copy_nalu(unit.data, nalu);
+                has_parameter_set = true;
+            }
+        }
+
+        bool has_vcl = false;
+        bool only_rasl_vcl = true;
+        bool all_leading = true;
+        bool has_eos = false;
+        int irap = -1;
+        for (const auto& nalu : nalus) {
+            if (nalu.type >= 0 && nalu.type <= 31) {
+                has_vcl = true;
+                only_rasl_vcl = only_rasl_vcl && (nalu.type == 8 || nalu.type == 9);
+                all_leading = all_leading && (nalu.type >= 6 && nalu.type <= 9);
+                if (nalu.type >= 16 && nalu.type <= 21 && irap < 0) irap = nalu.type;
+            } else if (nalu.type == 36 || nalu.type == 37) {
+                has_eos = true;
+            }
+        }
+        const bool track_switch_boundary = input_track_id_.has_value() &&
+            *input_track_id_ != unit.track_id && irap >= 0;
+        const bool requested_switch_boundary =
+            stage_next_switch_ && unit.discontinuity && irap >= 0;
+        bool configuration_boundary = false;
+        if (parameter_sets_.count(32) != 0 && parameter_sets_.count(33) != 0 &&
+            parameter_sets_.count(34) != 0) {
+            const auto config = hevc_configuration(
+                parameter_sets_[32], parameter_sets_[33], parameter_sets_[34],
+                color_policy(unit.track_id), active_hdr_static_metadata_);
+            auto candidate = video_track(config, unit);
+            const auto properties = video_properties(config, unit);
+            if (!track_) {
+                set_track(std::move(candidate));
+                emit_video_properties(properties);
+            } else if ((has_parameter_set || configuration_policy_dirty_) && irap >= 0 &&
+                       configuration_differs(candidate)) {
+                if (output_enabled && !output_.supports_video_reconfiguration()) {
+                    throw std::runtime_error(
+                        "HEVC configuration changes require SeparateTracks MSE output");
+                }
+                const auto input_boundary_dts = scaled(
+                    unit.dts.value, unit.dts.timescale, track_->timescale);
+                if (!timeline_offset_ticks_) {
+                    timeline_offset_ticks_ = std::max<std::int64_t>(0, -input_boundary_dts);
+                }
+                const auto offset = *timeline_offset_ticks_;
+                const auto boundary_dts = input_boundary_dts + offset;
+                const auto boundary_pts = scaled(unit.pts.value, unit.pts.timescale,
+                                                 track_->timescale) + offset;
+                flush_at(boundary_dts);
+                if (stage_next_switch_) {
+                    output_.begin_video_staging();
+                    stage_next_switch_ = false;
+                }
+                splice_boundary_us_ = scaled(boundary_pts, track_->timescale, 1000000);
+                output_.video_splice(*splice_boundary_us_);
+                candidate.timescale = track_->timescale;
+                replace_track(std::move(candidate));
+                emit_video_properties(properties);
+                started_ = false;
+                no_rasl_output_ = false;
+                sequence_start_ = true;
+                configuration_boundary = true;
+            } else if ((has_parameter_set || configuration_policy_dirty_) && irap >= 0 &&
+                       video_properties_differ(properties)) {
+                emit_video_properties(properties);
+            }
+            if (configuration_policy_dirty_ && irap >= 0) {
+                configuration_policy_dirty_ = false;
+            }
+        }
+        if ((track_switch_boundary || requested_switch_boundary) &&
+            !configuration_boundary) {
+            const auto input_boundary_dts = scaled(
+                unit.dts.value, unit.dts.timescale, track_->timescale);
+            if (!timeline_offset_ticks_) {
+                timeline_offset_ticks_ = std::max<std::int64_t>(0, -input_boundary_dts);
+            }
+            const auto offset = *timeline_offset_ticks_;
+            const auto boundary_dts = input_boundary_dts + offset;
+            const auto boundary_pts = scaled(unit.pts.value, unit.pts.timescale,
+                                             track_->timescale) + offset;
+            flush_at(boundary_dts);
+            if (stage_next_switch_) {
+                output_.begin_video_staging();
+                stage_next_switch_ = false;
+            }
+            splice_boundary_us_ = scaled(boundary_pts, track_->timescale, 1000000);
+            output_.video_splice(*splice_boundary_us_);
+            started_ = false;
+            no_rasl_output_ = false;
+            sequence_start_ = true;
+            configuration_boundary = true;
+        }
+        if (unit.discontinuity && !configuration_boundary) {
+            // A timeline discontinuity normally discards incomplete old media.
+            // When this AU also carries a new RAP configuration, the branch
+            // above has already sealed and emitted the old configuration at
+            // this RAP boundary instead.
+            reset_samples();
+            started_ = false;
+            no_rasl_output_ = false;
+            sequence_start_ = true;
+            timeline_offset_ticks_.reset();
+        }
+        if (!track_) return;
+        if (!has_vcl) {
+            // An EOS/EOB-only access unit carries no picture, but still ends
+            // the coded video sequence for whichever IRAP follows it.
+            if (has_eos) sequence_start_ = true;
+            return;
+        }
+        if (!started_) {
+            if (irap < 0) return;
+            started_ = true;
+            if (!configuration_boundary) {
+                const auto first_dts = scaled(unit.dts.value, unit.dts.timescale, track_->timescale);
+                timeline_offset_ticks_ = std::max<std::int64_t>(0, -first_dts);
+            }
+            output_.video_start(irap, unit.random_access);
+            input_track_id_ = unit.track_id;
+        }
+        // HEVC 8.1.3: NoRaslOutputFlag is 1 for every IDR/BLA access unit, and for
+        // a CRA that opens a fresh coded video sequence (the first access unit in
+        // the bitstream, or the first one after an EOS/EOB NAL); HandleCraAsBlaFlag
+        // is an external decoder input, not derivable from the bitstream, and is
+        // ignored. While it holds, RASL pictures reference data the decoder never
+        // received and are dropped. RADL pictures are leading but decodable, so
+        // they pass through without closing the window; the window instead ends at
+        // the first trailing (non-leading) access unit that follows the IRAP.
+        if (irap >= 0) {
+            no_rasl_output_ = (irap >= 16 && irap <= 20) || sequence_start_;
+            sequence_start_ = false;
+        } else if (no_rasl_output_) {
+            if (only_rasl_vcl) return;
+            if (!all_leading) no_rasl_output_ = false;
+        }
+        if (has_eos) sequence_start_ = true;
+        if (!output_enabled) return;
+
+        std::size_t output_size = 0;
+        for (const auto& nalu : nalus) {
+            if (included_in_sample(nalu)) output_size += 4U + nalu.size;
+        }
+        Bytes data;
+        data.reserve(output_size);
+        for (const auto& nalu : nalus) {
+            if (!included_in_sample(nalu)) continue;
+            append(data, u32(nalu.size));
+            append(data, unit.data.data() + nalu.offset, nalu.size);
+        }
+        if (data.empty()) return;
+        const auto offset = timeline_offset_ticks_.value_or(0);
+        const auto dts = scaled(unit.dts.value, unit.dts.timescale, track_->timescale) + offset;
+        const auto pts = scaled(unit.pts.value, unit.pts.timescale, track_->timescale) + offset;
+        if (dts < 0) return;
+        enqueue({std::move(data), dts, pts, 0, irap >= 0});
+    }
+
+private:
+    HevcColorPolicy color_policy(const std::uint64_t track_id) const noexcept {
+        if (hlg_sdr_prototype_tracks_.count(track_id) != 0) {
+            return HevcColorPolicy::HlgSdrPrototype;
+        }
+        if (sdr_in_hlg_tracks_.count(track_id) != 0) {
+            return HevcColorPolicy::SdrInHlg;
+        }
+        return HevcColorPolicy::Preserve;
+    }
+
+    static tlvdemux::MseVideoColor video_color(const ColorInformation& color) {
+        return {color.primaries, color.transfer, color.matrix, color.full_range};
+    }
+
+    static tlvdemux::MseHdrStaticMetadata mse_hdr_static_metadata(
+        const HdrStaticMetadata& metadata) {
+        return {metadata.display_primaries_x, metadata.display_primaries_y,
+                metadata.white_point_x, metadata.white_point_y,
+                metadata.max_display_mastering_luminance,
+                metadata.min_display_mastering_luminance,
+                metadata.max_content_light_level,
+                metadata.max_pic_average_light_level,
+                metadata.has_mastering_display, metadata.has_content_light};
+    }
+
+    tlvdemux::MseVideoProperties video_properties(
+        const HevcConfiguration& config, const aribtlv::AccessUnit& unit) {
+        tlvdemux::MseVideoProperties properties;
+        properties.track_id = unit.track_id;
+        properties.presentation_time_us = scaled(
+            unit.pts.value, unit.pts.timescale, 1000000);
+        properties.width = config.width;
+        properties.height = config.height;
+        properties.codec = config.codec;
+        if (config.source_color) properties.source_color = video_color(*config.source_color);
+        if (config.color) properties.output_color = video_color(*config.color);
+        if (config.hdr_static_metadata) {
+            properties.hdr_static_metadata =
+                mse_hdr_static_metadata(*config.hdr_static_metadata);
+        }
+        if (const auto signalling = video_signalling_.find(unit.track_id);
+            signalling != video_signalling_.end()) {
+            properties.source_signalling = signalling->second;
+            if (signalling->second.video_transfer_characteristics &&
+                config.source_color) {
+                const auto cicp = aribtlv::cicp_transfer_from_b60(
+                    *signalling->second.video_transfer_characteristics);
+                properties.source_signalling_mismatch = cicp.has_value() &&
+                    static_cast<std::uint16_t>(*cicp) != config.source_color->transfer;
+            }
+        }
+        constexpr auto hlg = static_cast<std::uint16_t>(
+            aribtlv::VideoTransferCharacteristics::AribHlg);
+        properties.sdr_in_hlg = config.source_color.has_value() &&
+            config.color.has_value() && config.source_color->transfer == hlg &&
+            *config.color == ColorInformation{
+                aribtlv::kCicpBt2020Primaries,
+                aribtlv::kCicpBt709Primaries,
+                aribtlv::kCicpBt2020NclMatrix,
+                false};
+        properties.hlg_sdr_prototype = config.source_color.has_value() &&
+            config.color.has_value() &&
+            aribtlv::is_bt2020_hlg(config.source_color->primaries,
+                                   config.source_color->transfer,
+                                   config.source_color->matrix,
+                                   config.source_color->full_range) &&
+            *config.color == ColorInformation{
+                aribtlv::kCicpBt709Primaries, 13,
+                aribtlv::kCicpBt2020NclMatrix, false};
+        return properties;
+    }
+
+    bool video_properties_differ(
+        const tlvdemux::MseVideoProperties& properties) const {
+        return !current_video_properties_.has_value() ||
+            current_video_properties_->track_id != properties.track_id ||
+            current_video_properties_->width != properties.width ||
+            current_video_properties_->height != properties.height ||
+            current_video_properties_->codec != properties.codec ||
+            current_video_properties_->source_color != properties.source_color ||
+            current_video_properties_->output_color != properties.output_color ||
+            current_video_properties_->hdr_static_metadata !=
+                properties.hdr_static_metadata ||
+            current_video_properties_->source_signalling !=
+                properties.source_signalling ||
+            current_video_properties_->source_signalling_mismatch !=
+                properties.source_signalling_mismatch ||
+            current_video_properties_->sdr_in_hlg != properties.sdr_in_hlg ||
+            current_video_properties_->hlg_sdr_prototype !=
+                properties.hlg_sdr_prototype;
+    }
+
+    void emit_video_properties(const tlvdemux::MseVideoProperties& properties) {
+        current_video_properties_ = properties;
+        output_.video_properties(properties);
+    }
+
+    static Mp4Track video_track(const HevcConfiguration& config,
+                                const aribtlv::AccessUnit& unit) {
+        Mp4Track track;
+        track.video = true;
+        track.width = config.width;
+        track.height = config.height;
+        track.codec = config.codec;
+        track.config = config.hvcc;
+        track.color = config.color;
+        track.hdr_static_metadata = config.hdr_static_metadata;
+        // Adopt the stream's own timescale so DTS/PTS stay exact integers
+        // (e.g. 180000's 3003-tick frame interval is not an integer number
+        // of microseconds, and the resulting rounding drift can make a
+        // fragment's composition interval overlap the next one). A
+        // timescale of 1 means the stream never signalled one; keep the
+        // 1000000 default rather than build a 1 Hz MP4 track.
+        if (unit.dts.timescale > 1) track.timescale = unit.dts.timescale;
+        return track;
+    }
+
+    bool configuration_differs(const Mp4Track& candidate) const {
+        return track_->width != candidate.width || track_->height != candidate.height ||
+            track_->codec != candidate.codec || track_->config != candidate.config ||
+            track_->color != candidate.color ||
+            track_->hdr_static_metadata != candidate.hdr_static_metadata;
+    }
+
+    static bool included_in_sample(const NaluView& nalu) noexcept {
+        return nalu.type != 32 && nalu.type != 33 && nalu.type != 34 && nalu.type != 35;
+    }
+
+    // 33367 at a 1e6 timescale is the ~29.97fps default this stood in for;
+    // scale it to whatever timescale the track actually adopted above.
+    std::uint32_t default_duration() const override {
+        return track_ ? static_cast<std::uint32_t>(std::llround(
+                            33367.0 * track_->timescale / 1000000.0))
+                      : 33367;
+    }
+
+    Output& output_;
+    std::map<int, Bytes> parameter_sets_;
+    std::optional<HdrStaticMetadata> active_hdr_static_metadata_;
+    std::map<std::uint64_t, tlvdemux::MseVideoSignalling> video_signalling_;
+    std::set<std::uint64_t> sdr_in_hlg_tracks_;
+    std::set<std::uint64_t> hlg_sdr_prototype_tracks_;
+    std::optional<tlvdemux::MseVideoProperties> current_video_properties_;
+    bool started_ = false;
+    bool no_rasl_output_ = false;
+    bool sequence_start_ = true;
+    std::optional<std::int64_t> timeline_offset_ticks_;
+    std::optional<std::uint64_t> input_track_id_;
+    std::optional<std::int64_t> splice_boundary_us_;
+    bool stage_next_switch_ = false;
+    bool configuration_policy_dirty_ = false;
+};
