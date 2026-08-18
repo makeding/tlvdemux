@@ -59,6 +59,8 @@ const mseDemuxer = new module.TlvDemuxer({
 mseDemuxer.selectTrack('video', 2n);
 mseDemuxer.setMseSdrInHlg(2n, true);
 mseDemuxer.setMseSdrInHlg(2n, false);
+mseDemuxer.setMseHlgOutputSupported(true);
+mseDemuxer.setMseHlgOutputSupported(false);
 for (const mode of ['auto', 'force', 'on_compare', 'prototype', 'off']) {
   mseDemuxer.setMseToneMappingMode(mode);
 }

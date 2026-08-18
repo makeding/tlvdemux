@@ -170,6 +170,8 @@ if(TLVDEMUX_BUILD_WASM_BINDINGS)
         wasm/mse_remuxer_bindings.cpp
     )
     target_link_libraries(tlvdemux-wasm PRIVATE tlvdemux::tlvdemux)
+    target_include_directories(tlvdemux-wasm PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_options(tlvdemux-wasm PRIVATE
         --bind
         "-sALLOW_MEMORY_GROWTH=1"
@@ -302,6 +304,15 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME tlvdemux-hlg-sdr-tone-mapping-tests
         COMMAND tlvdemux-hlg-sdr-tone-mapping-tests)
+
+    add_executable(tlvdemux-presentation-policy-tests
+        tests/presentation_policy_tests.cpp)
+    target_link_libraries(tlvdemux-presentation-policy-tests
+        PRIVATE tlvdemux::tlvdemux)
+    target_include_directories(tlvdemux-presentation-policy-tests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    add_test(NAME tlvdemux-presentation-policy-tests
+        COMMAND tlvdemux-presentation-policy-tests)
 
     if(TLVDEMUX_BUILD_WASM_BINDINGS)
         find_program(NODE_EXECUTABLE node)

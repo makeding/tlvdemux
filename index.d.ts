@@ -666,6 +666,8 @@ declare namespace createTlvDemuxModule {
     setMseSdrInHlg(videoTrackId: bigint, enabled: boolean): void;
     /** Select automatic, forced, split comparison, or disabled HLG-SDR rendering. */
     setMseToneMappingMode(mode: MseToneMappingMode): void;
+    /** Declare whether the MSE output path can present HLG directly. */
+    setMseHlgOutputSupported(enabled: boolean): void;
     /** @deprecated Use hlgSdrColorLut so colour processing stays in C++. */
     hlgSdrToneMappingLut(): Uint8Array;
     /** Return the canonical C++ HLG-SDR packed RGB 3D LUT. */

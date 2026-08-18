@@ -8,6 +8,7 @@
 #include <tlvdemux/hlg_sdr_tone_mapping.hpp>
 
 #include "mse_remuxer.hpp"
+#include "mse/presentation_policy.hpp"
 
 #include <cmath>
 #include <cstddef>
@@ -28,6 +29,7 @@
 namespace {
 
 using emscripten::val;
+using tlvdemux::detail::mse::PresentationPolicy;
 
 val copy_bytes(const std::vector<std::uint8_t>& source) {
     auto result = val::global("Uint8Array").new_(source.size());
@@ -625,7 +627,7 @@ public:
         reset_application_resources();
         video_track_ids_.clear();
         explicit_sdr_video_track_ids_.clear();
-        current_video_presentation_hint_.reset();
+        presentation_policy_.clear_programme_hint();
         const auto cancelled = mse_enabled_ ? mse_remuxer_.reset() : std::nullopt;
         demuxer_.reset();
         restoreLayerSelection(cancelled);
@@ -648,7 +650,7 @@ public:
         reset_application_resources();
         video_track_ids_.clear();
         explicit_sdr_video_track_ids_.clear();
-        current_video_presentation_hint_.reset();
+        presentation_policy_.clear_programme_hint();
         demuxer_.selectService(optional_number<std::uint32_t>(context_id));
         if (index_active_) recording_index_.begin(index_growing_);
     }
@@ -730,21 +732,14 @@ public:
     }
 
     void setMseToneMappingMode(const std::string& mode) {
-        if (mode != "auto" && mode != "force" && mode != "on_compare" &&
-            mode != "prototype" && mode != "off") {
-            throw std::invalid_argument("invalid MSE tone mapping mode");
-        }
-        tone_mapping_mode_ = mode;
+        presentation_policy_.set_mode(mode);
         for (const auto track_id : video_track_ids_) apply_video_presentation_policy(track_id);
     }
 
     void setMseHlgOutputSupported(const bool supported) {
-        if (output_supports_hlg_ == supported) return;
-        output_supports_hlg_ = supported;
-        if (tone_mapping_mode_ == "auto") {
-            for (const auto track_id : video_track_ids_) {
-                apply_video_presentation_policy(track_id);
-            }
+        presentation_policy_.set_hlg_output_supported(supported);
+        for (const auto track_id : video_track_ids_) {
+            apply_video_presentation_policy(track_id);
         }
     }
 
@@ -1152,9 +1147,7 @@ public:
     void onEventInfo(const aribtlv::EventInfo& info) override {
         if (info.table_id == 0x8b && info.current_next && info.section_number == 0) {
             const auto hint = aribtlv::video_presentation_hint(info);
-            if (!current_video_presentation_hint_.has_value() ||
-                *current_video_presentation_hint_ != hint) {
-                current_video_presentation_hint_ = hint;
+            if (presentation_policy_.set_programme_hint(hint)) {
                 for (const auto track_id : video_track_ids_) {
                     apply_video_presentation_policy(track_id);
                 }
@@ -1217,32 +1210,9 @@ public:
 
 private:
     void apply_video_presentation_policy(const std::uint64_t track_id) {
-        if (tone_mapping_mode_ == "prototype") {
-            mse_remuxer_.setSdrInHlg(track_id, false);
-            mse_remuxer_.setHlgSdrPrototype(track_id, true);
-            return;
-        }
-        mse_remuxer_.setHlgSdrPrototype(track_id, false);
-        if (tone_mapping_mode_ == "force" || tone_mapping_mode_ == "on_compare") {
-            mse_remuxer_.setSdrInHlg(track_id, true);
-            return;
-        }
-        if (tone_mapping_mode_ == "off") {
-            mse_remuxer_.setSdrInHlg(track_id, false);
-            return;
-        }
-        if (!output_supports_hlg_ && tone_mapping_mode_ == "auto") {
-            mse_remuxer_.setSdrInHlg(track_id, true);
-            return;
-        }
-        const bool programme_is_hdr = current_video_presentation_hint_.has_value() &&
-            *current_video_presentation_hint_ == aribtlv::VideoPresentationHint::Hdr;
-        // HLG is the transport signalling here, not proof that the programme
-        // is HDR. In auto mode, only an explicit HDR EIT indication keeps the
-        // original HLG metadata. The decision is reevaluated when the current
-        // EIT programme changes, so a later HDR programme returns to HLG.
-        const bool sdr_in_hlg = !programme_is_hdr;
-        mse_remuxer_.setSdrInHlg(track_id, sdr_in_hlg);
+        const auto decision = presentation_policy_.decision();
+        mse_remuxer_.setSdrInHlg(track_id, decision.sdr_in_hlg);
+        mse_remuxer_.setHlgSdrPrototype(track_id, decision.hlg_sdr_prototype);
     }
 
     static std::uint32_t mse_max_audio_channels(const val& options) {
@@ -1503,9 +1473,7 @@ private:
     std::optional<std::uint64_t> selected_audio_track_;
     std::set<std::uint64_t> video_track_ids_;
     std::set<std::uint64_t> explicit_sdr_video_track_ids_;
-    std::optional<aribtlv::VideoPresentationHint> current_video_presentation_hint_;
-    std::string tone_mapping_mode_ = "auto";
-    bool output_supports_hlg_ = true;
+    PresentationPolicy presentation_policy_;
 };
 
 } // namespace
