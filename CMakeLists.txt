@@ -46,6 +46,7 @@ else()
 endif()
 
 add_library(tlvdemux
+    src/hevc_metadata.cpp
     src/playback_damage.cpp
     src/playback_timing.cpp
     src/mse/chromium_coded_frame_policy.cpp

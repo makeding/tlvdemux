@@ -1,4 +1,5 @@
 #include <tlvdemux/mse_remuxer.hpp>
+#include <tlvdemux/hevc_metadata.hpp>
 #include "../src/mse/hevc_parser.hpp"
 
 #include <algorithm>
@@ -1584,8 +1585,16 @@ void test_hevc_hdr_static_metadata_reaches_mp4_and_properties() {
         has_sei_nalu = has_sei_nalu || nalu.type == 39;
     }
     check(has_sei_nalu, "HEVC static HDR fixture did not contain a prefix SEI NAL");
-    const auto parsed = tlvdemux::detail::mse::hdr_static_metadata(unit.data);
-    check(parsed.has_value(), "HEVC static HDR SEI fixture was not parsed");
+    const auto metadata = tlvdemux::parse_hevc_video_metadata(unit.data);
+    check(metadata.has_value() && metadata->color ==
+              tlvdemux::HevcColorInformation{9, 16, 9, false},
+          "public HEVC metadata API did not expose SPS VUI colour");
+    check(metadata->hdr_static_metadata.has_value() &&
+              metadata->hdr_static_metadata->has_mastering_display &&
+              metadata->hdr_static_metadata->has_content_light &&
+              metadata->hdr_static_metadata->max_content_light_level == 1000 &&
+              metadata->hdr_static_metadata->max_pic_average_light_level == 500,
+          "public HEVC metadata API did not expose static HDR SEI");
     remuxer.push(unit);
     remuxer.flush();
 

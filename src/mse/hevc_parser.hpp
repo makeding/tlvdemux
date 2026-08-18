@@ -34,6 +34,7 @@ enum class HevcColorPolicy {
 
 std::vector<NaluView> annex_b_views(const Bytes& data);
 Bytes copy_nalu(const Bytes& data, const NaluView& view);
+std::optional<ColorInformation> hevc_color_information(const Bytes& data);
 std::optional<HdrStaticMetadata> hdr_static_metadata(const Bytes& data);
 HevcConfiguration hevc_configuration(const Bytes& vps, const Bytes& sps,
                                      const Bytes& pps,

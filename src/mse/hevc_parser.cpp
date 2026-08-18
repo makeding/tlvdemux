@@ -454,6 +454,14 @@ Bytes copy_nalu(const Bytes& data, const NaluView& view) {
                  data.begin() + static_cast<std::ptrdiff_t>(view.offset + view.size));
 }
 
+std::optional<ColorInformation> hevc_color_information(const Bytes& data) {
+    std::optional<ColorInformation> output;
+    for (const auto& nalu : annex_b_views(data)) {
+        if (nalu.type == 33) output = parse_sps(copy_nalu(data, nalu)).color;
+    }
+    return output;
+}
+
 std::optional<HdrStaticMetadata> hdr_static_metadata(const Bytes& data) {
     HdrStaticMetadata output;
     for (const auto& nalu : annex_b_views(data)) {
