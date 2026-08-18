@@ -1,6 +1,7 @@
 #pragma once
 
 #include <aribtlv/video_presentation.hpp>
+#include <aribtlv/video_color.hpp>
 
 #include <stdexcept>
 #include <optional>
@@ -45,7 +46,7 @@ public:
 
     void clear_programme_hint() noexcept { programme_hint_.reset(); }
 
-    PresentationDecision decision() const noexcept {
+    PresentationDecision decision(const bool source_is_hdr = false) const noexcept {
         switch (mode_) {
         case PresentationMode::Prototype:
             return {false, true};
@@ -56,6 +57,7 @@ public:
             return {false, false};
         case PresentationMode::Auto:
             if (!output_supports_hlg_) return {true, false};
+            if (source_is_hdr) return {false, false};
             return {programme_hint_.has_value() &&
                         *programme_hint_ == aribtlv::VideoPresentationHint::Hdr
                         ? false : true,

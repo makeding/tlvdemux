@@ -21,6 +21,10 @@ void test_auto_uses_programme_hint_and_output_capability() {
     check(!policy.decision().sdr_in_hlg,
           "HDR programme should preserve HLG on a supported output");
 
+    policy.clear_programme_hint();
+    check(!policy.decision(true).sdr_in_hlg,
+          "HDR-coded source should preserve HLG without a programme hint");
+
     policy.set_hlg_output_supported(false);
     check(policy.decision().sdr_in_hlg,
           "unsupported HLG output should request SDR-in-HLG");
