@@ -116,6 +116,24 @@ Bytes video_entry(const Mp4Track& track) {
                              Bytes{static_cast<std::uint8_t>(
                                  track.color->full_range ? 0x80U : 0x00U)}));
     }
+    if (track.hdr_static_metadata) {
+        const auto& hdr = *track.hdr_static_metadata;
+        if (hdr.has_mastering_display) {
+            Bytes primaries;
+            for (std::size_t index = 0; index < 3; ++index) {
+                append(primaries, u16(hdr.display_primaries_x[index]));
+                append(primaries, u16(hdr.display_primaries_y[index]));
+            }
+            append(children, box("mdcv", primaries,
+                                 u16(hdr.white_point_x), u16(hdr.white_point_y),
+                                 u32(hdr.max_display_mastering_luminance),
+                                 u32(hdr.min_display_mastering_luminance)));
+        }
+        if (hdr.has_content_light) {
+            append(children, box("clli", u16(hdr.max_content_light_level),
+                                 u16(hdr.max_pic_average_light_level)));
+        }
+    }
     return box(sample_entry, header, children);
 }
 

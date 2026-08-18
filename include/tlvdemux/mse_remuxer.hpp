@@ -4,6 +4,7 @@
 #include <tlvdemux/playback_damage.hpp>
 
 #include <cstdint>
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
@@ -88,6 +89,20 @@ struct MseVideoColor {
     bool operator==(const MseVideoColor&) const = default;
 };
 
+struct MseHdrStaticMetadata {
+    std::array<std::uint16_t, 3> display_primaries_x{};
+    std::array<std::uint16_t, 3> display_primaries_y{};
+    std::uint16_t white_point_x = 0;
+    std::uint16_t white_point_y = 0;
+    std::uint32_t max_display_mastering_luminance = 0;
+    std::uint32_t min_display_mastering_luminance = 0;
+    std::uint16_t max_content_light_level = 0;
+    std::uint16_t max_pic_average_light_level = 0;
+    bool has_mastering_display = false;
+    bool has_content_light = false;
+    bool operator==(const MseHdrStaticMetadata&) const = default;
+};
+
 // Current HEVC presentation state at a parameter-set/RAP boundary.
 struct MseVideoProperties {
     std::uint64_t track_id = 0;
@@ -97,6 +112,7 @@ struct MseVideoProperties {
     std::string codec;
     std::optional<MseVideoColor> source_color;
     std::optional<MseVideoColor> output_color;
+    std::optional<MseHdrStaticMetadata> hdr_static_metadata;
     bool sdr_in_hlg = false;
     bool hlg_sdr_prototype = false;
 };

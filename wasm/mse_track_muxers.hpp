@@ -444,6 +444,7 @@ public:
     void reset(const bool clear_policy = false) {
         reset_samples();
         parameter_sets_.clear();
+        active_hdr_static_metadata_.reset();
         track_.reset();
         started_ = false;
         no_rasl_output_ = false;
@@ -463,6 +464,9 @@ public:
     void push(const aribtlv::AccessUnit& unit, const bool output_enabled) {
         splice_boundary_us_.reset();
         const auto nalus = annex_b_views(unit.data);
+        if (const auto metadata = hdr_static_metadata(unit.data)) {
+            active_hdr_static_metadata_ = metadata;
+        }
         bool has_parameter_set = false;
         for (const auto& nalu : nalus) {
             if (nalu.type >= 32 && nalu.type <= 34) {
@@ -495,7 +499,7 @@ public:
             parameter_sets_.count(34) != 0) {
             const auto config = hevc_configuration(
                 parameter_sets_[32], parameter_sets_[33], parameter_sets_[34],
-                color_policy(unit.track_id));
+                color_policy(unit.track_id), active_hdr_static_metadata_);
             auto candidate = video_track(config, unit);
             const auto properties = video_properties(config, unit);
             if (!track_) {
@@ -641,6 +645,17 @@ private:
         return {color.primaries, color.transfer, color.matrix, color.full_range};
     }
 
+    static tlvdemux::MseHdrStaticMetadata mse_hdr_static_metadata(
+        const HdrStaticMetadata& metadata) {
+        return {metadata.display_primaries_x, metadata.display_primaries_y,
+                metadata.white_point_x, metadata.white_point_y,
+                metadata.max_display_mastering_luminance,
+                metadata.min_display_mastering_luminance,
+                metadata.max_content_light_level,
+                metadata.max_pic_average_light_level,
+                metadata.has_mastering_display, metadata.has_content_light};
+    }
+
     static tlvdemux::MseVideoProperties video_properties(
         const HevcConfiguration& config, const aribtlv::AccessUnit& unit) {
         tlvdemux::MseVideoProperties properties;
@@ -652,6 +667,10 @@ private:
         properties.codec = config.codec;
         if (config.source_color) properties.source_color = video_color(*config.source_color);
         if (config.color) properties.output_color = video_color(*config.color);
+        if (config.hdr_static_metadata) {
+            properties.hdr_static_metadata =
+                mse_hdr_static_metadata(*config.hdr_static_metadata);
+        }
         constexpr auto hlg = static_cast<std::uint16_t>(
             aribtlv::VideoTransferCharacteristics::AribHlg);
         properties.sdr_in_hlg = config.source_color.has_value() &&
@@ -682,6 +701,8 @@ private:
             current_video_properties_->codec != properties.codec ||
             current_video_properties_->source_color != properties.source_color ||
             current_video_properties_->output_color != properties.output_color ||
+            current_video_properties_->hdr_static_metadata !=
+                properties.hdr_static_metadata ||
             current_video_properties_->sdr_in_hlg != properties.sdr_in_hlg ||
             current_video_properties_->hlg_sdr_prototype !=
                 properties.hlg_sdr_prototype;
@@ -701,6 +722,7 @@ private:
         track.codec = config.codec;
         track.config = config.hvcc;
         track.color = config.color;
+        track.hdr_static_metadata = config.hdr_static_metadata;
         // Adopt the stream's own timescale so DTS/PTS stay exact integers
         // (e.g. 180000's 3003-tick frame interval is not an integer number
         // of microseconds, and the resulting rounding drift can make a
@@ -714,7 +736,8 @@ private:
     bool configuration_differs(const Mp4Track& candidate) const {
         return track_->width != candidate.width || track_->height != candidate.height ||
             track_->codec != candidate.codec || track_->config != candidate.config ||
-            track_->color != candidate.color;
+            track_->color != candidate.color ||
+            track_->hdr_static_metadata != candidate.hdr_static_metadata;
     }
 
     static bool included_in_sample(const NaluView& nalu) noexcept {
@@ -731,6 +754,7 @@ private:
 
     Output& output_;
     std::map<int, Bytes> parameter_sets_;
+    std::optional<HdrStaticMetadata> active_hdr_static_metadata_;
     std::set<std::uint64_t> sdr_in_hlg_tracks_;
     std::set<std::uint64_t> hlg_sdr_prototype_tracks_;
     std::optional<tlvdemux::MseVideoProperties> current_video_properties_;

@@ -19,6 +19,7 @@ struct Mp4Track {
     std::string codec;
     Bytes config;
     std::optional<ColorInformation> color;
+    std::optional<HdrStaticMetadata> hdr_static_metadata;
 };
 
 struct Sample {

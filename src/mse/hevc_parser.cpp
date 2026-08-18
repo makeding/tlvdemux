@@ -287,6 +287,78 @@ Bytes escape_rbsp(const Bytes& data) {
     return output;
 }
 
+void parse_sei_payload(const std::uint32_t type, const Bytes& payload,
+                       HdrStaticMetadata& output) {
+    if (type == 137 && payload.size() == 24U) {
+        std::size_t offset = 0;
+        for (std::size_t index = 0; index < 3; ++index) {
+            output.display_primaries_x[index] =
+                static_cast<std::uint16_t>((payload[offset] << 8U) |
+                                           payload[offset + 1]);
+            offset += 2;
+            output.display_primaries_y[index] =
+                static_cast<std::uint16_t>((payload[offset] << 8U) |
+                                           payload[offset + 1]);
+            offset += 2;
+        }
+        output.white_point_x =
+            static_cast<std::uint16_t>((payload[offset] << 8U) |
+                                       payload[offset + 1]);
+        offset += 2;
+        output.white_point_y =
+            static_cast<std::uint16_t>((payload[offset] << 8U) |
+                                       payload[offset + 1]);
+        offset += 2;
+        output.max_display_mastering_luminance =
+            (static_cast<std::uint32_t>(payload[offset]) << 24U) |
+            (static_cast<std::uint32_t>(payload[offset + 1]) << 16U) |
+            (static_cast<std::uint32_t>(payload[offset + 2]) << 8U) |
+            payload[offset + 3];
+        offset += 4;
+        output.min_display_mastering_luminance =
+            (static_cast<std::uint32_t>(payload[offset]) << 24U) |
+            (static_cast<std::uint32_t>(payload[offset + 1]) << 16U) |
+            (static_cast<std::uint32_t>(payload[offset + 2]) << 8U) |
+            payload[offset + 3];
+        output.has_mastering_display = true;
+    } else if (type == 144 && payload.size() == 4U) {
+        output.max_content_light_level =
+            static_cast<std::uint16_t>((payload[0] << 8U) | payload[1]);
+        output.max_pic_average_light_level =
+            static_cast<std::uint16_t>((payload[2] << 8U) | payload[3]);
+        output.has_content_light = true;
+    }
+}
+
+void parse_sei_nalu(const Bytes& nalu, HdrStaticMetadata& output) {
+    if (nalu.size() < 3) return;
+    const auto data = rbsp(nalu);
+    std::size_t offset = 2;
+    while (offset < data.size()) {
+        std::uint32_t type = 0;
+        while (offset < data.size() && data[offset] == 0xffU) {
+            type += 255U;
+            ++offset;
+        }
+        if (offset >= data.size()) return;
+        type += data[offset++];
+
+        std::size_t size = 0;
+        while (offset < data.size() && data[offset] == 0xffU) {
+            size += 255U;
+            ++offset;
+        }
+        if (offset >= data.size()) return;
+        size += data[offset++];
+        if (size > data.size() - offset) return;
+        parse_sei_payload(type,
+                          Bytes(data.begin() + static_cast<std::ptrdiff_t>(offset),
+                                data.begin() + static_cast<std::ptrdiff_t>(offset + size)),
+                          output);
+        offset += size;
+    }
+}
+
 Bytes rewritten_color_sps(const Bytes& sps, const HevcColorPolicy policy) {
     if (sps.size() < 2) return sps;
     const auto original = parse_sps(sps);
@@ -382,15 +454,26 @@ Bytes copy_nalu(const Bytes& data, const NaluView& view) {
                  data.begin() + static_cast<std::ptrdiff_t>(view.offset + view.size));
 }
 
+std::optional<HdrStaticMetadata> hdr_static_metadata(const Bytes& data) {
+    HdrStaticMetadata output;
+    for (const auto& nalu : annex_b_views(data)) {
+        if (nalu.type != 39 && nalu.type != 40) continue;
+        parse_sei_nalu(copy_nalu(data, nalu), output);
+    }
+    if (!output.has_mastering_display && !output.has_content_light) return std::nullopt;
+    return output;
+}
+
 HevcConfiguration hevc_configuration(const Bytes& vps, const Bytes& sps,
                                      const Bytes& pps,
-                                     const HevcColorPolicy color_policy) {
+                                     const HevcColorPolicy color_policy,
+                                     const std::optional<HdrStaticMetadata> hdr) {
     const auto source_info = parse_sps(sps);
     const auto effective_sps = rewritten_color_sps(sps, color_policy);
     const auto info = parse_sps(effective_sps);
     return {info.width, info.height, info.codec,
             make_hvcc(vps, effective_sps, pps, info),
-            source_info.color, info.color};
+            source_info.color, info.color, hdr};
 }
 
 } // namespace tlvdemux::detail::mse

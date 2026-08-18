@@ -1,4 +1,5 @@
 #include <tlvdemux/mse_remuxer.hpp>
+#include "../src/mse/hevc_parser.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -283,6 +284,51 @@ ParsedColorInformation video_color_information(
     };
 }
 
+bool video_entry_has_child(const std::vector<std::uint8_t>& init_segment,
+                           const char* type) {
+    const auto moov = find_box(init_segment, 0, init_segment.size(), "moov");
+    if (!moov) return false;
+    const auto trak = find_box(init_segment, moov->payload_start, moov->payload_end, "trak");
+    if (!trak) return false;
+    const auto mdia = find_box(init_segment, trak->payload_start, trak->payload_end, "mdia");
+    if (!mdia) return false;
+    const auto minf = find_box(init_segment, mdia->payload_start, mdia->payload_end, "minf");
+    if (!minf) return false;
+    const auto stbl = find_box(init_segment, minf->payload_start, minf->payload_end, "stbl");
+    if (!stbl) return false;
+    const auto stsd = find_box(init_segment, stbl->payload_start, stbl->payload_end, "stsd");
+    if (!stsd) return false;
+    const auto hvc1 = find_box(init_segment, stsd->payload_start + 8,
+                               stsd->payload_end, "hvc1");
+    return hvc1 && find_box(init_segment, hvc1->payload_start + 78,
+                            hvc1->payload_end, type).has_value();
+}
+
+tlvdemux::AccessUnit hevc_unit_with_transfer(
+    std::uint64_t track_id, std::int64_t dts_value, std::int64_t pts_value,
+    bool keyframe, bool include_parameter_sets, std::uint8_t transfer,
+    std::uint32_t timescale = 1000000);
+std::vector<std::uint8_t> make_simple_nal(
+    unsigned type, const std::vector<std::uint8_t>& payload);
+std::vector<std::uint8_t> annex_b_wrap(const std::vector<std::uint8_t>& nalu);
+std::vector<std::uint8_t> escape_rbsp(const std::vector<std::uint8_t>& raw);
+
+tlvdemux::AccessUnit hevc_unit_with_hdr_static_metadata() {
+    auto unit = hevc_unit_with_transfer(2, 0, 0, true, true, 16);
+    const std::vector<std::uint8_t> sei_payload{
+        137, 24,
+        0x68, 0x40, 0x38, 0x40,  // primary 0
+        0x39, 0x30, 0x21, 0x90,  // primary 1
+        0x18, 0x20, 0x08, 0x98,  // primary 2
+        0x3a, 0x98, 0x20, 0x00,  // white point
+        0x00, 0x98, 0x96, 0x80,  // max luminance
+        0x00, 0x00, 0x00, 0x01,  // min luminance
+        144, 4, 0x03, 0xe8, 0x01, 0xf4, 0x80};
+    const auto sei = annex_b_wrap(make_simple_nal(39, escape_rbsp(sei_payload)));
+    unit.data.insert(unit.data.end(), sei.begin(), sei.end());
+    return unit;
+}
+
 std::vector<ParsedSegment> segments_of(const std::vector<tlvdemux::MseMediaSegment>& segments,
                                        const std::string& type) {
     std::vector<ParsedSegment> out;
@@ -448,7 +494,7 @@ tlvdemux::AccessUnit hevc_unit_with_transfer(const std::uint64_t track_id,
                                              const bool keyframe,
                                              const bool include_parameter_sets,
                                              const std::uint8_t transfer,
-                                             const std::uint32_t timescale = 1000000) {
+                                             const std::uint32_t timescale) {
     tlvdemux::AccessUnit unit;
     unit.track_id = track_id;
     unit.codec = tlvdemux::Codec::Hevc;
@@ -1490,6 +1536,41 @@ void test_sdr_in_hlg_policy_change_reconfigures_at_next_rap() {
           "disabling SDR-in-HLG did not push the restored HLG state");
 }
 
+void test_hevc_hdr_static_metadata_reaches_mp4_and_properties() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    auto unit = hevc_unit_with_hdr_static_metadata();
+    bool has_sei_nalu = false;
+    for (const auto& nalu : tlvdemux::detail::mse::annex_b_views(unit.data)) {
+        has_sei_nalu = has_sei_nalu || nalu.type == 39;
+    }
+    check(has_sei_nalu, "HEVC static HDR fixture did not contain a prefix SEI NAL");
+    const auto parsed = tlvdemux::detail::mse::hdr_static_metadata(unit.data);
+    check(parsed.has_value(), "HEVC static HDR SEI fixture was not parsed");
+    remuxer.push(unit);
+    remuxer.flush();
+
+    check(sink.inits.size() == 1,
+          "HEVC static HDR metadata did not emit one video init");
+    check(sink.video_properties.size() == 1 &&
+              sink.video_properties.front().hdr_static_metadata.has_value(),
+          "HEVC static HDR metadata was not parsed from the access unit");
+    check(video_entry_has_child(sink.inits.front().data, "mdcv"),
+          "HEVC static HDR metadata did not emit mdcv");
+    check(video_entry_has_child(sink.inits.front().data, "clli"),
+          "HEVC static HDR metadata did not emit clli");
+    check(sink.video_properties.size() == 1 &&
+              sink.video_properties.front().hdr_static_metadata.has_value() &&
+              sink.video_properties.front().hdr_static_metadata->has_mastering_display &&
+              sink.video_properties.front().hdr_static_metadata->has_content_light &&
+              sink.video_properties.front().hdr_static_metadata->max_content_light_level ==
+                  1000 &&
+              sink.video_properties.front().hdr_static_metadata->max_pic_average_light_level ==
+                  500,
+          "HEVC static HDR metadata was not exposed at the video boundary");
+}
+
 } // namespace
 
 int main() {
@@ -1515,6 +1596,7 @@ int main() {
     test_sdr_in_hlg_rewrites_video_colour_signalling();
     test_hlg_sdr_prototype_emits_internal_carrier_signalling();
     test_sdr_in_hlg_policy_change_reconfigures_at_next_rap();
+    test_hevc_hdr_static_metadata_reaches_mp4_and_properties();
     test_audio_drops_non_advancing_dts();
     test_audio_forward_gap_keeps_decoder_timeline_contiguous();
     test_audio_configuration_change_emits_matching_init();

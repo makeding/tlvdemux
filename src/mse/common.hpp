@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -17,6 +18,20 @@ struct ColorInformation {
     std::uint16_t matrix = 0;
     bool full_range = false;
     bool operator==(const ColorInformation&) const = default;
+};
+
+struct HdrStaticMetadata {
+    std::array<std::uint16_t, 3> display_primaries_x{};
+    std::array<std::uint16_t, 3> display_primaries_y{};
+    std::uint16_t white_point_x = 0;
+    std::uint16_t white_point_y = 0;
+    std::uint32_t max_display_mastering_luminance = 0;
+    std::uint32_t min_display_mastering_luminance = 0;
+    std::uint16_t max_content_light_level = 0;
+    std::uint16_t max_pic_average_light_level = 0;
+    bool has_mastering_display = false;
+    bool has_content_light = false;
+    bool operator==(const HdrStaticMetadata&) const = default;
 };
 
 inline void append(Bytes& output, const Bytes& value) {

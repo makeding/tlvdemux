@@ -31,6 +31,31 @@ val video_color_value(const std::optional<tlvdemux::MseVideoColor>& color) {
     return result;
 }
 
+val hdr_static_metadata_value(
+    const std::optional<tlvdemux::MseHdrStaticMetadata>& metadata) {
+    if (!metadata) return val::null();
+    auto result = val::object();
+    auto primaries_x = val::array();
+    auto primaries_y = val::array();
+    for (std::size_t index = 0; index < 3; ++index) {
+        primaries_x.set(index, metadata->display_primaries_x[index]);
+        primaries_y.set(index, metadata->display_primaries_y[index]);
+    }
+    result.set("displayPrimariesX", primaries_x);
+    result.set("displayPrimariesY", primaries_y);
+    result.set("whitePointX", metadata->white_point_x);
+    result.set("whitePointY", metadata->white_point_y);
+    result.set("maxDisplayMasteringLuminance",
+               metadata->max_display_mastering_luminance);
+    result.set("minDisplayMasteringLuminance",
+               metadata->min_display_mastering_luminance);
+    result.set("maxContentLightLevel", metadata->max_content_light_level);
+    result.set("maxPicAverageLightLevel", metadata->max_pic_average_light_level);
+    result.set("hasMasteringDisplay", metadata->has_mastering_display);
+    result.set("hasContentLight", metadata->has_content_light);
+    return result;
+}
+
 const char* cancel_reason_name(
     const tlvdemux::MseLayerSwitchCancelReason reason) noexcept {
     switch (reason) {
@@ -151,6 +176,8 @@ public:
         event.set("codec", properties.codec);
         event.set("sourceColor", video_color_value(properties.source_color));
         event.set("outputColor", video_color_value(properties.output_color));
+        event.set("hdrStaticMetadata",
+                  hdr_static_metadata_value(properties.hdr_static_metadata));
         event.set("sdrInHlg", properties.sdr_in_hlg);
         event.set("hlgSdrPrototype", properties.hlg_sdr_prototype);
         emit("onMseVideoProperties", event);

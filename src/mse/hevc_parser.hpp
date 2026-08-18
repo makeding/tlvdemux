@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,7 @@ struct HevcConfiguration {
     Bytes hvcc;
     std::optional<ColorInformation> source_color;
     std::optional<ColorInformation> color;
+    std::optional<HdrStaticMetadata> hdr_static_metadata;
 };
 
 enum class HevcColorPolicy {
@@ -32,9 +34,12 @@ enum class HevcColorPolicy {
 
 std::vector<NaluView> annex_b_views(const Bytes& data);
 Bytes copy_nalu(const Bytes& data, const NaluView& view);
+std::optional<HdrStaticMetadata> hdr_static_metadata(const Bytes& data);
 HevcConfiguration hevc_configuration(const Bytes& vps, const Bytes& sps,
                                      const Bytes& pps,
                                      HevcColorPolicy color_policy =
-                                         HevcColorPolicy::Preserve);
+                                         HevcColorPolicy::Preserve,
+                                     std::optional<HdrStaticMetadata> hdr =
+                                         std::nullopt);
 
 } // namespace tlvdemux::detail::mse

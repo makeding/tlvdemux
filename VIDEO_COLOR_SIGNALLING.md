@@ -65,6 +65,12 @@ sample paired with a known output target. Platform-specific tables may be
 retained as diagnostic inputs, but must not become a default `libaribtlv`
 algorithm.
 
+When present, `tlvdemux` now carries HEVC mastering-display SEI 137 and
+content-light SEI 144 into the video sample entry as the standard `mdcv` and
+`clli` boxes, and exposes the same values on the video-properties callback.
+Missing SEIs remain missing; the remuxer does not synthesize HDR metadata from
+the B60 transfer value alone.
+
 ### Actual packet observations
 
 The current capture set provides two useful end-to-end references:
