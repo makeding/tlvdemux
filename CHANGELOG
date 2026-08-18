@@ -5,6 +5,17 @@
 > labelled **legacy `tlvdemux` implementation**; this is a historical name,
 > not a separate product line.
 
+## [0.2.3] - 2026-08-19
+
+Commit range: `2e93df2..HEAD`
+
+- Add normal playback controls, seek calculation tooling, and related regression
+  coverage.
+- Improve HDR presentation policy, video signalling, static metadata handling,
+  and colour analysis.
+- Add MSE output capability, format, and state handling across the worker and
+  WASM modules.
+
 ## [0.2.2-rc1] - 2026-08-15
 
 Commit range: `1adff6b..HEAD`
