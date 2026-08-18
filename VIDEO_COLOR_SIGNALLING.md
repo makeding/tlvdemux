@@ -78,10 +78,12 @@ properties callback reports a mismatch while the original SPS colour remains
 authoritative.
 
 The WASM policy boundary accepts the display's HLG support through
-`setMseHlgOutputSupported`. In `auto` mode an HLG-unsupported output requests
-the existing SDR-in-HLG SPS rewrite; explicit `force`, `prototype`, and `off`
-modes retain their existing meaning. PQ capability and target luminance remain
-inputs for the later PQ-to-SDR policy and are not guessed here.
+`setMseHlgOutputSupported`. That capability is retained for the output policy,
+but `auto` does not rewrite an unknown or confirmed HDR source merely because
+HLG output is unavailable: the current path has no pixel-domain HDR-to-SDR
+conversion. Explicit `force`, `prototype`, and `off` modes retain their
+existing meaning. PQ capability and target luminance remain inputs for a later
+PQ-to-SDR policy and are not guessed here.
 
 ### Actual packet observations
 

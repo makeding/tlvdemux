@@ -654,6 +654,13 @@ declare namespace createTlvDemuxModule {
     reposition(inputOffset: bigint, preserveTimeline: boolean): void;
     selectService(contextId?: number | null): void;
     selectTrack(kind: TrackKind, trackId?: bigint | null): void;
+    configureAutomaticLayerSwitch(
+      preferredVideoTrackId: bigint,
+      preferredAudioTrackId: bigint,
+      fallbackVideoTrackId: bigint,
+      fallbackAudioTrackId: bigint,
+    ): void;
+    clearAutomaticLayerSwitch(): void;
     switchAudioTrack(trackId: bigint, earliestPresentationTimeUs: bigint): bigint | null;
     switchLayer(
       videoTrackId: bigint,

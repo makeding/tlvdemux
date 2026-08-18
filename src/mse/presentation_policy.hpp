@@ -1,7 +1,6 @@
 #pragma once
 
 #include <aribtlv/video_presentation.hpp>
-#include <aribtlv/video_color.hpp>
 
 #include <stdexcept>
 #include <optional>
@@ -46,7 +45,7 @@ public:
 
     void clear_programme_hint() noexcept { programme_hint_.reset(); }
 
-    PresentationDecision decision(const bool source_is_hdr = false) const noexcept {
+    PresentationDecision decision(const bool explicit_sdr = false) const noexcept {
         switch (mode_) {
         case PresentationMode::Prototype:
             return {false, true};
@@ -56,12 +55,14 @@ public:
         case PresentationMode::Off:
             return {false, false};
         case PresentationMode::Auto:
-            if (!output_supports_hlg_) return {true, false};
-            if (source_is_hdr) return {false, false};
-            return {programme_hint_.has_value() &&
-                        *programme_hint_ == aribtlv::VideoPresentationHint::Hdr
-                        ? false : true,
-                    false};
+            if (programme_hint_.has_value() &&
+                *programme_hint_ == aribtlv::VideoPresentationHint::Hdr) {
+                return {false, false};
+            }
+            // Absence of the positive HDR programme hint is not an SDR
+            // assertion. Only explicit B60 SDR metadata authorizes the
+            // existing signalling reinterpretation.
+            return {explicit_sdr, false};
         }
         return {false, false};
     }
