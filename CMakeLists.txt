@@ -53,6 +53,7 @@ add_library(tlvdemux
     src/mse/latm_parser.cpp
     src/mse/mp4_builder.cpp
     src/mse/output_capabilities.cpp
+    src/mse/output_format.cpp
     src/mse/output_state.cpp
     src/mse/video_access_unit_history.cpp
     src/mse/video_layer_state_machine.cpp
@@ -340,6 +341,16 @@ if(BUILD_TESTING)
             -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME tlvdemux-output-state-tests COMMAND tlvdemux-output-state-tests)
+
+    add_executable(tlvdemux-output-format-tests tests/output_format_tests.cpp)
+    target_link_libraries(tlvdemux-output-format-tests PRIVATE tlvdemux::tlvdemux)
+    if(MSVC)
+        target_compile_options(tlvdemux-output-format-tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(tlvdemux-output-format-tests PRIVATE
+            -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME tlvdemux-output-format-tests COMMAND tlvdemux-output-format-tests)
 
     add_executable(tlvdemux-playback-timing-tests tests/playback_timing_tests.cpp)
     target_link_libraries(tlvdemux-playback-timing-tests PRIVATE tlvdemux::tlvdemux)

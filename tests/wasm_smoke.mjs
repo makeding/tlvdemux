@@ -52,8 +52,10 @@ demuxer.delete();
 assert.deepEqual(errors, []);
 
 const cancellations = [];
+const outputStates = [];
 const mseDemuxer = new module.TlvDemuxer({
     onMseInit() {},
+    onMseOutputState: state => outputStates.push(state),
     onMseLayerSwitchCancelled: event => cancellations.push(event),
 });
 mseDemuxer.selectTrack('video', 2n);
@@ -62,10 +64,13 @@ mseDemuxer.setMseSdrInHlg(2n, false);
 mseDemuxer.setMseHlgOutputSupported(true);
 mseDemuxer.setMseHlgOutputSupported(false);
 mseDemuxer.setMseEdid(new Uint8Array(0));
+const outputGeneration = mseDemuxer.mseOutputGeneration();
 mseDemuxer.setMseOutputConnected(false);
-assert.equal(mseDemuxer.mseOutputGeneration(), 1n);
+assert.equal(mseDemuxer.mseOutputGeneration(), outputGeneration + 1n);
+assert.equal(outputStates.at(-1).connected, false);
 mseDemuxer.setMseOutputConnected(true);
-assert.equal(mseDemuxer.mseOutputGeneration(), 2n);
+assert.equal(mseDemuxer.mseOutputGeneration(), outputGeneration + 2n);
+assert.equal(outputStates.at(-1).connected, true);
 for (const mode of ['auto', 'force', 'on_compare', 'prototype', 'off']) {
   mseDemuxer.setMseToneMappingMode(mode);
 }

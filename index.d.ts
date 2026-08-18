@@ -598,6 +598,24 @@ declare namespace createTlvDemuxModule {
     maxTmdsClockMhz: number;
   }
 
+  interface MseOutputState {
+    generation: bigint;
+    connected: boolean;
+    hdrMode: number;
+    edidValid: boolean;
+    hdrSupport: boolean;
+    pqEotf: boolean;
+    hlgEotf: boolean;
+    bt2020: boolean;
+    supports4k50_60: boolean;
+    colorSpaceMask: number;
+    maxDeepColorBits: number;
+    maxTmdsClockMhz: number;
+    dolbyTunnelSupported: boolean;
+    dolbyMetadataPassthrough: boolean;
+    dolbyObservedProfile: number | null;
+  }
+
   interface MseVideoProperties {
     trackId: bigint;
     presentationTimeUs: bigint;
@@ -670,6 +688,8 @@ declare namespace createTlvDemuxModule {
     onMseVideoStart?: (start: MseVideoStart) => void;
     /** HEVC VUI/output colour state, pushed at each parameter-set/RAP boundary. */
     onMseVideoProperties?: (properties: MseVideoProperties) => void;
+    /** Output capability and connection state after EDID/mode changes. */
+    onMseOutputState?: (state: MseOutputState) => void;
     /** Selected-video recovery advice with a stable user-facing error code. */
     onPlaybackDamage?: (damage: PlaybackDamage) => void;
   }

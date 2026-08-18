@@ -175,6 +175,7 @@ public:
         const auto capabilities = tlvdemux::parse_mse_output_capabilities(copy);
         output_state_.update(capabilities, true);
         presentation_policy_.set_output_capabilities(capabilities);
+        emit_mse_output_state();
         for (const auto track_id : video_track_ids_) apply_video_presentation_policy(track_id);
     }
 
@@ -183,6 +184,7 @@ public:
         if (!output_state_.update(capabilities, connected)) return;
         presentation_policy_.set_output_capabilities(
             connected ? capabilities : tlvdemux::MseOutputCapabilities{});
+        emit_mse_output_state();
         for (const auto track_id : video_track_ids_) apply_video_presentation_policy(track_id);
     }
 
@@ -892,6 +894,29 @@ private:
         if (!has_callback(name)) return;
         const auto callback = callbacks_[name];
         callback.call<void>("call", callbacks_, event);
+    }
+
+    void emit_mse_output_state() {
+        if (!has_callback("onMseOutputState")) return;
+        const auto& state = output_state_.state();
+        auto event = val::object();
+        event.set("generation", state.generation);
+        event.set("connected", state.connected);
+        event.set("hdrMode", static_cast<std::uint8_t>(state.hdr_mode));
+        event.set("edidValid", state.capabilities.edid_valid);
+        event.set("hdrSupport", state.capabilities.hdr_support);
+        event.set("pqEotf", state.capabilities.pq_eotf);
+        event.set("hlgEotf", state.capabilities.hlg_eotf);
+        event.set("bt2020", state.capabilities.bt2020);
+        event.set("supports4k50_60", state.capabilities.supports_4k50_60);
+        event.set("colorSpaceMask", state.capabilities.color_space_mask);
+        event.set("maxDeepColorBits", state.capabilities.max_deep_color_bits);
+        event.set("maxTmdsClockMhz", state.capabilities.max_tmds_clock_mhz);
+        event.set("dolbyTunnelSupported", state.dolby_tunnel.tunnel_supported);
+        event.set("dolbyMetadataPassthrough", state.dolby_tunnel.metadata_passthrough);
+        event.set("dolbyObservedProfile", state.dolby_tunnel.observed_profile.has_value()
+            ? val(*state.dolby_tunnel.observed_profile) : val::null());
+        emit("onMseOutputState", event);
     }
 
     void restoreLayerSelection(
