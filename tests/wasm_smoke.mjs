@@ -62,6 +62,10 @@ mseDemuxer.setMseSdrInHlg(2n, false);
 mseDemuxer.setMseHlgOutputSupported(true);
 mseDemuxer.setMseHlgOutputSupported(false);
 mseDemuxer.setMseEdid(new Uint8Array(0));
+mseDemuxer.setMseOutputConnected(false);
+assert.equal(mseDemuxer.mseOutputGeneration(), 1n);
+mseDemuxer.setMseOutputConnected(true);
+assert.equal(mseDemuxer.mseOutputGeneration(), 2n);
 for (const mode of ['auto', 'force', 'on_compare', 'prototype', 'off']) {
   mseDemuxer.setMseToneMappingMode(mode);
 }

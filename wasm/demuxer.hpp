@@ -146,11 +146,20 @@ public:
 
     void setMseToneMappingMode(const std::string& mode) {
         presentation_policy_.set_mode(mode);
+        output_state_.set_hdr_mode(mode == "force" ? tlvdemux::MseHdrOutputMode::Hdr10 :
+            mode == "prototype" ? tlvdemux::MseHdrOutputMode::Hlg :
+            mode == "off" ? tlvdemux::MseHdrOutputMode::Sdr :
+            tlvdemux::MseHdrOutputMode::Auto);
         for (const auto track_id : video_track_ids_) apply_video_presentation_policy(track_id);
     }
 
     void setMseHlgOutputSupported(const bool supported) {
-        presentation_policy_.set_hlg_output_supported(supported);
+        auto capabilities = output_state_.state().capabilities;
+        capabilities.edid_valid = true;
+        capabilities.hlg_eotf = supported;
+        capabilities.hdr_support = supported || capabilities.pq_eotf;
+        output_state_.update(capabilities, output_state_.state().connected);
+        presentation_policy_.set_output_capabilities(capabilities);
         for (const auto track_id : video_track_ids_) {
             apply_video_presentation_policy(track_id);
         }
@@ -163,9 +172,22 @@ public:
         if (byte_length != 0) {
             val(emscripten::typed_memory_view(copy.size(), copy.data())).call<void>("set", bytes);
         }
-        presentation_policy_.set_output_capabilities(
-            tlvdemux::parse_mse_output_capabilities(copy));
+        const auto capabilities = tlvdemux::parse_mse_output_capabilities(copy);
+        output_state_.update(capabilities, true);
+        presentation_policy_.set_output_capabilities(capabilities);
         for (const auto track_id : video_track_ids_) apply_video_presentation_policy(track_id);
+    }
+
+    void setMseOutputConnected(const bool connected) {
+        const auto capabilities = output_state_.state().capabilities;
+        if (!output_state_.update(capabilities, connected)) return;
+        presentation_policy_.set_output_capabilities(
+            connected ? capabilities : tlvdemux::MseOutputCapabilities{});
+        for (const auto track_id : video_track_ids_) apply_video_presentation_policy(track_id);
+    }
+
+    std::uint64_t mseOutputGeneration() const noexcept {
+        return output_state_.state().generation;
     }
 
     val hlgSdrToneMappingLut() const {
@@ -908,4 +930,5 @@ private:
     std::set<std::uint64_t> hlg_video_track_ids_;
     std::set<std::uint64_t> explicit_sdr_video_track_ids_;
     PresentationPolicy presentation_policy_;
+    tlvdemux::MseOutputStateTracker output_state_;
 };

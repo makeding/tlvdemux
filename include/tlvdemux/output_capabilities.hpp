@@ -1,9 +1,28 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <span>
 
 namespace tlvdemux {
+
+enum class MseHdrOutputMode : std::uint8_t {
+    Auto,
+    Sdr,
+    Hdr10,
+    Hlg,
+    DolbyVision,
+};
+
+struct MseDolbyTunnelCapabilities {
+    bool tunnel_supported = false;
+    bool metadata_passthrough = false;
+    // The device symbols expose tunnel configuration, not a reliable profile
+    // decoder. Keep an observed profile opaque until a real stream proves it.
+    std::optional<std::uint8_t> observed_profile;
+
+    bool operator==(const MseDolbyTunnelCapabilities&) const = default;
+};
 
 enum class MseOutputColorSpace : std::uint8_t {
     Rgb444 = 1U << 0,
@@ -28,6 +47,29 @@ struct MseOutputCapabilities {
         return (color_space_mask & static_cast<std::uint8_t>(color_space)) != 0;
     }
     bool operator==(const MseOutputCapabilities&) const = default;
+};
+
+struct MseOutputState {
+    MseOutputCapabilities capabilities;
+    MseDolbyTunnelCapabilities dolby_tunnel;
+    MseHdrOutputMode hdr_mode = MseHdrOutputMode::Auto;
+    bool connected = true;
+    std::uint64_t generation = 0;
+
+    bool operator==(const MseOutputState&) const = default;
+};
+
+class MseOutputStateTracker {
+public:
+    const MseOutputState& state() const noexcept { return state_; }
+
+    // Returns true only when a capability or connection transition occurred.
+    bool update(MseOutputCapabilities capabilities, bool connected) noexcept;
+    bool set_hdr_mode(MseHdrOutputMode mode) noexcept;
+    bool set_dolby_tunnel(MseDolbyTunnelCapabilities capabilities) noexcept;
+
+private:
+    MseOutputState state_;
 };
 
 // Parse the standard EDID base block and CTA-861 extension capability blocks.

@@ -47,11 +47,13 @@ endif()
 
 add_library(tlvdemux
     src/playback_damage.cpp
+    src/playback_timing.cpp
     src/mse/chromium_coded_frame_policy.cpp
     src/mse/hevc_parser.cpp
     src/mse/latm_parser.cpp
     src/mse/mp4_builder.cpp
     src/mse/output_capabilities.cpp
+    src/mse/output_state.cpp
     src/mse/video_access_unit_history.cpp
     src/mse/video_layer_state_machine.cpp
     wasm/mse_remuxer.cpp
@@ -328,6 +330,27 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME tlvdemux-output-capabilities-tests
         COMMAND tlvdemux-output-capabilities-tests)
+
+    add_executable(tlvdemux-output-state-tests tests/output_state_tests.cpp)
+    target_link_libraries(tlvdemux-output-state-tests PRIVATE tlvdemux::tlvdemux)
+    if(MSVC)
+        target_compile_options(tlvdemux-output-state-tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(tlvdemux-output-state-tests PRIVATE
+            -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME tlvdemux-output-state-tests COMMAND tlvdemux-output-state-tests)
+
+    add_executable(tlvdemux-playback-timing-tests tests/playback_timing_tests.cpp)
+    target_link_libraries(tlvdemux-playback-timing-tests PRIVATE tlvdemux::tlvdemux)
+    if(MSVC)
+        target_compile_options(tlvdemux-playback-timing-tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(tlvdemux-playback-timing-tests PRIVATE
+            -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME tlvdemux-playback-timing-tests
+        COMMAND tlvdemux-playback-timing-tests)
 
     if(TLVDEMUX_BUILD_WASM_BINDINGS)
         find_program(NODE_EXECUTABLE node)

@@ -612,6 +612,8 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("setMseHlgOutputSupported",
                   &WasmDemuxer::setMseHlgOutputSupported)
         .function("setMseEdid", &WasmDemuxer::setMseEdid)
+        .function("setMseOutputConnected", &WasmDemuxer::setMseOutputConnected)
+        .function("mseOutputGeneration", &WasmDemuxer::mseOutputGeneration)
         .function("hlgSdrToneMappingLut", &WasmDemuxer::hlgSdrToneMappingLut)
         .function("hlgSdrColorLut", &WasmDemuxer::hlgSdrColorLut)
         .function("hlgSdrPrototypeColorLut", &WasmDemuxer::hlgSdrPrototypeColorLut)

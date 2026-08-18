@@ -710,6 +710,10 @@ declare namespace createTlvDemuxModule {
     setMseHlgOutputSupported(enabled: boolean): void;
     /** Supply an EDID block; capability parsing stops at standard CTA fields. */
     setMseEdid(edid: ArrayBufferView): void;
+    /** Notify the output path about HDMI disconnect/reconnect. */
+    setMseOutputConnected(connected: boolean): void;
+    /** Monotonic generation incremented by output capability transitions. */
+    mseOutputGeneration(): bigint;
     /** @deprecated Use hlgSdrColorLut so colour processing stays in C++. */
     hlgSdrToneMappingLut(): Uint8Array;
     /** Return the canonical C++ HLG-SDR packed RGB 3D LUT. */
