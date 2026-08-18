@@ -150,6 +150,7 @@ public:
             mode == "prototype" ? tlvdemux::MseHdrOutputMode::Hlg :
             mode == "off" ? tlvdemux::MseHdrOutputMode::Sdr :
             tlvdemux::MseHdrOutputMode::Auto);
+        emit_mse_output_state();
         for (const auto track_id : video_track_ids_) apply_video_presentation_policy(track_id);
     }
 
@@ -160,6 +161,7 @@ public:
         capabilities.hdr_support = supported || capabilities.pq_eotf;
         output_state_.update(capabilities, output_state_.state().connected);
         presentation_policy_.set_output_capabilities(capabilities);
+        emit_mse_output_state();
         for (const auto track_id : video_track_ids_) {
             apply_video_presentation_policy(track_id);
         }

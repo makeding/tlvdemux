@@ -175,6 +175,14 @@ class WorkerDemuxer extends WorkerObject {
   setMseToneMappingMode(mode) {
     return this.call('setMseToneMappingMode', [mode]);
   }
+  setMseEdid(edid) {
+    const data = edid.byteOffset === 0 && edid.byteLength === edid.buffer.byteLength
+      ? edid : edid.slice();
+    return this.call('setMseEdid', [data], [data.buffer]);
+  }
+  setMseOutputConnected(connected) {
+    return this.call('setMseOutputConnected', [connected]);
+  }
   hlgSdrToneMappingLut() { return this.call('hlgSdrToneMappingLut'); }
   hlgSdrColorLut() { return this.call('hlgSdrColorLut'); }
   hlgSdrPrototypeColorLut() { return this.call('hlgSdrPrototypeColorLut'); }

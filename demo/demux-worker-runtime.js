@@ -196,6 +196,7 @@ function createDemuxer(module, objectId, options) {
     mseMaxAudioChannels: record.selection.maxAudioChannels,
     onMseVideoStart: event('onMseVideoStart'),
     onMseVideoProperties: event('onMseVideoProperties'),
+    onMseOutputState: event('onMseOutputState'),
     onPlaybackDamage: event('onPlaybackDamage'),
     onMseVideoSplice: event('onMseVideoSplice'),
     onMseAudioSplice: event('onMseAudioSplice'),
