@@ -2,6 +2,8 @@
 
 #include <tlvdemux/mse_remuxer.hpp>
 
+#include <aribtlv/video_color.hpp>
+
 #include "mse/hevc_parser.hpp"
 #include "mse/latm_parser.hpp"
 #include "mse/mp4_builder.hpp"
@@ -650,12 +652,14 @@ private:
         properties.codec = config.codec;
         if (config.source_color) properties.source_color = video_color(*config.source_color);
         if (config.color) properties.output_color = video_color(*config.color);
+        constexpr auto hlg = static_cast<std::uint16_t>(
+            aribtlv::VideoTransferCharacteristics::AribHlg);
         properties.sdr_in_hlg = config.source_color.has_value() &&
-            config.color.has_value() && config.source_color->transfer == 18 &&
+            config.color.has_value() && config.source_color->transfer == hlg &&
             *config.color == ColorInformation{9, 1, 9, false};
         properties.hlg_sdr_prototype = config.source_color.has_value() &&
             config.color.has_value() &&
-            *config.source_color == ColorInformation{9, 18, 9, false} &&
+            *config.source_color == ColorInformation{9, hlg, 9, false} &&
             *config.color == ColorInformation{1, 13, 9, false};
         return properties;
     }

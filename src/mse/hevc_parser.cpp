@@ -1,5 +1,7 @@
 #include "hevc_parser.hpp"
 
+#include <aribtlv/video_color.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -288,8 +290,10 @@ Bytes escape_rbsp(const Bytes& data) {
 Bytes rewritten_color_sps(const Bytes& sps, const HevcColorPolicy policy) {
     if (sps.size() < 2) return sps;
     const auto original = parse_sps(sps);
+    constexpr auto hlg = static_cast<std::uint16_t>(
+        aribtlv::VideoTransferCharacteristics::AribHlg);
     if (!original.color || !original.color_offset ||
-        *original.color != ColorInformation{9, 18, 9, false}) {
+        *original.color != ColorInformation{9, hlg, 9, false}) {
         return sps;
     }
     auto data = rbsp(sps);

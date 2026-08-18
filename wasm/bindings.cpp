@@ -3,6 +3,7 @@
 #include <aribtlv/duration_probe.hpp>
 #include <aribtlv/recording.hpp>
 #include <aribtlv/video_presentation.hpp>
+#include <aribtlv/video_color.hpp>
 
 #include <tlvdemux/hlg_sdr_tone_mapping.hpp>
 
@@ -871,7 +872,10 @@ public:
     void onTrack(const aribtlv::TrackInfo& info) override {
         if (info.kind == aribtlv::TrackKind::Video) {
             video_track_ids_.insert(info.track_id);
-            if (info.video && info.video->video_transfer_characteristics == 3) {
+            const auto uhd_sdr = aribtlv::cicp_transfer_from_b60(3);
+            if (info.video && info.video->video_transfer_characteristics.has_value() &&
+                aribtlv::cicp_transfer_from_b60(
+                    *info.video->video_transfer_characteristics) == uhd_sdr) {
                 explicit_sdr_video_track_ids_.insert(info.track_id);
             } else {
                 explicit_sdr_video_track_ids_.erase(info.track_id);

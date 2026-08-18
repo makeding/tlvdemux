@@ -55,7 +55,7 @@ const SUBTITLE_STORAGE_KEY = 'tlvdemux.demo.subtitlePacketId';
 const EXPOSE_DEBUG_QUEUES = new URLSearchParams(location.search).has('tlvdemuxDebug');
 const elements = Object.fromEntries([
   'wasmStatus', 'fileInput', 'urlInput', 'initialRange', 'maxRange',
-  'videoPacketId', 'probeButton', 'highlightButton', 'cancelButton', 'clearButton',
+  'videoPacketId', 'normalButton', 'probeButton', 'highlightButton', 'cancelButton', 'clearButton',
   'probeState', 'duration', 'videoColor', 'sourceSize', 'transferred', 'log',
   'video', 'mediaInfo', 'liveMode', 'videoTrack', 'audioTrack', 'subtitleTrack', 'subtitleOverlay',
   'toneMappingMode', 'hlgSdrCanvas', 'hlgSdrWebGpuCanvas',
@@ -522,6 +522,7 @@ function once(target, event) {
 }
 
 function setRunning(running) {
+  elements.normalButton.disabled = running || !wasmModule;
   elements.probeButton.disabled = running || !wasmModule;
   elements.highlightButton.disabled = running || !wasmModule;
   elements.cancelButton.disabled = !running;
@@ -1805,6 +1806,7 @@ const loadHighlightFrame = () => loadAndPlay(
   HIGHLIGHT_DEMO_PAUSE_SECONDS, true,
 );
 
+elements.normalButton.addEventListener('click', () => loadAndPlay(0, false, null, null, true));
 elements.probeButton.addEventListener('click', loadComparisonFrame);
 elements.highlightButton.addEventListener('click', loadHighlightFrame);
 elements.cancelButton.addEventListener('click', stopPlayback);
