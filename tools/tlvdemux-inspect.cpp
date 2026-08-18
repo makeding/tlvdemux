@@ -1,4 +1,5 @@
 #include <aribtlv/demuxer.hpp>
+#include <aribtlv/video_color.hpp>
 
 #include "commands.hpp"
 
@@ -103,6 +104,20 @@ struct Inspector final : aribtlv::Sink {
                           << info.audio->component_tag << std::dec
                           << " main=" << info.audio->main_component
                           << " sample-rate=" << info.audio->sample_rate;
+            }
+            if (info.video.has_value()) {
+                if (info.video->hdr_wcg_idc.has_value()) {
+                    std::cerr << " b60-hdr-wcg-idc="
+                              << static_cast<unsigned>(*info.video->hdr_wcg_idc);
+                }
+                if (info.video->video_transfer_characteristics.has_value()) {
+                    const auto b60 = *info.video->video_transfer_characteristics;
+                    std::cerr << " b60-transfer=" << static_cast<unsigned>(b60);
+                    if (const auto cicp = aribtlv::cicp_transfer_from_b60(b60)) {
+                        std::cerr << " cicp-transfer="
+                                  << static_cast<unsigned>(*cicp);
+                    }
+                }
             }
             if (info.subtitle.has_value()) {
                 const auto& subtitle = *info.subtitle;

@@ -290,10 +290,11 @@ Bytes escape_rbsp(const Bytes& data) {
 Bytes rewritten_color_sps(const Bytes& sps, const HevcColorPolicy policy) {
     if (sps.size() < 2) return sps;
     const auto original = parse_sps(sps);
-    constexpr auto hlg = static_cast<std::uint16_t>(
-        aribtlv::VideoTransferCharacteristics::AribHlg);
     if (!original.color || !original.color_offset ||
-        *original.color != ColorInformation{9, hlg, 9, false}) {
+        !aribtlv::is_bt2020_hlg(original.color->primaries,
+                                 original.color->transfer,
+                                 original.color->matrix,
+                                 original.color->full_range)) {
         return sps;
     }
     auto data = rbsp(sps);

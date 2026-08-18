@@ -34,6 +34,54 @@ ARIB STD-B60 Version 1.14-E1 separately describes programme-level MMT-SI:
 The B60 descriptors classify the announced component, but they do not contain
 the complete CICP tuple needed by an MP4 `nclx` box.
 
+## Analysis implementation chain and required packet corpus
+
+The analysed device/package implementations split this path across the decoder,
+video-processing engine, display/output capability, and a policy/configuration
+layer. The policy tables are platform-specific; they are not a
+standards-defined PQ transfer curve. The portable receive path should
+therefore preserve these boundaries:
+
+```text
+MMTP-SI / B60 descriptors -> HEVC VUI + SEI -> decoded HDR/WCG signal
+        -> output capability/policy (HDMI or browser display)
+        -> tone/gamut mapping -> rendered surface
+```
+
+The minimum capture/fixture set is:
+
+| Packet or sample | Required variants | What it proves |
+| --- | --- | --- |
+| MPT video asset descriptors `0x800A` + `0x8010` | B60 transfer values 1, 2, 3, 4, 5; HDR/WCG idc present, absent, and each defined value | `libaribtlv` programme-level metadata and mismatch handling |
+| HEVC VPS/SPS/PPS | CICP `1/1/1`, `9/11/9`, `9/14/9`, `9/16/9`, `9/18/9`; limited/full range; VUI absent | `tlvdemux` coded-signal authority and exact `nclx` output |
+| HEVC HDR SEI | mastering-display colour volume, content-light level, and no-SEI cases | whether metadata is preserved, ignored, or made available before tone mapping |
+| MMTP MPU/MFU sequence | RAP followed by SPS change, timestamp descriptor, and one discontinuity | configuration boundary and colour-state reconfiguration |
+| Output capability sample | HDMI EDID / HDR InfoFrame or browser display capability | target peak luminance, EOTF, gamut, and deep colour; required to choose a tone mapper |
+
+The current native fixture now includes both the existing HLG descriptor packet
+and a PQ descriptor packet (`0x8010` value 4). It intentionally does not turn
+that B60 hint into PQ pixels: the next missing evidence is an HEVC SPS/SEI
+sample paired with a known output target. Platform-specific tables may be
+retained as diagnostic inputs, but must not become a default `libaribtlv`
+algorithm.
+
+### Actual packet observations
+
+The current capture set provides two useful end-to-end references:
+
+| Capture | B60 video transfer | Extracted HEVC/MSE colour | Prefix-SEI payload types observed |
+| --- | ---: | --- | --- |
+| `bs4k-sample/101.pending.mmts` | 3 | `nclx 9/14/9`, limited range | 0, 1, 6 |
+| `bs4k-sample/102.pending.mmts` | 5 | `nclx 9/18/9`, limited range | 0, 1, 2, 6 |
+
+The `nclx` values were obtained from the actual video output produced by
+`tlvdemux pipe --video-only`, while the SEI list was obtained from the actual
+HEVC access units produced by `tlvdemux inspect --video`. No mastering-display
+or content-light payload (SEI types 137 or 144) was present in these two
+samples. They are sufficient to validate B60-to-VUI agreement and SEI
+preservation, but a separate real PQ sample with those payloads is still
+needed before implementing a target-dependent PQ tone mapper.
+
 Real BS4K captures show that `HDR_WCG_idc` may be absent even when the HEVC
 SPS is HLG. The maintained `libaribtlv` API therefore exposes the positive
 MH-EIT HDR programme icon as `VideoPresentationHint::Hdr`; absence is

@@ -656,11 +656,20 @@ private:
             aribtlv::VideoTransferCharacteristics::AribHlg);
         properties.sdr_in_hlg = config.source_color.has_value() &&
             config.color.has_value() && config.source_color->transfer == hlg &&
-            *config.color == ColorInformation{9, 1, 9, false};
+            *config.color == ColorInformation{
+                aribtlv::kCicpBt2020Primaries,
+                aribtlv::kCicpBt709Primaries,
+                aribtlv::kCicpBt2020NclMatrix,
+                false};
         properties.hlg_sdr_prototype = config.source_color.has_value() &&
             config.color.has_value() &&
-            *config.source_color == ColorInformation{9, hlg, 9, false} &&
-            *config.color == ColorInformation{1, 13, 9, false};
+            aribtlv::is_bt2020_hlg(config.source_color->primaries,
+                                   config.source_color->transfer,
+                                   config.source_color->matrix,
+                                   config.source_color->full_range) &&
+            *config.color == ColorInformation{
+                aribtlv::kCicpBt709Primaries, 13,
+                aribtlv::kCicpBt2020NclMatrix, false};
         return properties;
     }
 
