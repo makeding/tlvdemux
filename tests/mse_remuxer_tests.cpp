@@ -1500,6 +1500,25 @@ void test_hlg_sdr_prototype_emits_internal_carrier_signalling() {
           "HLG-SDR prototype did not expose source and carrier state");
 }
 
+void test_b60_and_sps_colour_mismatch_is_reported_without_rewriting_sps() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.setVideoSignalling(2, tlvdemux::MseVideoSignalling{2, 4});
+    remuxer.push(hevc_unit_with_transfer(2, 0, 0, true, true, 18));
+    remuxer.flush();
+
+    check(sink.video_properties.size() == 1 &&
+              sink.video_properties.front().source_signalling.has_value() &&
+              sink.video_properties.front().source_signalling->hdr_wcg_idc == 2 &&
+              sink.video_properties.front().source_signalling->
+                  video_transfer_characteristics == 4 &&
+              sink.video_properties.front().source_signalling_mismatch &&
+              video_color_information(sink.inits.front().data) ==
+                  ParsedColorInformation{9, 18, 9, false},
+          "B60/SPS mismatch was not reported without changing coded colour");
+}
+
 void test_sdr_in_hlg_policy_change_reconfigures_at_next_rap() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
@@ -1595,6 +1614,7 @@ int main() {
     test_video_only_output_does_not_wait_for_audio();
     test_sdr_in_hlg_rewrites_video_colour_signalling();
     test_hlg_sdr_prototype_emits_internal_carrier_signalling();
+    test_b60_and_sps_colour_mismatch_is_reported_without_rewriting_sps();
     test_sdr_in_hlg_policy_change_reconfigures_at_next_rap();
     test_hevc_hdr_static_metadata_reaches_mp4_and_properties();
     test_audio_drops_non_advancing_dts();

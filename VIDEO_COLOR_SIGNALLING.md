@@ -71,6 +71,18 @@ content-light SEI 144 into the video sample entry as the standard `mdcv` and
 Missing SEIs remain missing; the remuxer does not synthesize HDR metadata from
 the B60 transfer value alone.
 
+At the MSE boundary, B60 `HDR_WCG_idc` and transfer values are exposed as
+programme-level source signalling beside the coded SPS colour. If a defined
+B60 transfer maps to a different CICP transfer than the active SPS, the
+properties callback reports a mismatch while the original SPS colour remains
+authoritative.
+
+The WASM policy boundary accepts the display's HLG support through
+`setMseHlgOutputSupported`. In `auto` mode an HLG-unsupported output requests
+the existing SDR-in-HLG SPS rewrite; explicit `force`, `prototype`, and `off`
+modes retain their existing meaning. PQ capability and target luminance remain
+inputs for the later PQ-to-SDR policy and are not guessed here.
+
 ### Actual packet observations
 
 The current capture set provides two useful end-to-end references:

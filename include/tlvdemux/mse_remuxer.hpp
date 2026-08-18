@@ -103,6 +103,13 @@ struct MseHdrStaticMetadata {
     bool operator==(const MseHdrStaticMetadata&) const = default;
 };
 
+// Programme-level ARIB/B60 hints kept separate from the coded HEVC colour.
+struct MseVideoSignalling {
+    std::optional<std::uint8_t> hdr_wcg_idc;
+    std::optional<std::uint8_t> video_transfer_characteristics;
+    bool operator==(const MseVideoSignalling&) const = default;
+};
+
 // Current HEVC presentation state at a parameter-set/RAP boundary.
 struct MseVideoProperties {
     std::uint64_t track_id = 0;
@@ -113,6 +120,8 @@ struct MseVideoProperties {
     std::optional<MseVideoColor> source_color;
     std::optional<MseVideoColor> output_color;
     std::optional<MseHdrStaticMetadata> hdr_static_metadata;
+    std::optional<MseVideoSignalling> source_signalling;
+    bool source_signalling_mismatch = false;
     bool sdr_in_hlg = false;
     bool hlg_sdr_prototype = false;
 };
@@ -164,6 +173,8 @@ public:
     void setSdrInHlg(std::uint64_t video_track_id, bool enabled);
     // Experimental 1/13/9 carrier for a controlled GPU HLG-to-SDR transform.
     void setHlgSdrPrototype(std::uint64_t video_track_id, bool enabled);
+    void setVideoSignalling(std::uint64_t video_track_id,
+                            MseVideoSignalling signalling);
     void setOutputEnabled(bool enabled);
     std::optional<MseAutomaticLayerSwitchRequest> push(const AccessUnit& unit);
     void observeDamage(const aribtlv::DamageSpan& damage);

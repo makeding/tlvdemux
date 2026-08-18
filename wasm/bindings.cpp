@@ -738,6 +738,16 @@ public:
         for (const auto track_id : video_track_ids_) apply_video_presentation_policy(track_id);
     }
 
+    void setMseHlgOutputSupported(const bool supported) {
+        if (output_supports_hlg_ == supported) return;
+        output_supports_hlg_ = supported;
+        if (tone_mapping_mode_ == "auto") {
+            for (const auto track_id : video_track_ids_) {
+                apply_video_presentation_policy(track_id);
+            }
+        }
+    }
+
     val hlgSdrToneMappingLut() const {
         return hlg_sdr_tone_mapping_lut_value();
     }
@@ -872,6 +882,11 @@ public:
     void onTrack(const aribtlv::TrackInfo& info) override {
         if (info.kind == aribtlv::TrackKind::Video) {
             video_track_ids_.insert(info.track_id);
+            mse_remuxer_.setVideoSignalling(info.track_id,
+                tlvdemux::MseVideoSignalling{
+                    info.video ? info.video->hdr_wcg_idc : std::nullopt,
+                    info.video ? info.video->video_transfer_characteristics
+                               : std::nullopt});
             const auto uhd_sdr = aribtlv::cicp_transfer_from_b60(3);
             if (info.video && info.video->video_transfer_characteristics.has_value() &&
                 aribtlv::cicp_transfer_from_b60(
@@ -1216,6 +1231,10 @@ private:
             mse_remuxer_.setSdrInHlg(track_id, false);
             return;
         }
+        if (!output_supports_hlg_ && tone_mapping_mode_ == "auto") {
+            mse_remuxer_.setSdrInHlg(track_id, true);
+            return;
+        }
         const bool programme_is_hdr = current_video_presentation_hint_.has_value() &&
             *current_video_presentation_hint_ == aribtlv::VideoPresentationHint::Hdr;
         // HLG is the transport signalling here, not proof that the programme
@@ -1486,6 +1505,7 @@ private:
     std::set<std::uint64_t> explicit_sdr_video_track_ids_;
     std::optional<aribtlv::VideoPresentationHint> current_video_presentation_hint_;
     std::string tone_mapping_mode_ = "auto";
+    bool output_supports_hlg_ = true;
 };
 
 } // namespace
@@ -1508,6 +1528,8 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
                   &WasmDemuxer::clearAutomaticLayerSwitch)
         .function("setMseSdrInHlg", &WasmDemuxer::setMseSdrInHlg)
         .function("setMseToneMappingMode", &WasmDemuxer::setMseToneMappingMode)
+        .function("setMseHlgOutputSupported",
+                  &WasmDemuxer::setMseHlgOutputSupported)
         .function("hlgSdrToneMappingLut", &WasmDemuxer::hlgSdrToneMappingLut)
         .function("hlgSdrColorLut", &WasmDemuxer::hlgSdrColorLut)
         .function("hlgSdrPrototypeColorLut", &WasmDemuxer::hlgSdrPrototypeColorLut)

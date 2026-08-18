@@ -417,6 +417,13 @@ public:
             configuration_policy_dirty_ = true;
         }
     }
+    void set_video_signalling(const std::uint64_t track_id,
+                              const tlvdemux::MseVideoSignalling signalling) {
+        video_signalling_[track_id] = signalling;
+        if (track_ && input_track_id_.has_value() && *input_track_id_ == track_id) {
+            configuration_policy_dirty_ = true;
+        }
+    }
     bool is_input_track_switch(const aribtlv::AccessUnit& unit) const noexcept {
         return unit.discontinuity && input_track_id_.has_value() &&
             *input_track_id_ != unit.track_id;
@@ -458,6 +465,7 @@ public:
         if (clear_policy) {
             sdr_in_hlg_tracks_.clear();
             hlg_sdr_prototype_tracks_.clear();
+            video_signalling_.clear();
         }
     }
 
@@ -656,7 +664,7 @@ private:
                 metadata.has_mastering_display, metadata.has_content_light};
     }
 
-    static tlvdemux::MseVideoProperties video_properties(
+    tlvdemux::MseVideoProperties video_properties(
         const HevcConfiguration& config, const aribtlv::AccessUnit& unit) {
         tlvdemux::MseVideoProperties properties;
         properties.track_id = unit.track_id;
@@ -670,6 +678,17 @@ private:
         if (config.hdr_static_metadata) {
             properties.hdr_static_metadata =
                 mse_hdr_static_metadata(*config.hdr_static_metadata);
+        }
+        if (const auto signalling = video_signalling_.find(unit.track_id);
+            signalling != video_signalling_.end()) {
+            properties.source_signalling = signalling->second;
+            if (signalling->second.video_transfer_characteristics &&
+                config.source_color) {
+                const auto cicp = aribtlv::cicp_transfer_from_b60(
+                    *signalling->second.video_transfer_characteristics);
+                properties.source_signalling_mismatch = cicp.has_value() &&
+                    static_cast<std::uint16_t>(*cicp) != config.source_color->transfer;
+            }
         }
         constexpr auto hlg = static_cast<std::uint16_t>(
             aribtlv::VideoTransferCharacteristics::AribHlg);
@@ -703,6 +722,10 @@ private:
             current_video_properties_->output_color != properties.output_color ||
             current_video_properties_->hdr_static_metadata !=
                 properties.hdr_static_metadata ||
+            current_video_properties_->source_signalling !=
+                properties.source_signalling ||
+            current_video_properties_->source_signalling_mismatch !=
+                properties.source_signalling_mismatch ||
             current_video_properties_->sdr_in_hlg != properties.sdr_in_hlg ||
             current_video_properties_->hlg_sdr_prototype !=
                 properties.hlg_sdr_prototype;
@@ -755,6 +778,7 @@ private:
     Output& output_;
     std::map<int, Bytes> parameter_sets_;
     std::optional<HdrStaticMetadata> active_hdr_static_metadata_;
+    std::map<std::uint64_t, tlvdemux::MseVideoSignalling> video_signalling_;
     std::set<std::uint64_t> sdr_in_hlg_tracks_;
     std::set<std::uint64_t> hlg_sdr_prototype_tracks_;
     std::optional<tlvdemux::MseVideoProperties> current_video_properties_;

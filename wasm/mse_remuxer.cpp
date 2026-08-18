@@ -352,6 +352,12 @@ void tlvdemux::MseRemuxer::setHlgSdrPrototype(
     impl_->video.set_hlg_sdr_prototype(video_track_id, enabled);
 }
 
+void tlvdemux::MseRemuxer::setVideoSignalling(
+    const std::uint64_t video_track_id,
+    const MseVideoSignalling signalling) {
+    impl_->video.set_video_signalling(video_track_id, signalling);
+}
+
 void tlvdemux::MseRemuxer::setOutputEnabled(const bool enabled) {
     const bool was_enabled = impl_->enabled;
     impl_->enabled = enabled;

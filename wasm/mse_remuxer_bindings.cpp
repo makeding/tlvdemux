@@ -178,6 +178,19 @@ public:
         event.set("outputColor", video_color_value(properties.output_color));
         event.set("hdrStaticMetadata",
                   hdr_static_metadata_value(properties.hdr_static_metadata));
+        if (properties.source_signalling) {
+            auto signalling = val::object();
+            signalling.set("hdrWcgIdc", properties.source_signalling->hdr_wcg_idc
+                ? val(*properties.source_signalling->hdr_wcg_idc) : val::null());
+            signalling.set("videoTransferCharacteristics",
+                properties.source_signalling->video_transfer_characteristics
+                    ? val(*properties.source_signalling->video_transfer_characteristics)
+                    : val::null());
+            event.set("sourceSignalling", signalling);
+        } else {
+            event.set("sourceSignalling", val::null());
+        }
+        event.set("sourceSignallingMismatch", properties.source_signalling_mismatch);
         event.set("sdrInHlg", properties.sdr_in_hlg);
         event.set("hlgSdrPrototype", properties.hlg_sdr_prototype);
         emit("onMseVideoProperties", event);
@@ -259,6 +272,12 @@ void WasmMseRemuxer::setSdrInHlg(
 void WasmMseRemuxer::setHlgSdrPrototype(
     const std::uint64_t video_track_id, const bool enabled) {
     impl_->remuxer().setHlgSdrPrototype(video_track_id, enabled);
+}
+
+void WasmMseRemuxer::setVideoSignalling(
+    const std::uint64_t video_track_id,
+    const tlvdemux::MseVideoSignalling signalling) {
+    impl_->remuxer().setVideoSignalling(video_track_id, signalling);
 }
 
 void WasmMseRemuxer::setOutputEnabled(const bool enabled) {
