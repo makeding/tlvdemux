@@ -19,7 +19,7 @@ set(TLVDEMUX_LIBARIBTLV_GIT_REPOSITORY
     "https://github.com/makeding/libaribtlv.git" CACHE STRING
     "Git repository used to fetch libaribtlv")
 set(TLVDEMUX_LIBARIBTLV_GIT_TAG
-    "63f40e827e6e3d83a7e72d9d70058bc26f6c611a" CACHE STRING
+    "7662d16536175aea85bfffe093d958279fbd6efa" CACHE STRING
     "Pinned libaribtlv Git revision")
 mark_as_advanced(
     TLVDEMUX_LIBARIBTLV_GIT_REPOSITORY
@@ -283,6 +283,19 @@ if(BUILD_TESTING)
             -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME tlvdemux-mse-remuxer-tests COMMAND tlvdemux-mse-remuxer-tests)
+
+    add_executable(tlvdemux-timestamp-fmp4-tests tests/timestamp_fmp4_tests.cpp)
+    target_link_libraries(tlvdemux-timestamp-fmp4-tests PRIVATE tlvdemux::tlvdemux)
+    target_include_directories(tlvdemux-timestamp-fmp4-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    if(MSVC)
+        target_compile_options(tlvdemux-timestamp-fmp4-tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(tlvdemux-timestamp-fmp4-tests PRIVATE
+            -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME tlvdemux-timestamp-fmp4-tests
+        COMMAND tlvdemux-timestamp-fmp4-tests)
 
     add_executable(tlvdemux-video-layer-state-tests
         tests/video_layer_state_machine_tests.cpp)
