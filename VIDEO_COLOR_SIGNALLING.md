@@ -145,6 +145,16 @@ the uncorrected half only to make the failure visible beside the LUT result.
 Real HLG must either retain native HLG signalling for a capable browser/display
 path or undergo pixel-domain tone and gamut mapping.
 
+### Browser tone-mapping performance contract
+
+The WebGPU renderer uploads the generated RGB cube into a native 3D texture and
+uses one hardware-trilinear LUT sampling operation per output pixel. It must
+not sample the incoming 2D atlas with two LUT operations and per-pixel slice
+address calculation. The packed atlas remains the interchange representation
+and the WebGL compatibility path. This optimization changes GPU storage and
+sampling, not the C++-generated colour transform or its interpolation
+semantics.
+
 ## Ownership and precedence
 
 | Layer | Responsibility | Must not do |

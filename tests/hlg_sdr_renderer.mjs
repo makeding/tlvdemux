@@ -136,4 +136,139 @@ renderer.setEnabled(false);
 assert.equal(webGlCanvas.hidden, true);
 renderer.destroy();
 
-console.log('HLG-SDR renderer fallback test passed');
+const originalNavigator = globalThis.navigator;
+const originalGpuBufferUsage = globalThis.GPUBufferUsage;
+const originalGpuTextureUsage = globalThis.GPUTextureUsage;
+const gpuCalls = {
+  shader: '', textureDescriptors: [], writeTextures: [], textureViews: 0,
+  samplerDescriptors: [], draws: 0,
+};
+const gpuContext = {
+  configure() {},
+  getCurrentTexture: () => ({createView: () => ({})}),
+};
+const gpuDevice = {
+  lost: new Promise(() => {}),
+  queue: {
+    writeTexture(destination, data, layout, size3d) {
+      gpuCalls.writeTextures.push({destination, data, layout, size: size3d});
+    },
+    writeBuffer() {},
+    submit() {},
+  },
+  createShaderModule({code}) {
+    gpuCalls.shader = code;
+    return {};
+  },
+  createRenderPipeline: () => ({getBindGroupLayout: () => ({})}),
+  createSampler(descriptor) {
+    gpuCalls.samplerDescriptors.push(descriptor);
+    return {};
+  },
+  createBuffer: () => ({destroy() {}}),
+  createTexture(descriptor) {
+    gpuCalls.textureDescriptors.push(descriptor);
+    return {
+      createView() {
+        gpuCalls.textureViews += 1;
+        return {};
+      },
+      destroy() {},
+    };
+  },
+  importExternalTexture: () => ({}),
+  createBindGroup: () => ({}),
+  createCommandEncoder: () => ({
+    beginRenderPass: () => ({
+      setPipeline() {}, setBindGroup() {},
+      draw() { gpuCalls.draws += 1; },
+      end() {},
+    }),
+    finish: () => ({}),
+  }),
+};
+Object.defineProperty(globalThis, 'navigator', {
+  configurable: true,
+  value: {
+    gpu: {
+      requestAdapter: async () => ({requestDevice: async () => gpuDevice}),
+      getPreferredCanvasFormat: () => 'rgba8unorm',
+    },
+  },
+});
+globalThis.GPUBufferUsage = {UNIFORM: 1, COPY_DST: 2};
+globalThis.GPUTextureUsage = {TEXTURE_BINDING: 1, COPY_DST: 2};
+
+const gpuCanvas = {
+  hidden: true,
+  clientWidth: 640,
+  clientHeight: 360,
+  width: 0,
+  height: 0,
+  getContext: kind => kind === 'webgpu' ? gpuContext : null,
+};
+const unusedWebGlCanvas = {hidden: true};
+const gpuBackends = [];
+const gpuRenderer = new HlgSdrRenderer({
+  video,
+  webGpuCanvas: gpuCanvas,
+  webGlCanvas: unusedWebGlCanvas,
+  onBackendChange: backend => gpuBackends.push(backend),
+});
+const gpuLutSize = 3;
+const gpuLutColumns = 2;
+const gpuLutWidth = 6;
+const gpuLutHeight = 6;
+const gpuLutData = new Uint8Array(gpuLutWidth * gpuLutHeight * 4);
+for (let blue = 0; blue < gpuLutSize; blue += 1) {
+  for (let green = 0; green < gpuLutSize; green += 1) {
+    for (let red = 0; red < gpuLutSize; red += 1) {
+      const sourceX = (blue % gpuLutColumns) * gpuLutSize + red;
+      const sourceY = Math.floor(blue / gpuLutColumns) * gpuLutSize + green;
+      const source = (sourceY * gpuLutWidth + sourceX) * 4;
+      gpuLutData.set([red, green, blue, 255], source);
+    }
+  }
+}
+gpuRenderer.setColorLut({
+  size: gpuLutSize,
+  width: gpuLutWidth,
+  height: gpuLutHeight,
+  data: gpuLutData,
+});
+gpuRenderer.setEnabled(true);
+await new Promise(resolve => setTimeout(resolve, 0));
+
+assert.deepEqual(gpuBackends, ['WebGPU']);
+assert.match(gpuCalls.shader, /texture_3d<f32>/);
+assert.doesNotMatch(gpuCalls.shader, /lowerBlue|upperBlue|lowerSlice|upperSlice/);
+assert.deepEqual(gpuCalls.samplerDescriptors,
+  [{magFilter: 'linear', minFilter: 'linear'}]);
+assert.deepEqual(gpuCalls.textureDescriptors[0].size, [3, 3, 3]);
+assert.equal(gpuCalls.textureDescriptors[0].dimension, '3d');
+assert.equal(gpuCalls.writeTextures.length, 1);
+assert.deepEqual(gpuCalls.writeTextures[0].size,
+  {width: 3, height: 3, depthOrArrayLayers: 3});
+assert.equal(gpuCalls.writeTextures[0].layout.bytesPerRow, 256);
+assert.equal(gpuCalls.writeTextures[0].layout.rowsPerImage, 3);
+for (let blue = 0; blue < gpuLutSize; blue += 1) {
+  for (let green = 0; green < gpuLutSize; green += 1) {
+    for (let red = 0; red < gpuLutSize; red += 1) {
+      const offset = (blue * 3 + green) * 256 + red * 4;
+      assert.deepEqual([...gpuCalls.writeTextures[0].data.subarray(offset, offset + 4)],
+        [red, green, blue, 255]);
+    }
+  }
+}
+assert.equal(gpuCalls.draws, 1);
+assert.equal(gpuCalls.textureViews, 1);
+gpuRenderer.destroy();
+
+Object.defineProperty(globalThis, 'navigator', {
+  configurable: true,
+  value: originalNavigator,
+});
+globalThis.GPUBufferUsage = originalGpuBufferUsage;
+globalThis.GPUTextureUsage = originalGpuTextureUsage;
+
+console.log('HLG-SDR renderer tests passed');

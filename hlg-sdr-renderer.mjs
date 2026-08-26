@@ -55,37 +55,19 @@ struct VertexOutput {
 struct LutParameters {
   size: f32,
   comparison: f32,
-  textureSize: vec2f,
+  padding: vec2f,
 }
 
 @group(0) @binding(0) var videoFrame: texture_external;
 @group(0) @binding(1) var linearSampler: sampler;
-@group(0) @binding(2) var colorLut: texture_2d<f32>;
+@group(0) @binding(2) var colorLut: texture_3d<f32>;
 @group(0) @binding(3) var<uniform> lut: LutParameters;
 
 fn sampleColorLut(color: vec3f) -> vec3f {
-  let maximum = lut.size - 1.0;
-  let coordinate = clamp(color, vec3f(0.0), vec3f(1.0)) * maximum;
-  let lowerBlue = floor(coordinate.b);
-  let upperBlue = min(lowerBlue + 1.0, maximum);
-  let columns = lut.textureSize.x / lut.size;
-  let lowerRow = floor(lowerBlue / columns);
-  let upperRow = floor(upperBlue / columns);
-  let lowerSlice = vec2f(lowerBlue - lowerRow * columns, lowerRow);
-  let upperSlice = vec2f(upperBlue - upperRow * columns, upperRow);
-  let lowerUv = vec2f(
-    lowerSlice.x * lut.size + coordinate.r + 0.5,
-    lowerSlice.y * lut.size + coordinate.g + 0.5
-  ) / lut.textureSize;
-  let upperUv = vec2f(
-    upperSlice.x * lut.size + coordinate.r + 0.5,
-    upperSlice.y * lut.size + coordinate.g + 0.5
-  ) / lut.textureSize;
-  return mix(
-    textureSampleLevel(colorLut, linearSampler, lowerUv, 0.0).rgb,
-    textureSampleLevel(colorLut, linearSampler, upperUv, 0.0).rgb,
-    fract(coordinate.b)
-  );
+  let coordinate =
+    (clamp(color, vec3f(0.0), vec3f(1.0)) * (lut.size - 1.0) + 0.5) /
+    lut.size;
+  return textureSampleLevel(colorLut, linearSampler, coordinate, 0.0).rgb;
 }
 
 @vertex
@@ -274,6 +256,7 @@ class WebGpuBackend {
     this.pipeline = null;
     this.sampler = null;
     this.lutTexture = null;
+    this.lutTextureView = null;
     this.lutUniform = null;
     this.lut = null;
     this.comparison = false;
@@ -339,23 +322,33 @@ class WebGpuBackend {
   uploadColorLut() {
     if (!this.device || !this.lut || !this.lutUniform) return;
     this.lutTexture?.destroy();
+    const size = this.lut.size;
     this.lutTexture = this.device.createTexture({
-      size: [this.lut.width, this.lut.height],
+      size: [size, size, size],
+      dimension: '3d',
       format: 'rgba8unorm',
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
-    const sourceBytesPerRow = this.lut.width * 4;
-    const bytesPerRow = Math.ceil(sourceBytesPerRow / 256) * 256;
-    const bytes = new Uint8Array(bytesPerRow * this.lut.height);
-    for (let row = 0; row < this.lut.height; row += 1) {
-      bytes.set(this.lut.data.subarray(
-        row * sourceBytesPerRow, (row + 1) * sourceBytesPerRow,
-      ), row * bytesPerRow);
+    const columns = this.lut.width / size;
+    const bytesPerRow = Math.ceil(size * 4 / 256) * 256;
+    const rowsPerImage = size;
+    const bytes = new Uint8Array(bytesPerRow * rowsPerImage * size);
+    for (let blue = 0; blue < size; blue += 1) {
+      const sourceX = (blue % columns) * size;
+      const sourceY = Math.floor(blue / columns) * size;
+      for (let green = 0; green < size; green += 1) {
+        const sourceOffset = ((sourceY + green) * this.lut.width + sourceX) * 4;
+        const destinationOffset =
+          (blue * rowsPerImage + green) * bytesPerRow;
+        bytes.set(this.lut.data.subarray(sourceOffset, sourceOffset + size * 4),
+          destinationOffset);
+      }
     }
     this.device.queue.writeTexture(
-      {texture: this.lutTexture}, bytes, {bytesPerRow, rowsPerImage: this.lut.height},
-      {width: this.lut.width, height: this.lut.height},
+      {texture: this.lutTexture}, bytes, {bytesPerRow, rowsPerImage},
+      {width: size, height: size, depthOrArrayLayers: size},
     );
+    this.lutTextureView = this.lutTexture.createView();
     this.uploadParameters();
   }
 
@@ -364,7 +357,7 @@ class WebGpuBackend {
     this.device.queue.writeBuffer(
       this.lutUniform, 0,
       new Float32Array([
-        this.lut.size, this.comparison ? 1 : 0, this.lut.width, this.lut.height,
+        this.lut.size, this.comparison ? 1 : 0, 0, 0,
       ]),
     );
   }
@@ -380,7 +373,7 @@ class WebGpuBackend {
       entries: [
         {binding: 0, resource: videoFrame},
         {binding: 1, resource: this.sampler},
-        {binding: 2, resource: this.lutTexture.createView()},
+        {binding: 2, resource: this.lutTextureView},
         {binding: 3, resource: {buffer: this.lutUniform}},
       ],
     });
@@ -417,6 +410,7 @@ class WebGpuBackend {
 
   destroy() {
     this.lutTexture?.destroy();
+    this.lutTextureView = null;
     this.lutUniform?.destroy();
   }
 }
