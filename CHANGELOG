@@ -5,9 +5,22 @@
 > labelled **legacy `tlvdemux` implementation**; this is a historical name,
 > not a separate product line.
 
+## [0.2.4] - 2026-08-26
+
+Commit range: `7aa53cb..HEAD`
+
+- Add Annex-B HEVC colour and HDR static-metadata parsing, and update the
+  `libaribtlv` integration to 0.6.0 with timestamp/fMP4 regression coverage.
+- Optimize WebGPU HLG-to-SDR conversion with a native 3D LUT and hardware
+  trilinear sampling, while documenting why metadata-only reinterpretation is
+  not a valid browser tone-mapping path.
+- Expose IP data flows, transport NTP clocks, TLV network and address-map
+  tables, raw signalling, unknown descriptors, and signalling messages through
+  the WASM/TypeScript API and JSON inspector output.
+
 ## [0.2.3] - 2026-08-19
 
-Commit range: `2e93df2..HEAD`
+Commit range: `2e93df2..7aa53cb`
 
 - Add normal playback controls, seek calculation tooling, and related regression
   coverage.

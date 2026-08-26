@@ -4,9 +4,20 @@
 > `tlvdemux` 命名空间。相关条目以 **旧 `tlvdemux` 实现** 标记；这只是历史名称，
 > 并非独立产品线。
 
+## [0.2.4] - 2026-08-26
+
+Commit range: `7aa53cb..HEAD`
+
+- 增加 Annex-B HEVC 色彩信息和 HDR 静态元数据解析；将 `libaribtlv` 集成更新至
+  0.6.0，并补充时间戳与 fMP4 回归测试。
+- 使用原生 3D LUT 和硬件三线性采样优化 WebGPU HLG-to-SDR 转换，同时记录仅重解释
+  元数据为何不能成为浏览器端有效的 tone mapping 路径。
+- 通过 WASM/TypeScript API 和 inspector 的 JSON 输出公开 IP 数据流、传输层 NTP
+  时钟、TLV 网络信息与地址映射表、原始信令、未知 descriptor 及信令消息。
+
 ## [0.2.3] - 2026-08-19
 
-Commit range: `2e93df2..HEAD`
+Commit range: `2e93df2..7aa53cb`
 
 - 增加正常播放控制、seek 计算工具及相关回归测试覆盖。
 - 改进 HDR 呈现策略、视频信号、静态元数据处理和色彩分析。
