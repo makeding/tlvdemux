@@ -25,6 +25,12 @@ mark_as_advanced(
     TLVDEMUX_LIBARIBTLV_GIT_REPOSITORY
     TLVDEMUX_LIBARIBTLV_GIT_TAG)
 
+# BUILD_TESTING belongs to this top-level project.  A source dependency may use
+# the same CTest option, so hide it while adding libaribtlv and restore it before
+# declaring tlvdemux's own tests below.
+set(_TLVDEMUX_BUILD_TESTING "${BUILD_TESTING}")
+set(BUILD_TESTING OFF)
+
 if(TLVDEMUX_LIBARIBTLV_SOURCE_DIR)
     if(NOT EXISTS "${TLVDEMUX_LIBARIBTLV_SOURCE_DIR}/CMakeLists.txt")
         message(FATAL_ERROR
@@ -43,6 +49,14 @@ else()
         GIT_PROGRESS TRUE
     )
     FetchContent_MakeAvailable(libaribtlv)
+endif()
+
+set(BUILD_TESTING "${_TLVDEMUX_BUILD_TESTING}")
+unset(_TLVDEMUX_BUILD_TESTING)
+
+if(TARGET aribtlv-timestamp-mpu-tests)
+    message(FATAL_ERROR
+        "libaribtlv repository-internal tests leaked into the tlvdemux build")
 endif()
 
 add_library(tlvdemux
