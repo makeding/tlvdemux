@@ -72,7 +72,7 @@
     "benchmark:wasm": "node tests/wasm_benchmark.mjs",
     "test:subtitle-sample": "node tests/wasm_subtitle_metadata_sample.mjs dist/tlvdemux.js demo/test.tlv",
     "test:layer-sample": "node tests/wasm_layer_switch_sample.mjs dist/tlvdemux.js demo/audiotrack.tlv",
-    "test": "node tests/live_stream_coalescing.mjs && node tests/mse_append_queue.mjs && node tests/mse_gap_recovery.mjs && node tests/worker_result_value.mjs && node tests/worker_track_selection.mjs && node tests/asset_group_selection.mjs && node tests/subtitle_track_selection.mjs && node tests/hlg_sdr_lut.mjs dist/tlvdemux.js && node tests/hlg_sdr_renderer.mjs && node tests/wasm_smoke.mjs dist/tlvdemux.js",
+    "test": "node tests/live_stream_coalescing.mjs && node tests/mse_append_queue.mjs && node tests/mse_gap_recovery.mjs && node tests/worker_result_value.mjs && node tests/worker_track_selection.mjs && node tests/asset_group_selection.mjs && node tests/subtitle_track_selection.mjs && node tests/hlg_sdr_lut.mjs dist/tlvdemux.js && node tests/hlg_sdr_renderer.mjs && node tests/wasm_smoke.mjs dist/tlvdemux.js && node tests/wasm_transport_metadata.mjs dist/tlvdemux.js",
     "prepack": "npm run build && npm test"
   }
 }

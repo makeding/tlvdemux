@@ -5,15 +5,27 @@
 
 #include <array>
 #include <cstdint>
+#include <iomanip>
 #include <fstream>
 #include <iostream>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 
 namespace {
+
+template <typename Range>
+std::string hex_bytes(const Range& bytes) {
+    std::ostringstream output;
+    output << std::hex << std::setfill('0');
+    for (const auto byte : bytes) {
+        output << std::setw(2) << static_cast<unsigned>(byte);
+    }
+    return output.str();
+}
 
 const char* codec_name(const aribtlv::Codec codec) {
     switch (codec) {
@@ -58,6 +70,7 @@ const char* audio_layout_name(const aribtlv::AudioChannelLayout layout) {
 struct Inspector final : aribtlv::Sink {
     bool list = false;
     bool trace = false;
+    bool json_metadata = false;
     std::unordered_map<std::uint64_t, aribtlv::TrackInfo> tracks;
     std::unordered_set<std::string> signalling;
     std::optional<std::uint64_t> video_track;
@@ -69,6 +82,143 @@ struct Inspector final : aribtlv::Sink {
     std::ofstream video;
     std::ofstream audio;
     std::ofstream subtitle;
+
+    void onIpDataFlow(const aribtlv::IpDataFlow& flow) override {
+        if (!json_metadata) return;
+        std::cout << "{\"type\":\"ip-data-flow\",\"inputOffset\":"
+                  << flow.input_offset << ",\"tlvType\":3,\"cid\":"
+                  << flow.context_id << ",\"sequence\":"
+                  << static_cast<unsigned>(flow.sequence_number)
+                  << ",\"ipVersion\":" << static_cast<unsigned>(flow.ip_version)
+                  << ",\"sourceAddressHex\":\"" << hex_bytes(flow.source_address)
+                  << "\",\"destinationAddressHex\":\""
+                  << hex_bytes(flow.destination_address)
+                  << "\",\"nextHeader\":" << static_cast<unsigned>(flow.next_header)
+                  << ",\"sourcePort\":" << flow.source_port
+                  << ",\"destinationPort\":" << flow.destination_port << "}\n";
+    }
+
+    void onTransportNtpClock(const aribtlv::TransportNtpClock& clock) override {
+        if (!json_metadata) return;
+        std::cout << "{\"type\":\"transport-ntp-clock\",\"inputOffset\":"
+                  << clock.input_offset << ",\"tlvType\":2,\"sourceAddressHex\":\""
+                  << hex_bytes(clock.source_address)
+                  << "\",\"destinationAddressHex\":\""
+                  << hex_bytes(clock.destination_address)
+                  << "\",\"sourcePort\":" << clock.source_port
+                  << ",\"destinationPort\":" << clock.destination_port
+                  << ",\"version\":" << static_cast<unsigned>(clock.version)
+                  << ",\"mode\":" << static_cast<unsigned>(clock.mode)
+                  << ",\"stratum\":" << static_cast<unsigned>(clock.stratum)
+                  << ",\"transmitTimestamp\":\"0x" << std::hex
+                  << clock.transmit_timestamp << std::dec
+                  << "\",\"transmitTimeValue\":" << clock.transmit_time.value
+                  << ",\"transmitTimeTimescale\":" << clock.transmit_time.timescale
+                  << "}\n";
+    }
+
+    void onRawSignallingTable(aribtlv::RawSignallingTable&& table) override {
+        if (!json_metadata) return;
+        std::cout << "{\"type\":\"raw-signalling-table\",\"inputOffset\":"
+                  << table.input_offset << ",\"tlvType\":"
+                  << static_cast<unsigned>(table.tlv_packet_type)
+                  << ",\"tableId\":" << static_cast<unsigned>(table.table_id)
+                  << ",\"tableIdExtension\":" << table.table_id_extension
+                  << ",\"version\":" << static_cast<unsigned>(table.version)
+                  << ",\"currentNext\":" << (table.current_next ? "true" : "false")
+                  << ",\"section\":" << static_cast<unsigned>(table.section_number)
+                  << ",\"lastSection\":"
+                  << static_cast<unsigned>(table.last_section_number)
+                  << ",\"rawHex\":\"" << hex_bytes(table.data) << "\"}\n";
+    }
+
+    void onUnknownDescriptor(aribtlv::UnknownDescriptor&& descriptor) override {
+        if (!json_metadata) return;
+        std::cout << "{\"type\":\"unknown-descriptor\",\"inputOffset\":"
+                  << descriptor.input_offset << ",\"tlvType\":254,\"tableId\":"
+                  << static_cast<unsigned>(descriptor.table_id)
+                  << ",\"descriptorTag\":" << static_cast<unsigned>(descriptor.tag)
+                  << ",\"scope\":\""
+                  << (descriptor.scope == aribtlv::DescriptorScope::Network
+                          ? "network" : "tlv-stream")
+                  << "\",\"sectionOffset\":" << descriptor.section_offset;
+        if (descriptor.tlv_stream_id) {
+            std::cout << ",\"tlvStreamId\":" << *descriptor.tlv_stream_id;
+        }
+        if (descriptor.original_network_id) {
+            std::cout << ",\"originalNetworkId\":" << *descriptor.original_network_id;
+        }
+        std::cout << ",\"rawHex\":\"" << hex_bytes(descriptor.payload) << "\"}\n";
+    }
+
+    void onTlvNetworkInformation(
+        const aribtlv::TlvNetworkInformation& info) override {
+        if (!json_metadata) return;
+        std::cout << "{\"type\":\"tlv-network-information\",\"inputOffset\":"
+                  << info.input_offset << ",\"tlvType\":254,\"tableId\":"
+                  << static_cast<unsigned>(info.table_id)
+                  << ",\"networkId\":" << info.network_id
+                  << ",\"version\":" << static_cast<unsigned>(info.version)
+                  << ",\"currentNext\":" << (info.current_next ? "true" : "false")
+                  << ",\"lastSection\":"
+                  << static_cast<unsigned>(info.last_section_number)
+                  << ",\"networkDescriptors\":[";
+        for (std::size_t index = 0; index < info.network_descriptors.size(); ++index) {
+            if (index != 0) std::cout << ',';
+            const auto& descriptor = info.network_descriptors[index];
+            std::cout << "{\"tag\":" << static_cast<unsigned>(descriptor.tag)
+                      << ",\"sectionOffset\":" << descriptor.section_offset
+                      << ",\"rawHex\":\"" << hex_bytes(descriptor.payload) << "\"}";
+        }
+        std::cout << "],\"streams\":[";
+        for (std::size_t index = 0; index < info.streams.size(); ++index) {
+            if (index != 0) std::cout << ',';
+            const auto& stream = info.streams[index];
+            std::cout << "{\"tlvStreamId\":" << stream.tlv_stream_id
+                      << ",\"originalNetworkId\":" << stream.original_network_id
+                      << ",\"descriptors\":[";
+            for (std::size_t descriptor_index = 0;
+                 descriptor_index < stream.descriptors.size(); ++descriptor_index) {
+                if (descriptor_index != 0) std::cout << ',';
+                const auto& descriptor = stream.descriptors[descriptor_index];
+                std::cout << "{\"tag\":" << static_cast<unsigned>(descriptor.tag)
+                          << ",\"sectionOffset\":" << descriptor.section_offset
+                          << ",\"rawHex\":\"" << hex_bytes(descriptor.payload)
+                          << "\"}";
+            }
+            std::cout << "]}";
+        }
+        std::cout << "]}\n";
+    }
+
+    void onAddressMap(const aribtlv::AddressMap& map) override {
+        if (!json_metadata) return;
+        std::cout << "{\"type\":\"address-map\",\"inputOffset\":"
+                  << map.input_offset << ",\"tlvType\":254,\"tableId\":"
+                  << static_cast<unsigned>(map.table_id)
+                  << ",\"tableIdExtension\":" << map.table_id_extension
+                  << ",\"version\":" << static_cast<unsigned>(map.version)
+                  << ",\"currentNext\":" << (map.current_next ? "true" : "false")
+                  << ",\"lastSection\":"
+                  << static_cast<unsigned>(map.last_section_number)
+                  << ",\"services\":[";
+        for (std::size_t index = 0; index < map.services.size(); ++index) {
+            if (index != 0) std::cout << ',';
+            const auto& service = map.services[index];
+            std::cout << "{\"serviceId\":" << service.service_id
+                      << ",\"ipVersion\":" << static_cast<unsigned>(service.ip_version)
+                      << ",\"sourceAddressHex\":\"" << hex_bytes(service.source_address)
+                      << "\",\"sourcePrefixLength\":"
+                      << static_cast<unsigned>(service.source_prefix_length)
+                      << ",\"destinationAddressHex\":\""
+                      << hex_bytes(service.destination_address)
+                      << "\",\"destinationPrefixLength\":"
+                      << static_cast<unsigned>(service.destination_prefix_length)
+                      << ",\"privateDataHex\":\"" << hex_bytes(service.private_data)
+                      << "\"}";
+        }
+        std::cout << "]}\n";
+    }
 
     void onService(const aribtlv::ServiceInfo& info) override {
         if (list) {
@@ -395,7 +545,7 @@ struct Inspector final : aribtlv::Sink {
 };
 
 void usage() {
-    std::cerr << "usage: tlvdemux inspect [--list] [--trace-au] [--service ID]"
+    std::cerr << "usage: tlvdemux inspect [--list] [--trace-au] [--json-metadata] [--service ID]"
                  " [--video FILE] [--video-packet-id ID]"
                  " [--audio FILE] [--audio-packet-id ID]"
                  " [--subtitle FILE] [--subtitle-packet-id ID] INPUT\n";
@@ -423,6 +573,7 @@ int tlvdemux_cli::run_inspect(int argc, char** argv) {
             };
             if (argument == "--list") inspector.list = true;
             else if (argument == "--trace-au") inspector.trace = true;
+            else if (argument == "--json-metadata") inspector.json_metadata = true;
             else if (argument == "--service") service = static_cast<std::uint32_t>(std::stoul(value("--service"), nullptr, 0));
             else if (argument == "--video-packet-id") inspector.wanted_video_packet_id = parse_packet_id(value("--video-packet-id"));
             else if (argument == "--audio-packet-id") inspector.wanted_audio_packet_id = parse_packet_id(value("--audio-packet-id"));
@@ -449,7 +600,8 @@ int tlvdemux_cli::run_inspect(int argc, char** argv) {
             usage();
             return 2;
         }
-        if (!inspector.list && !inspector.trace && !inspector.video.is_open() &&
+        if (!inspector.list && !inspector.trace && !inspector.json_metadata &&
+            !inspector.video.is_open() &&
             !inspector.audio.is_open() && !inspector.subtitle.is_open()) {
             inspector.list = true;
         }

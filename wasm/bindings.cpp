@@ -12,6 +12,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <array>
 #include <cstdint>
 #include <deque>
 #include <optional>
@@ -36,6 +37,14 @@ val copy_bytes(const std::vector<std::uint8_t>& source) {
     if (!source.empty()) {
         result.call<void>("set", val(emscripten::typed_memory_view(source.size(), source.data())));
     }
+    return result;
+}
+
+template <std::size_t Size>
+val copy_bytes(const std::array<std::uint8_t, Size>& source) {
+    auto result = val::global("Uint8Array").new_(source.size());
+    result.template call<void>(
+        "set", val(emscripten::typed_memory_view(source.size(), source.data())));
     return result;
 }
 
@@ -207,6 +216,139 @@ val broadcast_clock_value(const aribtlv::BroadcastClock& clock) {
     result.set("broadcastTimeTimescale", clock.broadcast_time.timescale);
     result.set("inputOffset", clock.input_offset);
     result.set("discontinuity", clock.discontinuity);
+    return result;
+}
+
+val ip_data_flow_value(const aribtlv::IpDataFlow& flow) {
+    auto result = val::object();
+    result.set("contextId", flow.context_id);
+    result.set("sequenceNumber", flow.sequence_number);
+    result.set("ipVersion", flow.ip_version);
+    result.set("sourceAddress", copy_bytes(flow.source_address));
+    result.set("destinationAddress", copy_bytes(flow.destination_address));
+    result.set("nextHeader", flow.next_header);
+    result.set("sourcePort", flow.source_port);
+    result.set("destinationPort", flow.destination_port);
+    result.set("inputOffset", flow.input_offset);
+    return result;
+}
+
+val transport_ntp_clock_value(const aribtlv::TransportNtpClock& clock) {
+    auto result = val::object();
+    result.set("ipVersion", clock.ip_version);
+    result.set("sourceAddress", copy_bytes(clock.source_address));
+    result.set("destinationAddress", copy_bytes(clock.destination_address));
+    result.set("sourcePort", clock.source_port);
+    result.set("destinationPort", clock.destination_port);
+    result.set("leapIndicator", clock.leap_indicator);
+    result.set("version", clock.version);
+    result.set("mode", clock.mode);
+    result.set("stratum", clock.stratum);
+    result.set("poll", clock.poll);
+    result.set("precision", clock.precision);
+    result.set("rootDelay", clock.root_delay);
+    result.set("rootDispersion", clock.root_dispersion);
+    result.set("referenceIdentification", clock.reference_identification);
+    result.set("referenceTimestamp", clock.reference_timestamp);
+    result.set("originTimestamp", clock.origin_timestamp);
+    result.set("receiveTimestamp", clock.receive_timestamp);
+    result.set("transmitTimestamp", clock.transmit_timestamp);
+    result.set("transmitTimeValue", clock.transmit_time.value);
+    result.set("transmitTimeTimescale", clock.transmit_time.timescale);
+    result.set("inputOffset", clock.input_offset);
+    return result;
+}
+
+val tlv_descriptor_value(const aribtlv::TlvDescriptor& descriptor) {
+    auto result = val::object();
+    result.set("tag", descriptor.tag);
+    result.set("payload", copy_bytes(descriptor.payload));
+    result.set("sectionOffset", descriptor.section_offset);
+    return result;
+}
+
+val tlv_descriptors_value(const std::vector<aribtlv::TlvDescriptor>& descriptors) {
+    auto result = val::array();
+    for (std::size_t index = 0; index < descriptors.size(); ++index) {
+        result.set(index, tlv_descriptor_value(descriptors[index]));
+    }
+    return result;
+}
+
+val tlv_network_information_value(const aribtlv::TlvNetworkInformation& info) {
+    auto result = val::object();
+    result.set("tableId", info.table_id);
+    result.set("networkId", info.network_id);
+    result.set("version", info.version);
+    result.set("currentNext", info.current_next);
+    result.set("lastSectionNumber", info.last_section_number);
+    result.set("networkDescriptors", tlv_descriptors_value(info.network_descriptors));
+    auto streams = val::array();
+    for (std::size_t index = 0; index < info.streams.size(); ++index) {
+        const auto& source = info.streams[index];
+        auto stream = val::object();
+        stream.set("tlvStreamId", source.tlv_stream_id);
+        stream.set("originalNetworkId", source.original_network_id);
+        stream.set("descriptors", tlv_descriptors_value(source.descriptors));
+        streams.set(index, stream);
+    }
+    result.set("streams", streams);
+    result.set("inputOffset", info.input_offset);
+    return result;
+}
+
+val address_map_value(const aribtlv::AddressMap& map) {
+    auto result = val::object();
+    result.set("tableId", map.table_id);
+    result.set("tableIdExtension", map.table_id_extension);
+    result.set("version", map.version);
+    result.set("currentNext", map.current_next);
+    result.set("lastSectionNumber", map.last_section_number);
+    auto services = val::array();
+    for (std::size_t index = 0; index < map.services.size(); ++index) {
+        const auto& source = map.services[index];
+        auto service = val::object();
+        service.set("serviceId", source.service_id);
+        service.set("ipVersion", source.ip_version);
+        service.set("sourceAddress", copy_bytes(source.source_address));
+        service.set("sourcePrefixLength", source.source_prefix_length);
+        service.set("destinationAddress", copy_bytes(source.destination_address));
+        service.set("destinationPrefixLength", source.destination_prefix_length);
+        service.set("privateData", copy_bytes(source.private_data));
+        services.set(index, service);
+    }
+    result.set("services", services);
+    result.set("inputOffset", map.input_offset);
+    return result;
+}
+
+val raw_signalling_table_value(const aribtlv::RawSignallingTable& table) {
+    auto result = val::object();
+    result.set("tlvPacketType", table.tlv_packet_type);
+    result.set("tableId", table.table_id);
+    result.set("tableIdExtension", table.table_id_extension);
+    result.set("version", table.version);
+    result.set("currentNext", table.current_next);
+    result.set("sectionNumber", table.section_number);
+    result.set("lastSectionNumber", table.last_section_number);
+    result.set("data", copy_bytes(table.data));
+    result.set("inputOffset", table.input_offset);
+    return result;
+}
+
+val unknown_descriptor_value(const aribtlv::UnknownDescriptor& descriptor) {
+    auto result = val::object();
+    result.set("tableId", descriptor.table_id);
+    result.set("tag", descriptor.tag);
+    result.set("scope", descriptor.scope == aribtlv::DescriptorScope::Network
+        ? std::string("network") : std::string("tlv-stream"));
+    result.set("tlvStreamId", descriptor.tlv_stream_id
+        ? val(*descriptor.tlv_stream_id) : val::null());
+    result.set("originalNetworkId", descriptor.original_network_id
+        ? val(*descriptor.original_network_id) : val::null());
+    result.set("sectionOffset", descriptor.section_offset);
+    result.set("payload", copy_bytes(descriptor.payload));
+    result.set("inputOffset", descriptor.input_offset);
     return result;
 }
 

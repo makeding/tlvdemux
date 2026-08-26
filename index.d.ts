@@ -99,6 +99,116 @@ declare namespace createTlvDemuxModule {
     discontinuity: boolean;
   }
 
+  interface IpDataFlow {
+    contextId: number;
+    sequenceNumber: number;
+    ipVersion: 6;
+    sourceAddress: Uint8Array;
+    destinationAddress: Uint8Array;
+    nextHeader: number;
+    sourcePort: number;
+    destinationPort: number;
+    inputOffset: bigint;
+  }
+
+  interface TransportNtpClock {
+    ipVersion: 6;
+    sourceAddress: Uint8Array;
+    destinationAddress: Uint8Array;
+    sourcePort: number;
+    destinationPort: number;
+    leapIndicator: number;
+    version: number;
+    mode: number;
+    stratum: number;
+    poll: number;
+    precision: number;
+    rootDelay: number;
+    rootDispersion: number;
+    referenceIdentification: number;
+    referenceTimestamp: bigint;
+    originTimestamp: bigint;
+    receiveTimestamp: bigint;
+    transmitTimestamp: bigint;
+    transmitTimeValue: bigint;
+    transmitTimeTimescale: number;
+    inputOffset: bigint;
+  }
+
+  interface TlvDescriptor {
+    tag: number;
+    payload: Uint8Array;
+    sectionOffset: number;
+  }
+
+  interface TlvNetworkStream {
+    tlvStreamId: number;
+    originalNetworkId: number;
+    descriptors: TlvDescriptor[];
+  }
+
+  interface TlvNetworkInformation {
+    tableId: 0x40 | 0x41;
+    networkId: number;
+    version: number;
+    currentNext: boolean;
+    lastSectionNumber: number;
+    networkDescriptors: TlvDescriptor[];
+    streams: TlvNetworkStream[];
+    inputOffset: bigint;
+  }
+
+  interface AddressMapService {
+    serviceId: number;
+    ipVersion: 4 | 6;
+    sourceAddress: Uint8Array;
+    sourcePrefixLength: number;
+    destinationAddress: Uint8Array;
+    destinationPrefixLength: number;
+    privateData: Uint8Array;
+  }
+
+  interface AddressMap {
+    tableId: 0xfe;
+    tableIdExtension: 0;
+    version: number;
+    currentNext: boolean;
+    lastSectionNumber: number;
+    services: AddressMapService[];
+    inputOffset: bigint;
+  }
+
+  interface RawSignallingTable {
+    tlvPacketType: 0xfe;
+    tableId: number;
+    tableIdExtension: number;
+    version: number;
+    currentNext: boolean;
+    sectionNumber: number;
+    lastSectionNumber: number;
+    data: Uint8Array;
+    inputOffset: bigint;
+  }
+
+  interface UnknownDescriptor {
+    tableId: number;
+    tag: number;
+    scope: "network" | "tlv-stream";
+    tlvStreamId: number | null;
+    originalNetworkId: number | null;
+    sectionOffset: number;
+    payload: Uint8Array;
+    inputOffset: bigint;
+  }
+
+  interface SignallingMessage {
+    contextId: number;
+    packetId: number;
+    messageId: number;
+    data: Uint8Array;
+    inputOffset: bigint;
+  }
+
   interface ServiceInfo {
     contextId: number;
     packageId: Uint8Array;
@@ -647,6 +757,13 @@ declare namespace createTlvDemuxModule {
 
   interface TlvDemuxCallbacks {
     onService?: (service: ServiceInfo) => void;
+    onIpDataFlow?: (flow: IpDataFlow) => void;
+    onTransportNtpClock?: (clock: TransportNtpClock) => void;
+    onTlvNetworkInformation?: (information: TlvNetworkInformation) => void;
+    onAddressMap?: (map: AddressMap) => void;
+    onRawSignallingTable?: (table: RawSignallingTable) => void;
+    onUnknownDescriptor?: (descriptor: UnknownDescriptor) => void;
+    onSignallingMessage?: (message: SignallingMessage) => void;
     onTrack?: (track: TrackInfo) => void;
     onTrackRemoved?: (track: TrackInfo) => void;
     onApplicationServiceRemoved?: (service: ApplicationServiceInfo) => void;

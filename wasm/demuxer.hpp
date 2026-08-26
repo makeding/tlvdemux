@@ -325,6 +325,41 @@ public:
         emit("onService", event);
     }
 
+    void onIpDataFlow(const aribtlv::IpDataFlow& flow) override {
+        emit("onIpDataFlow", ip_data_flow_value(flow));
+    }
+
+    void onTransportNtpClock(const aribtlv::TransportNtpClock& clock) override {
+        emit("onTransportNtpClock", transport_ntp_clock_value(clock));
+    }
+
+    void onTlvNetworkInformation(
+        const aribtlv::TlvNetworkInformation& info) override {
+        emit("onTlvNetworkInformation", tlv_network_information_value(info));
+    }
+
+    void onAddressMap(const aribtlv::AddressMap& map) override {
+        emit("onAddressMap", address_map_value(map));
+    }
+
+    void onRawSignallingTable(aribtlv::RawSignallingTable&& table) override {
+        emit("onRawSignallingTable", raw_signalling_table_value(table));
+    }
+
+    void onUnknownDescriptor(aribtlv::UnknownDescriptor&& descriptor) override {
+        emit("onUnknownDescriptor", unknown_descriptor_value(descriptor));
+    }
+
+    void onSignallingMessage(aribtlv::SignallingMessage&& message) override {
+        auto event = val::object();
+        event.set("contextId", message.context_id);
+        event.set("packetId", message.packet_id);
+        event.set("messageId", message.message_id);
+        event.set("data", copy_bytes(message.data));
+        event.set("inputOffset", message.input_offset);
+        emit("onSignallingMessage", event);
+    }
+
     void onTrack(const aribtlv::TrackInfo& info) override {
         if (info.kind == aribtlv::TrackKind::Video) {
             video_track_ids_.insert(info.track_id);
