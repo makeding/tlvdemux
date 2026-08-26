@@ -130,6 +130,21 @@ The demo exposes four policies:
 | `on_compare` | Apply the same signalling policy as `force`; the renderer leaves the left half without the 3D LUT and applies the C++-generated LUT to the right half. |
 | `off` | Preserve source signalling and let the browser handle HLG/HDR. |
 
+### Rejected metadata-only browser experiment
+
+On 2026-08-26, real browser playback of
+`20260815-141-020000_34968268-7eab-4ee5-ab93-d2097c3d839f.mmts` tested the
+strict `9/18/9` to `9/1/9` SPS/`nclx` rewrite with both GPU LUT canvases
+disabled. At 03:19 the visible result had severe highlight clipping,
+overexposure, and red/orange oversaturation. This proves that metadata-only
+reinterpretation is not a usable HLG-to-SDR path for this real programme.
+
+The rejected standalone mode must not be exposed in the browser demo or
+selected by the automatic policy. The split `on_compare` diagnostic may retain
+the uncorrected half only to make the failure visible beside the LUT result.
+Real HLG must either retain native HLG signalling for a capable browser/display
+path or undergo pixel-domain tone and gamut mapping.
+
 ## Ownership and precedence
 
 | Layer | Responsibility | Must not do |
