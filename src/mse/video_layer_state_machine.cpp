@@ -1,6 +1,7 @@
 #include "video_layer_state_machine.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 
 namespace tlvdemux::detail::mse {
 namespace {
@@ -11,9 +12,9 @@ constexpr std::int64_t kBreakWindowUs = 2000000;
 constexpr unsigned kBreakThreshold = 3;
 constexpr std::int64_t kRapBehindToleranceUs = 500000;
 constexpr std::int64_t kRapAheadToleranceUs = 2000000;
-constexpr std::int64_t kAudioBehindToleranceUs = 500000;
-constexpr std::int64_t kAudioAheadToleranceUs = 2000000;
 constexpr std::int64_t kSwitchPrerollUs = 3000000;
+constexpr std::int64_t kStartupAudioAlignmentUs = 22000;
+constexpr std::int64_t kSwitchObservationWindowUs = 20000000;
 
 std::int64_t timestamp_us(const aribtlv::Timestamp timestamp) {
     return timestamp.value * 1000000 /
@@ -48,12 +49,15 @@ void VideoLayerStateMachine::clearConfiguration() noexcept {
 void VideoLayerStateMachine::select(
     const std::optional<std::uint64_t> video_track_id) noexcept {
     selected_video_id_ = video_track_id;
+    selected_output_started_ = false;
     clearUnrecoveredDamage();
 }
 
 void VideoLayerStateMachine::resetObservations() noexcept {
     preferred_ = {};
     fallback_ = {};
+    selected_output_started_ = false;
+    playback_position_us_.reset();
 }
 
 void VideoLayerStateMachine::clearUnrecoveredDamage() noexcept {
@@ -64,6 +68,16 @@ void VideoLayerStateMachine::clearUnrecoveredDamage() noexcept {
 void VideoLayerStateMachine::switchCompleted(
     const std::uint64_t video_track_id) noexcept {
     selected_video_id_ = video_track_id;
+    selected_output_started_ = true;
+}
+
+void VideoLayerStateMachine::setSelectedOutputStarted(const bool started) noexcept {
+    selected_output_started_ = started;
+}
+
+void VideoLayerStateMachine::setPlaybackPosition(
+    const std::int64_t presentation_time_us) noexcept {
+    playback_position_us_ = std::max<std::int64_t>(0, presentation_time_us);
 }
 
 bool VideoLayerStateMachine::updateContinuity(
@@ -115,7 +129,14 @@ void VideoLayerStateMachine::updateVideo(
     }
     if (unit.random_access) {
         tracker.last_rap = Rap{
-            timestamp_us(unit.pts), unit.input_offset, unit.restart_offset};
+            timestamp_us(unit.pts), timestamp_us(unit.dts),
+            unit.input_offset, unit.restart_offset};
+        tracker.recent_raps.push_back(*tracker.last_rap);
+        while (!tracker.recent_raps.empty() &&
+               tracker.last_rap->pts_us - tracker.recent_raps.front().pts_us >
+                   kSwitchObservationWindowUs) {
+            tracker.recent_raps.pop_front();
+        }
         if (explicit_source_damage) {
             // This AU is the decoder restart point, not another independent
             // degradation vote after the core already published its recovery.
@@ -128,6 +149,12 @@ void VideoLayerStateMachine::updateVideo(
 void VideoLayerStateMachine::updateAudio(
     LayerTracker& tracker, const aribtlv::AccessUnit& unit) {
     updateContinuity(tracker.audio, unit);
+    const auto pts_us = timestamp_us(unit.pts);
+    tracker.recent_audio_pts_us.push_back(pts_us);
+    while (!tracker.recent_audio_pts_us.empty() &&
+           pts_us - tracker.recent_audio_pts_us.front() > kSwitchObservationWindowUs) {
+        tracker.recent_audio_pts_us.pop_front();
+    }
 }
 
 bool VideoLayerStateMachine::usableAt(
@@ -141,14 +168,45 @@ bool VideoLayerStateMachine::usableAt(
     if ((require_healthy_baseline &&
          (!tracker.video.healthy || !tracker.audio.healthy)) ||
         !continuous(tracker.video) || !continuous(tracker.audio) ||
-        tracker.unrecovered_damage.has_value() || !tracker.last_rap.has_value() ||
-        !tracker.audio.last_pts_us.has_value()) return false;
-    const auto rap = tracker.last_rap->pts_us;
-    const auto audio = *tracker.audio.last_pts_us;
-    return rap + kRapBehindToleranceUs >= presentation_time_us &&
-        rap <= presentation_time_us + kRapAheadToleranceUs &&
-        audio + kAudioBehindToleranceUs >= rap &&
-        audio <= presentation_time_us + kAudioAheadToleranceUs;
+        tracker.unrecovered_damage.has_value() || tracker.recent_raps.empty()) {
+        return false;
+    }
+    return std::any_of(
+        tracker.recent_raps.begin(), tracker.recent_raps.end(),
+        [&tracker, presentation_time_us](const Rap& rap) {
+            if (rap.pts_us + kRapBehindToleranceUs < presentation_time_us ||
+                rap.pts_us > presentation_time_us + kRapAheadToleranceUs) {
+                return false;
+            }
+            return std::any_of(
+                tracker.recent_audio_pts_us.begin(),
+                tracker.recent_audio_pts_us.end(),
+                [&rap](const std::int64_t audio_pts_us) {
+                    return std::llabs(audio_pts_us - rap.pts_us) <=
+                        kStartupAudioAlignmentUs;
+                });
+        });
+}
+
+bool VideoLayerStateMachine::usableForStartup(const LayerTracker& tracker) {
+    const auto continuous = [](const Continuity& continuity) {
+        return continuity.last_dts_us.has_value() &&
+            continuity.clean_since_dts_us.has_value() &&
+            *continuity.last_dts_us > *continuity.clean_since_dts_us;
+    };
+    if (!continuous(tracker.video) || !continuous(tracker.audio) ||
+        tracker.unrecovered_damage.has_value() || !tracker.last_rap.has_value()) {
+        return false;
+    }
+    const auto& rap = *tracker.last_rap;
+    if (!tracker.video.last_dts_us.has_value() ||
+        *tracker.video.last_dts_us <= rap.dts_us) return false;
+    return std::any_of(
+        tracker.recent_audio_pts_us.begin(), tracker.recent_audio_pts_us.end(),
+        [&rap](const std::int64_t audio_pts_us) {
+            return audio_pts_us >= rap.pts_us &&
+                audio_pts_us - rap.pts_us <= kStartupAudioAlignmentUs;
+        });
 }
 
 void VideoLayerStateMachine::markDamaged(
@@ -156,6 +214,8 @@ void VideoLayerStateMachine::markDamaged(
     tracker.video.healthy = false;
     tracker.video.clean_since_dts_us = end_time_us;
     tracker.recent_breaks = std::max(tracker.recent_breaks, kBreakThreshold);
+    tracker.recent_raps.clear();
+    tracker.recent_audio_pts_us.clear();
 }
 
 VideoLayerStateMachine::LayerTracker* VideoLayerStateMachine::layerForVideo(
@@ -204,10 +264,18 @@ VideoLayerStateMachine::requestOtherLayer(
     if (!pair_ || !selected_video_id_) return std::nullopt;
     const auto* current = activeLayer();
     const auto* target = otherLayer();
-    if (!current || !target || !current->video.last_pts_us.has_value()) {
+    if (!current || !target) {
         return std::nullopt;
     }
-    const auto current_pts = *current->video.last_pts_us;
+    std::optional<std::int64_t> decision_position;
+    if (require_healthy_baseline && pair_ &&
+        selected_video_id_ == pair_->fallback_video_id) {
+        decision_position = playback_position_us_;
+    } else {
+        decision_position = current->video.last_pts_us;
+    }
+    if (!decision_position) return std::nullopt;
+    const auto current_pts = *decision_position;
     if (!usableAt(*target, current_pts, require_healthy_baseline)) {
         return std::nullopt;
     }
@@ -215,7 +283,21 @@ VideoLayerStateMachine::requestOtherLayer(
     return VideoLayerSwitchRequest{
         preferred_active ? pair_->fallback_video_id : pair_->preferred_video_id,
         preferred_active ? pair_->fallback_audio_id : pair_->preferred_audio_id,
-        std::max<std::int64_t>(0, current_pts - kSwitchPrerollUs),
+        require_healthy_baseline ? current_pts
+                                 : std::max<std::int64_t>(0, current_pts - kSwitchPrerollUs),
+    };
+}
+
+std::optional<VideoLayerSwitchRequest>
+VideoLayerStateMachine::requestStartupFallback() const {
+    if (!pair_ || selected_video_id_ != pair_->preferred_video_id ||
+        selected_output_started_ || !usableForStartup(fallback_)) {
+        return std::nullopt;
+    }
+    return VideoLayerSwitchRequest{
+        pair_->fallback_video_id,
+        pair_->fallback_audio_id,
+        0,
     };
 }
 
@@ -223,6 +305,11 @@ VideoLayerObservation VideoLayerStateMachine::decide() const {
     VideoLayerObservation result;
     const auto* current = activeLayer();
     if (!current) return result;
+    if (const auto startup = requestStartupFallback()) {
+        result.switch_request = startup;
+        result.switch_reason = VideoLayerSwitchReason::HealthDegradation;
+        return result;
+    }
     if (current->unrecovered_damage.has_value()) {
         result.switch_request = requestOtherLayer(false);
         result.switch_reason = VideoLayerSwitchReason::SourceDamage;

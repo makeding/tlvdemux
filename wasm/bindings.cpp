@@ -749,6 +749,8 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
                   &WasmDemuxer::configureAutomaticLayerSwitch)
         .function("clearAutomaticLayerSwitch",
                   &WasmDemuxer::clearAutomaticLayerSwitch)
+        .function("setMsePlaybackPosition",
+                  &WasmDemuxer::setMsePlaybackPosition)
         .function("setMseSdrInHlg", &WasmDemuxer::setMseSdrInHlg)
         .function("setMseToneMappingMode", &WasmDemuxer::setMseToneMappingMode)
         .function("setMseHlgOutputSupported",

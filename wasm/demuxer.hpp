@@ -150,6 +150,10 @@ public:
         mse_remuxer_.clearAutomaticLayerSwitch();
     }
 
+    void setMsePlaybackPosition(const std::int64_t presentation_time_us) {
+        if (mse_enabled_) mse_remuxer_.setPlaybackPosition(presentation_time_us);
+    }
+
     void setMseSdrInHlg(const std::uint64_t video_track_id, const bool enabled) {
         if (mse_enabled_) mse_remuxer_.setSdrInHlg(video_track_id, enabled);
     }

@@ -193,7 +193,8 @@ public:
             return;
         }
         if (init.type != "video") return;
-        if (layer_switch_started_ && expect_rainfall_init_) {
+        if (layer_switch_started_ && expect_rainfall_init_ &&
+            !fallback_video_init_seen_) {
             fallback_video_init_seen_ = true;
             fallback_video_init_valid_ = init.width == 1920 && init.height == 1080 &&
                 init.mime.find("L123") != std::string::npos;
@@ -312,6 +313,18 @@ public:
 
     void onMseLayerSwitchStarted(
         const tlvdemux::MseLayerSwitchStarted& started) override {
+        if (expect_rainfall_init_) {
+            if (layer_switch_started_) {
+                fail_pipeline("rain.tlv produced more than one automatic layer switch");
+                return;
+            }
+            if (started.video_track_id != fallback_video_track_ ||
+                started.audio_track_id != fallback_audio_track_ ||
+                started.earliest_presentation_time_us != 0) {
+                fail_pipeline("first automatic switch did not target rainfall at playback entry");
+                return;
+            }
+        }
         layer_switch_started_ = true;
         std::cerr << "mse layer switch started video=" << started.video_track_id
                   << " audio=" << started.audio_track_id
@@ -326,7 +339,14 @@ public:
     }
 
     void onMseVideoSplice(const tlvdemux::MseVideoSplice& splice) override {
-        std::cerr << "mse video splice pts=" << splice.presentation_time_us << '\n';
+        if (expect_rainfall_init_ &&
+            (splice.presentation_time_us != 821944 ||
+             splice.timestamp_offset_us != -821944)) {
+            fail_pipeline("rain.tlv video splice did not map 821944us to playback entry");
+            return;
+        }
+        std::cerr << "mse video splice pts=" << splice.presentation_time_us
+                  << " timestamp_offset=" << splice.timestamp_offset_us << '\n';
         // MSE removes the old presentation-time tail before appending the new
         // coded frame group. HEVC decode timestamps may legitimately begin
         // before this PTS because of reordered leading pictures, so there is
@@ -335,6 +355,14 @@ public:
     }
 
     void onMseAudioSplice(const tlvdemux::MseAudioSplice& splice) override {
+        if (expect_rainfall_init_ &&
+            (splice.presentation_time_us != 821944 ||
+             splice.timestamp_offset_us != -821944)) {
+            fail_pipeline("rain.tlv audio splice did not map 821944us to playback entry");
+            return;
+        }
+        std::cerr << "mse audio splice pts=" << splice.presentation_time_us
+                  << " timestamp_offset=" << splice.timestamp_offset_us << '\n';
         if (audio_timescale_ != 0) {
             previous_audio_decode_end_ = scale_from_us(
                 splice.presentation_time_us, audio_timescale_);
@@ -387,6 +415,7 @@ private:
             !fallback_video_track_ || !fallback_audio_track_) return;
         mse_remuxer_.configureAutomaticLayerSwitch({
             *video_track_, *audio_track_, *fallback_video_track_, *fallback_audio_track_});
+        mse_remuxer_.setPlaybackPosition(0);
         automatic_layer_configured_ = true;
         std::cerr << "automatic layer pair video=" << *video_track_ << '/' 
                   << *fallback_video_track_ << " audio=" << *audio_track_ << '/'

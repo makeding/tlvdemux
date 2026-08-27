@@ -14,7 +14,10 @@ import { coalesceReadableStream } from './live-stream.mjs?v=asset-groups-v3';
 import {
   commonBufferedRanges,
   createMseGapRecovery,
+  startMsePlayback,
 } from './mse-gap-recovery.mjs?v=damage-recovery-v1';
+import {createMsePlaybackFlowControl} from
+  './mse-playback-flow-control.mjs?v=startup-buffer-v1';
 import { createWorkerTlvDemuxModule } from './worker-tlvdemux.js?v=cpp-layer-state-v1';
 import {
   MseAppendQueue,
@@ -700,23 +703,6 @@ function isTimeBuffered(time) {
   return false;
 }
 
-async function playbackBackpressure(generation) {
-  for (const queue of activeQueues) {
-    queue.trimBefore(elements.video.currentTime - BACK_BUFFER_SECONDS);
-  }
-  await Promise.all(activeQueues.map(queue => queue.waitBelow(SOURCE_QUEUE_HIGH_BYTES)));
-  if (generation !== runGeneration) return;
-  if (bufferedAhead() < FORWARD_BUFFER_HIGH_SECONDS) return;
-  elements.probeState.textContent = elements.video.paused ? '再生待ち' : 'バッファ十分';
-  while (generation === runGeneration && bufferedAhead() > FORWARD_BUFFER_LOW_SECONDS) {
-    for (const queue of activeQueues) {
-      queue.trimBefore(elements.video.currentTime - BACK_BUFFER_SECONDS);
-    }
-    await new Promise(resolve => setTimeout(resolve, 250));
-  }
-  if (generation === runGeneration) elements.probeState.textContent = 'バッファリング中';
-}
-
 async function playSource(source, probeResult, generation, startTimeSeconds = 0,
                           liveMode = false, reuseMedia = false) {
   const recordingDurationSeconds = liveMode ? Infinity : durationSeconds(probeResult.duration);
@@ -831,11 +817,20 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   let seekProbeTargetUs = 0n;
   const seekProbeRaps = new Map();
   const pendingInits = new Map();
+  const pendingSplices = new Map();
   const pendingSegments = new Map([['video', []], ['audio', []]]);
   const mseSegmentTypes = new Set();
   const reportedDamage = new Set();
   const externalDurationUs = liveMode ? null : BigInt(Math.round(
      durationSeconds(probeResult.duration) * 1000000));
+  const playbackFlow = createMsePlaybackFlowControl({
+    media: elements.video,
+    queues,
+    highSeconds: FORWARD_BUFFER_HIGH_SECONDS,
+    lowSeconds: FORWARD_BUFFER_LOW_SECONDS,
+    backBufferSeconds: BACK_BUFFER_SECONDS,
+    queueHighBytes: SOURCE_QUEUE_HIGH_BYTES,
+  });
 
   const gapRecovery = createMseGapRecovery({
     media: elements.video,
@@ -854,23 +849,22 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const maybeStartPlayback = () => {
     if (generation !== runGeneration || queues.size < 2) return;
     if (played) return;
-    const commonRanges = commonBufferedRanges(queues);
-    if (!commonRanges.length) return;
-    const currentTime = elements.video.currentTime;
-    const range = commonRanges.find(item => item.end > currentTime + 0.001);
-    if (!range) return;
-    const commonAhead = range.end - Math.max(currentTime, range.start);
-    if (liveMode && commonAhead < LIVE_STARTUP_BUFFER_SECONDS) return;
-    if (currentTime < range.start - 0.001) {
-      internalSeekTarget = range.start;
-      elements.video.currentTime = range.start;
-      appendLog(`再生開始を共通バッファ先頭 ${range.start.toFixed(6)}s に合わせます`);
+    const started = startMsePlayback({
+      media: elements.video,
+      queues,
+      liveMode,
+      minimumLiveBufferSeconds: LIVE_STARTUP_BUFFER_SECONDS,
+    });
+    if (!started) return;
+    if (started.aligned) {
+      internalSeekTarget = started.range.start;
+      appendLog(`再生開始を共通バッファ先頭 ${started.range.start.toFixed(6)}s に合わせます`);
     }
     played = true;
     monitorPlaybackQuality(generation);
     elements.probeState.textContent = liveMode ? 'Live 再生中' : '再生中';
-    if (liveMode) appendLog(`Live 共通バッファ ${commonAhead.toFixed(1)}s で再生開始 (1×)`);
-    elements.video.play().catch(() => {
+    if (liveMode) appendLog(`Live 共通バッファ ${started.commonAhead.toFixed(1)}s で再生開始 (1×)`);
+    started.playResult.catch(() => {
       appendLog('自動再生がブロックされました。再生ボタンを押してください');
     });
   };
@@ -914,6 +908,11 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         activeQueues.push(queue);
       }
       queues.set(type, queue);
+      const splice = pendingSplices.get(type);
+      if (splice) {
+        queue.setTimestampOffset(splice.timestampOffsetSeconds);
+        pendingSplices.delete(type);
+      }
     }
     for (const type of ['video', 'audio']) {
       const init = pendingInits.get(type);
@@ -966,20 +965,36 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   };
   const onMseAudioSplice = splice => {
     try {
-      const boundary = Number(splice.presentationTimeUs) / 1000000;
+      const sourceBoundary = Number(splice.presentationTimeUs) / 1000000;
+      const timestampOffset = Number(splice.timestampOffsetUs ?? 0n) / 1000000;
+      const boundary = Math.max(0, sourceBoundary + timestampOffset);
       const queue = queues.get('audio');
-      if (!queue) throw new Error('音声 SourceBuffer がまだ初期化されていません');
-      queue.replaceFrom(boundary);
-      appendLog(`音声バッファ切替境界 ${boundary.toFixed(6)}s`);
+      if (queue) {
+        queue.spliceFrom(boundary, timestampOffset);
+      } else {
+        pendingInits.delete('audio');
+        pendingSegments.get('audio').length = 0;
+        pendingSplices.set('audio', {timestampOffsetSeconds: timestampOffset});
+      }
+      appendLog(`音声バッファ切替 source=${sourceBoundary.toFixed(6)}s ` +
+        `output=${boundary.toFixed(6)}s`);
     } catch (error) { callbackError = error; }
   };
   const onMseVideoSplice = splice => {
     try {
-      const boundary = Number(splice.presentationTimeUs) / 1000000;
+      const sourceBoundary = Number(splice.presentationTimeUs) / 1000000;
+      const timestampOffset = Number(splice.timestampOffsetUs ?? 0n) / 1000000;
+      const boundary = Math.max(0, sourceBoundary + timestampOffset);
       const queue = queues.get('video');
-      if (!queue) throw new Error('映像 SourceBuffer がまだ初期化されていません');
-      queue.replaceFrom(boundary);
-      appendLog(`映像バッファ切替境界 ${boundary.toFixed(6)}s`);
+      if (queue) {
+        queue.spliceFrom(boundary, timestampOffset);
+      } else {
+        pendingInits.delete('video');
+        pendingSegments.get('video').length = 0;
+        pendingSplices.set('video', {timestampOffsetSeconds: timestampOffset});
+      }
+      appendLog(`映像バッファ切替 source=${sourceBoundary.toFixed(6)}s ` +
+        `output=${boundary.toFixed(6)}s`);
     } catch (error) { callbackError = error; }
   };
   const onMseLayerSwitch = layer => {
@@ -1678,17 +1693,21 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     for await (const data of source.stream()) {
       if (generation !== runGeneration) return;
       const dataLength = BigInt(data.byteLength);
+      await demuxer.setMsePlaybackPosition(
+        BigInt(Math.round(elements.video.currentTime * 1000000)));
       if (!await demuxer.push(data)) {
         throw new Error(`Live 分離入力に失敗しました: ${playbackBytes}`);
       }
       if (callbackError) throw callbackError;
+      await playbackFlow.afterPush(data.byteLength, () => generation === runGeneration);
       playbackBytes += dataLength;
-      elements.transferred.textContent = `${formatBytes(playbackBytes)} / ${bufferedAhead().toFixed(1)}s`;
+      elements.transferred.textContent =
+        `${formatBytes(playbackBytes)} / ${playbackFlow.commonAhead().toFixed(1)}s`;
       if (playbackBytes - lastReported >= 32n * MiB) {
-        appendLog(`Live ${formatBytes(playbackBytes)}、バッファ=${bufferedAhead().toFixed(1)}s`);
+        appendLog(`Live ${formatBytes(playbackBytes)}、` +
+          `共通バッファ=${playbackFlow.commonAhead().toFixed(1)}s`);
         lastReported = playbackBytes;
       }
-      await playbackBackpressure(generation);
     }
   }
   while ((!liveMode || !source.stream) && offset < source.size && generation === runGeneration) {
@@ -1696,16 +1715,20 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       ? source.size - offset : PLAYBACK_CHUNK;
     const data = await source.read(offset, length);
     if (generation !== runGeneration) return;
+    await demuxer.setMsePlaybackPosition(
+      BigInt(Math.round(elements.video.currentTime * 1000000)));
     if (!await demuxer.push(data)) throw new Error(`分離入力に失敗しました: ${offset}`);
     if (callbackError) throw callbackError;
+    await playbackFlow.afterPush(data.byteLength, () => generation === runGeneration);
     offset += length;
     playbackBytes += length;
-    elements.transferred.textContent = `${formatBytes(probeResult.transferred + playbackBytes)} / ${bufferedAhead().toFixed(1)}s`;
+    elements.transferred.textContent = `${formatBytes(probeResult.transferred + playbackBytes)} / ` +
+      `${playbackFlow.commonAhead().toFixed(1)}s`;
     if (playbackBytes - lastReported >= 32n * MiB || offset === source.size) {
-      appendLog(`再生 ${formatBytes(offset)} / ${formatBytes(source.size)}、バッファ=${bufferedAhead().toFixed(1)}s`);
+      appendLog(`再生 ${formatBytes(offset)} / ${formatBytes(source.size)}、` +
+        `共通バッファ=${playbackFlow.commonAhead().toFixed(1)}s`);
       lastReported = playbackBytes;
     }
-    await playbackBackpressure(generation);
   }
   if (generation !== runGeneration) return;
   await demuxer.flush();

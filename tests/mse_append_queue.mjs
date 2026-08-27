@@ -18,6 +18,12 @@ class FakeSourceBuffer extends EventTarget {
     this.appendFailures = [];
     this.removeCalls = [];
     this.operations = [];
+    this._timestampOffset = 0;
+  }
+  get timestampOffset() { return this._timestampOffset; }
+  set timestampOffset(value) {
+    this._timestampOffset = value;
+    this.operations.push(['timestampOffset', value]);
   }
   appendBuffer(data) {
     const failure = this.appendFailures.shift();
@@ -60,6 +66,32 @@ const {
   finalizeMseMediaSource,
   nextBufferedRange,
 } = await import('../mse-append-queue.mjs');
+
+{
+  const sourceBuffer = new FakeSourceBuffer([[0, 20]]);
+  const mediaSource = new FakeMediaSource(sourceBuffer);
+  const media = {currentTime: 0, error: null, buffered: sourceBuffer.buffered};
+  const queue = new MseAppendQueue(mediaSource, media, 'video/mp4', null, {
+    forwardBufferHighSeconds: Infinity,
+  });
+  queue.append(new Uint8Array([1]), {startTimeSeconds: 0, endTimeSeconds: 5});
+  queue.spliceFrom(0, -0.821944);
+  queue.appendInitialization(new Uint8Array([2]), 'video/mp4; codecs="hvc1.2.4.L123"', true);
+  queue.append(new Uint8Array([3]), {startTimeSeconds: 0.821944, endTimeSeconds: 2});
+  sourceBuffer.complete();
+  assert.deepEqual(sourceBuffer.operations.at(-1), ['remove', 0, 20]);
+  sourceBuffer.complete();
+  assert.deepEqual(sourceBuffer.operations.slice(-3), [
+    ['timestampOffset', -0.821944],
+    ['changeType', 'video/mp4; codecs="hvc1.2.4.L123"'],
+    ['append', 2],
+  ]);
+  sourceBuffer.complete();
+  assert.deepEqual(sourceBuffer.operations.at(-1), ['append', 3]);
+  assert.equal(queue.queue.at(0), undefined);
+  sourceBuffer.complete();
+  await queue.waitIdle();
+}
 
 {
   const ranges = [
@@ -174,6 +206,33 @@ async function tick() {
   await unblocked;
   assert.equal(queue.queuedBytes, 0);
   assert.equal(queue.queue.length, 0);
+}
+
+{
+  const sourceBuffer = new FakeSourceBuffer([[0, 20]]);
+  const mediaSource = new FakeMediaSource(sourceBuffer);
+  const media = {currentTime: 0, error: null, buffered: sourceBuffer.buffered};
+  const queue = new MseAppendQueue(mediaSource, media, 'video/mp4', null, {
+    forwardBufferHighSeconds: 15,
+  });
+  queue.append(new Uint8Array(5 * 1024 * 1024), {
+    startTimeSeconds: 20,
+    endTimeSeconds: 21,
+  });
+  let resolved = false;
+  const controlled = queue.waitFlowControlled(4 * 1024 * 1024).then(() => {
+    resolved = true;
+  });
+  await tick();
+  assert.equal(resolved, false,
+    'time-based forward blocking bypassed the queued-byte high-water mark');
+
+  queue.queue[0].data = new Uint8Array(3 * 1024 * 1024);
+  queue.recountQueuedBytes();
+  queue.resolveWaiters();
+  await controlled;
+  assert.equal(resolved, true);
+  queue.stop();
 }
 
 {

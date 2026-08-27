@@ -108,32 +108,76 @@ layer already has aligned decodable video and audio. Otherwise it emits
 `PlaybackDamage` for the active layer: `seek` as soon as that layer has an
 explicit recovery RAP, or `wait-for-recovery` until such a RAP arrives. Damage
 is never retained until EOF and never inferred across an unobserved interval.
-The emergency preferred-to-rainfall decision requires a nearby real RAP,
-continuous DTS, and usable AAC, but does not wait for the five-second health
-baseline. That baseline applies only while rainfall playback is healthy and is
-being considered for an automatic return to the preferred layer.
+Emergency preferred-to-rainfall switching also covers startup. If the selected
+preferred layer has not produced a decodable MSE video entry while the rainfall
+layer has a real RAP, a following continuous video DTS, continuous AAC, and an
+aligned A/V boundary, the core switches immediately with reason
+`health-degradation`. It requests the current playback entry (timestamp zero for
+a fresh recording), so cached target history starts at the earliest usable
+rainfall RAP instead of the last observed RAP. It does not wait for a preferred
+damage event or the five-second health baseline; that baseline applies only
+while rainfall playback is healthy and is being considered for an automatic
+return to the preferred layer.
 While rainfall playback is active, the preferred tracker keeps warming and may
-switch back after five continuous decodable seconds with aligned RAP/AAC.
+switch back after five continuous decodable seconds with aligned RAP/AAC at the
+actual caller-reported playback position. Parser or recording-index progress is
+never a playback clock: reading healthy preferred media hundreds of seconds
+ahead must not replace rainfall media at a playhead that is still at timestamp
+zero. Until a playback position is reported, automatic rainfall-to-preferred
+recovery remains armed but cannot commit.
 Damage on the rainfall layer follows the same rule in the opposite direction.
 
 `onMseLayerSwitchStarted`, `onMseLayerSwitch`, and
 `onMseLayerSwitchCancelled` describe the one-shot A/V splice staging; they do
 not form a separate recovery state machine. SourceBuffer mutations use one
-ordered queue: remove, `changeType`, initialization segment, then media. A layer
+ordered queue: remove, timestamp offset, `changeType`, initialization segment,
+then media. A layer
 switch reconfigures both tracks even when the MIME string is unchanged. A bare
 MediaElement `waiting` event or a later buffered range never authorizes a seek;
 only `PlaybackDamage.action === "seek"` for the currently playing layer may
 reposition the media element. Explicit PID or concrete track selection remains
 fixed mode and disables automatic layer decisions.
-At the first usable target RAP, both SourceBuffers are spliced at that boundary:
+At the first usable target RAP, both tracks are logically spliced at that boundary:
 already-appended old-layer audio after it is removed, and replacement AAC is
 mapped to the same boundary within one 22 ms AAC frame. Old buffered audio must
-never postpone the video switch to a later RAP.
+never postpone the video switch to a later RAP. A startup switch can precede
+creation of the preferred video SourceBuffer: its staged order is still logical
+video splice -> rainfall init -> rainfall media, and the absent SourceBuffer is
+not removed. A discarded staging attempt rebuilds that complete order, including
+the target init even when the MIME string is unchanged.
 
-The `rain.tlv` validation contract treats the observed 0:48 layer-switch
-`-12909` failure as authoritative. Automated acceptance for this recovery path
-uses the native VideoToolbox MSE probe plus the full-sample WASM assertions; it
-must not invoke browser automation or ask a user to be the runtime tester.
+For a fresh recorded playback at timestamp zero, startup and buffered-range
+handling must not assign `MediaElement.currentTime`. Only an explicit user seek,
+a selected-layer `PlaybackDamage.action === "seek"` after switching was
+unavailable, or the existing live-start policy may change the playback position.
+The demo reports that unchanged media clock to the core for recovery decisions;
+this is observation, not a seek.
+
+When the first usable rainfall RAP is later than that fresh playback entry, the
+splice retains the RAP's source presentation time and carries a negative MSE
+timestamp offset that maps the replacement A/V output onto timestamp zero. The
+demo applies that offset in the same SourceBuffer mutation queue before the
+replacement init and media. It applies input backpressure from the common A/V
+buffered interval, not parser progress: requests stop at 15 seconds ahead and
+resume below 8 seconds. Before any common interval covers the playback entry,
+at most 16 MiB of playback input may be read without progress; exhaustion fails
+with `MSE_STARTUP_NO_COMMON_AV` instead of fetching the recording to EOF.
+
+The `rain.tlv` validation contract requires its first automatic switch at the
+earliest rainfall RAP (currently about `821944us`), before any preferred-layer
+init, the later approximately 46-second preferred damage event, or any seek. The
+source switch boundary remains `821944us`, while its startup timestamp offset
+maps the first common MSE A/V interval to timestamp zero. The first target init
+must be `1920x1080/L123`, the full WASM run must contain no
+`PlaybackDamage.seek`, and the switch A/V boundaries must differ by at most one
+22 ms AAC frame. Startup flow-control acceptance must reach that common interval
+without consuming more than the 16 MiB no-progress budget and must stop normal
+prefetch at the 15-second high-water mark rather than reading the 711 MiB sample
+to EOF. The previously observed switch around 0:48 and its `-12909` are the
+failure being corrected, not an acceptable switch point. Automated
+acceptance uses the native VideoToolbox MSE probe plus the full-sample WASM
+assertions; it must not invoke browser automation or ask a user to be the
+runtime tester.
 
 ## Library usage
 

@@ -51,7 +51,8 @@ public:
 
     std::optional<std::int64_t> activate_from(
         const std::int64_t earliest_presentation_time_us,
-        const std::optional<std::int64_t> output_boundary_us = std::nullopt) {
+        const std::optional<std::int64_t> output_boundary_us = std::nullopt,
+        const std::int64_t timestamp_offset_us = 0) {
         if (!track_) return std::nullopt;
         const auto first = std::find_if(history_.begin(), history_.end(),
             [this, earliest_presentation_time_us](const Sample& sample) {
@@ -66,7 +67,7 @@ public:
             scaled(source_boundary, track_->timescale, 1000000));
         const auto output_boundary = scaled(boundary_us, 1000000, track_->timescale);
         const auto timestamp_shift = source_boundary - output_boundary;
-        output_.audio_splice(boundary_us);
+        output_.audio_splice(boundary_us, timestamp_offset_us);
         BaseMuxer::activate();
         for (auto iterator = first; iterator != history_.end(); ++iterator) {
             auto sample = *iterator;
@@ -145,8 +146,10 @@ public:
             }
         }
         if (!timeline_offset_us_.has_value()) {
-            if (!timeline_offset_us.has_value()) return;
-            timeline_offset_us_ = *timeline_offset_us;
+            // Before any selected video configuration exists, keep AAC in its
+            // broadcast timeline so a startup fallback can be prepared. Layer
+            // activation later maps the chosen frame to the target video RAP.
+            timeline_offset_us_ = timeline_offset_us.value_or(0);
         }
         std::int64_t timestamp =
             scaled(unit.pts.value, unit.pts.timescale, track_->timescale) +

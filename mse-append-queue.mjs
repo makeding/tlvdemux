@@ -46,6 +46,7 @@ export class MseAppendQueue {
     this.forceTrim = false;
     this.state = 'running';
     this.onUpdateEnd = onUpdateEnd;
+    this.scheduledTimestampOffsetSeconds = this.sourceBuffer.timestampOffset || 0;
     this.retryDelayMilliseconds = options.retryDelayMilliseconds ?? DEFAULT_RETRY_DELAY_MILLISECONDS;
     this.backBufferSeconds = options.backBufferSeconds ?? DEFAULT_BACK_BUFFER_SECONDS;
     this.forwardBufferHighSeconds = options.forwardBufferHighSeconds ?? DEFAULT_FORWARD_BUFFER_HIGH_SECONDS;
@@ -74,12 +75,14 @@ export class MseAppendQueue {
   }
 
   append(data, timing = {}) {
+    const mapTime = value => value === null || value === undefined
+      ? null : value + this.scheduledTimestampOffsetSeconds;
     this.enqueueAppend({
       kind: 'append',
       data,
       mime: null,
-      startTimeSeconds: timing.startTimeSeconds ?? null,
-      endTimeSeconds: timing.endTimeSeconds ?? null,
+      startTimeSeconds: mapTime(timing.startTimeSeconds),
+      endTimeSeconds: mapTime(timing.endTimeSeconds),
     });
   }
 
@@ -88,6 +91,41 @@ export class MseAppendQueue {
       kind: 'append', data, mime, forceChangeType,
       startTimeSeconds: null, endTimeSeconds: null,
     });
+  }
+
+  setTimestampOffset(offsetSeconds) {
+    if (!Number.isFinite(offsetSeconds)) {
+      throw new TypeError(`invalid timestamp offset ${offsetSeconds}`);
+    }
+    if (this.error) throw this.error;
+    if (this.state !== 'running') {
+      throw new DOMException(`SourceBuffer queue is ${this.state}`, 'InvalidStateError');
+    }
+    this.scheduledTimestampOffsetSeconds = offsetSeconds;
+    this.enqueueOperation({kind: 'timestamp-offset', offsetSeconds});
+    this.pump();
+  }
+
+  spliceFrom(time, offsetSeconds) {
+    if (!Number.isFinite(time) || time < 0) throw new TypeError(`invalid splice time ${time}`);
+    if (!Number.isFinite(offsetSeconds)) {
+      throw new TypeError(`invalid timestamp offset ${offsetSeconds}`);
+    }
+    if (this.error) throw this.error;
+    if (this.state !== 'running') {
+      throw new DOMException(`SourceBuffer queue is ${this.state}`, 'InvalidStateError');
+    }
+    this.queue = this.queue.filter(item => {
+      const keep = item.kind !== 'append' ||
+        (item.mime === null &&
+         (item.startTimeSeconds === null || item.startTimeSeconds < time));
+      return keep;
+    });
+    this.enqueueOperation({kind: 'remove', startTimeSeconds: time});
+    this.scheduledTimestampOffsetSeconds = offsetSeconds;
+    this.enqueueOperation({kind: 'timestamp-offset', offsetSeconds});
+    this.recountQueuedBytes();
+    this.pump();
   }
 
   replaceFrom(time) {
@@ -157,6 +195,11 @@ export class MseAppendQueue {
     }
 
     const item = this.queue.shift();
+    if (item.kind === 'timestamp-offset') {
+      this.sourceBuffer.timestampOffset = item.offsetSeconds;
+      this.pump();
+      return;
+    }
     if (item.kind === 'remove') {
       const removeEnd = this.bufferedRanges().at(-1)?.end;
       if (Number.isFinite(removeEnd) && removeEnd > item.startTimeSeconds) {
@@ -237,6 +280,34 @@ export class MseAppendQueue {
     return new Promise((resolve, reject) => this.waiters.push({ limit, idle: false, resolve, reject }));
   }
 
+  isForwardBlocked() {
+    return !this.sourceBuffer.updating && this.queue.length > 0 &&
+      this.queue[0].kind === 'append' &&
+      this.bufferedAhead() >= this.forwardBufferHighSeconds;
+  }
+
+  isStable() {
+    return this.isIdle() || this.isForwardBlocked();
+  }
+
+  waitStable() {
+    if (this.error) return Promise.reject(this.error);
+    if (this.isStable()) return Promise.resolve();
+    return new Promise((resolve, reject) =>
+      this.waiters.push({stable: true, resolve, reject}));
+  }
+
+  isFlowControlled(limit) {
+    return this.queuedBytes <= limit && (this.isIdle() || this.isForwardBlocked());
+  }
+
+  waitFlowControlled(limit) {
+    if (this.error) return Promise.reject(this.error);
+    if (this.isFlowControlled(limit)) return Promise.resolve();
+    return new Promise((resolve, reject) =>
+      this.waiters.push({flowLimit: limit, resolve, reject}));
+  }
+
   isIdle() {
     return !this.sourceBuffer.updating && this.queuedBytes === 0 &&
       this.queue.length === 0 && this.trimBeforeTime === null;
@@ -304,7 +375,10 @@ export class MseAppendQueue {
     this.waiters = [];
     for (const waiter of pending) {
       if (this.error) waiter.reject(this.error);
-      else if (waiter.idle ? this.isIdle() : this.queuedBytes <= waiter.limit) waiter.resolve();
+      else if (waiter.flowLimit !== undefined ? this.isFlowControlled(waiter.flowLimit)
+        : waiter.stable ? this.isStable()
+        : waiter.idle ? this.isIdle()
+        : this.queuedBytes <= waiter.limit) waiter.resolve();
       else this.waiters.push(waiter);
     }
   }

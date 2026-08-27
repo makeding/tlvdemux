@@ -36,6 +36,7 @@ export declare class MseAppendQueue {
   forceTrim: boolean;
   state: 'running' | 'quiescing' | 'idle' | 'destroyed';
   onUpdateEnd: (() => void) | null;
+  scheduledTimestampOffsetSeconds: number;
 
   constructor(
     mediaSource: MediaSource,
@@ -47,12 +48,19 @@ export declare class MseAppendQueue {
 
   append(data: Uint8Array, timing?: MseAppendTiming): void;
   appendInitialization(data: Uint8Array, mime: string, forceChangeType?: boolean): void;
+  setTimestampOffset(offsetSeconds: number): void;
+  spliceFrom(time: number, offsetSeconds: number): void;
   replaceFrom(time: number): void;
   pump(): void;
   bufferedAhead(): number;
   bufferedRanges(): MseBufferedRange[];
   trimBefore(time: number, force?: boolean): void;
   waitBelow(limit: number): Promise<void>;
+  isForwardBlocked(): boolean;
+  isStable(): boolean;
+  waitStable(): Promise<void>;
+  isFlowControlled(limit: number): boolean;
+  waitFlowControlled(limit: number): Promise<void>;
   isIdle(): boolean;
   waitIdle(): Promise<void>;
   quiesce(): Promise<void>;

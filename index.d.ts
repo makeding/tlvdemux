@@ -645,10 +645,12 @@ declare namespace createTlvDemuxModule {
 
   interface MseAudioSplice {
     presentationTimeUs: bigint;
+    timestampOffsetUs: bigint;
   }
 
   interface MseVideoSplice {
     presentationTimeUs: bigint;
+    timestampOffsetUs: bigint;
   }
 
   interface MseLayerSwitch {
@@ -841,6 +843,8 @@ declare namespace createTlvDemuxModule {
       fallbackAudioTrackId: bigint,
     ): void;
     clearAutomaticLayerSwitch(): void;
+    /** Report the unchanged media clock for automatic layer recovery decisions. */
+    setMsePlaybackPosition(presentationTimeUs: bigint): void;
     switchAudioTrack(trackId: bigint, earliestPresentationTimeUs: bigint): bigint | null;
     switchLayer(
       videoTrackId: bigint,

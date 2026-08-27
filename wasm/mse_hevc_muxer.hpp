@@ -3,6 +3,8 @@ public:
     explicit HevcMuxer(Output& output) : BaseMuxer("video", 1, output), output_(output) {}
 
     bool started() const noexcept { return started_; }
+    bool output_started() const noexcept { return output_started_; }
+    void mark_output_not_started() noexcept { output_started_ = false; }
     void set_sdr_in_hlg(const std::uint64_t track_id, const bool enabled) {
         const auto previous = color_policy(track_id);
         if (enabled) sdr_in_hlg_tracks_.insert(track_id);
@@ -42,6 +44,7 @@ public:
     void retry_staged_switch() noexcept {
         reset_samples();
         started_ = false;
+        output_started_ = false;
         no_rasl_output_ = false;
         sequence_start_ = true;
         splice_boundary_us_.reset();
@@ -108,7 +111,16 @@ public:
             *input_track_id_ != unit.track_id && irap >= 0;
         const bool requested_switch_boundary =
             stage_next_switch_ && irap >= 0;
+        if (requested_switch_boundary && !track_) {
+            // Startup switching can reach the fallback configuration before a
+            // preferred video SourceBuffer exists. Begin staging before the
+            // target track is installed so no target init escapes ahead of the
+            // logical splice.
+            output_.begin_video_staging();
+            stage_next_switch_ = false;
+        }
         bool configuration_boundary = false;
+        bool deferred_initial_properties = false;
         if (parameter_sets_.count(32) != 0 && parameter_sets_.count(33) != 0 &&
             parameter_sets_.count(34) != 0) {
             const auto config = hevc_configuration(
@@ -117,8 +129,13 @@ public:
             auto candidate = video_track(config, unit);
             const auto properties = video_properties(config, unit);
             if (!track_) {
-                set_track(std::move(candidate));
-                emit_video_properties(properties);
+                set_track(std::move(candidate), !requested_switch_boundary);
+                if (requested_switch_boundary) {
+                    current_video_properties_ = properties;
+                    deferred_initial_properties = true;
+                } else {
+                    emit_video_properties(properties);
+                }
             } else if ((has_parameter_set || configuration_policy_dirty_) && irap >= 0 &&
                        configuration_differs(candidate)) {
                 if (output_enabled && !output_.supports_video_reconfiguration()) {
@@ -178,7 +195,12 @@ public:
             // This is required even when the codec string and hvcC happen to
             // match, and especially after a discarded staging attempt has
             // already installed the target configuration internally.
-            if (requested_switch_boundary) emit_init();
+            if (requested_switch_boundary) {
+                emit_init();
+                if (deferred_initial_properties && current_video_properties_) {
+                    output_.video_properties(*current_video_properties_);
+                }
+            }
             started_ = false;
             no_rasl_output_ = false;
             sequence_start_ = true;
@@ -250,6 +272,10 @@ public:
     }
 
 private:
+    void on_segment_emitted(const std::vector<Sample>& samples) override {
+        if (!samples.empty()) output_started_ = true;
+    }
+
     HevcColorPolicy color_policy(const std::uint64_t track_id) const noexcept {
         if (hlg_sdr_prototype_tracks_.count(track_id) != 0) {
             return HevcColorPolicy::HlgSdrPrototype;
@@ -394,6 +420,7 @@ private:
     std::set<std::uint64_t> hlg_sdr_prototype_tracks_;
     std::optional<tlvdemux::MseVideoProperties> current_video_properties_;
     bool started_ = false;
+    bool output_started_ = false;
     bool no_rasl_output_ = false;
     bool sequence_start_ = true;
     std::optional<std::int64_t> timeline_offset_ticks_;

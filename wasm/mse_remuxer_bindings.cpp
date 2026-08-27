@@ -135,6 +135,7 @@ public:
         if (!has("onMseAudioSplice")) return;
         auto event = val::object();
         event.set("presentationTimeUs", splice.presentation_time_us);
+        event.set("timestampOffsetUs", splice.timestamp_offset_us);
         emit("onMseAudioSplice", event);
     }
 
@@ -142,6 +143,7 @@ public:
         if (!has("onMseVideoSplice")) return;
         auto event = val::object();
         event.set("presentationTimeUs", splice.presentation_time_us);
+        event.set("timestampOffsetUs", splice.timestamp_offset_us);
         emit("onMseVideoSplice", event);
     }
 
@@ -287,6 +289,11 @@ void WasmMseRemuxer::configureAutomaticLayerSwitch(
 
 void WasmMseRemuxer::clearAutomaticLayerSwitch() {
     impl_->remuxer().clearAutomaticLayerSwitch();
+}
+
+void WasmMseRemuxer::setPlaybackPosition(
+    const std::int64_t presentation_time_us) {
+    impl_->remuxer().setPlaybackPosition(presentation_time_us);
 }
 
 void WasmMseRemuxer::setSdrInHlg(

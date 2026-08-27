@@ -24,6 +24,8 @@ const videoInits = [];
 let lastVideoEndUs = null;
 let lastAudioEndUs = null;
 const segmentRanges = {video: [], audio: []};
+const eventOrder = [];
+const splices = {video: [], audio: []};
 
 function largestGap(ranges) {
   const ordered = [...ranges].sort((left, right) =>
@@ -118,6 +120,7 @@ demuxer = new module.TlvDemuxer({
     }
   },
   onMseInit(init) {
+    eventOrder.push(`init:${init.type}:${init.width ?? 0}x${init.height ?? 0}`);
     if (init.type !== 'video') return;
     videoInits.push({
       mime: init.mime,
@@ -126,17 +129,26 @@ demuxer = new module.TlvDemuxer({
       afterSwitchStarted: startedLayers.length > 0,
     });
   },
+  onMseVideoSplice(splice) {
+    splices.video.push(splice);
+  },
+  onMseAudioSplice(splice) {
+    splices.audio.push(splice);
+  },
   onMseLayerSwitch(layer) {
+    eventOrder.push(`switch-completed:${layer.videoTrackId}`);
     completedLayers.push(layer);
     if (completedLayer === null) completedLayer = layer;
   },
   onMseLayerSwitchStarted(layer) {
+    eventOrder.push(`switch-started:${layer.videoTrackId}`);
     startedLayers.push(layer);
   },
   onMseLayerSwitchCancelled(layer) {
     cancelledLayer = layer;
   },
   onPlaybackDamage(damage) {
+    eventOrder.push(`damage:${damage.videoTrackId}:${damage.action}`);
     playbackDamage.push({
       ...damage,
       layerSwitchStarted: startedLayers.length > 0,
@@ -155,6 +167,7 @@ try {
   for (let position = 0; ; position += chunk.byteLength) {
     const {bytesRead} = await input.read(chunk, 0, chunk.byteLength, position);
     if (!bytesRead) break;
+    demuxer.setMsePlaybackPosition(0n);
     assert.equal(demuxer.push(chunk.subarray(0, bytesRead)), true);
   }
   demuxer.flush();
@@ -187,10 +200,36 @@ try {
     init.width === 1920 && init.height === 1080 && /L123(?:\.|\")/.test(init.mime));
   assert.ok(rainfallInit,
     `rainfall switch did not emit its 1920x1080/L123 init: ${JSON.stringify(videoInits)}`);
-  assert.ok(videoBoundaryUs < 100000000n,
-    `quality-scored fallback switched too late at ${videoBoundaryUs}us`);
-  assert.ok(videoBoundaryUs > 40000000n && videoBoundaryUs < 60000000n,
-    `fallback did not begin at the sample's first damaged interval: ${videoBoundaryUs}us`);
+  assert.equal(startedLayers[0].reason, 'health-degradation',
+    'startup fallback did not retain the public health-degradation reason');
+  assert.equal(BigInt(startedLayers[0].earliestPresentationTimeUs), 0n,
+    'startup fallback request did not use the current playback entry');
+  assert.ok(videoBoundaryUs >= 800000n && videoBoundaryUs <= 850000n,
+    `fallback did not begin at the sample's earliest rainfall RAP: ${videoBoundaryUs}us`);
+  assert.equal(videoBoundaryUs, 821944n,
+    `rain.tlv earliest rainfall RAP changed: ${videoBoundaryUs}us`);
+  assert.equal(BigInt(splices.video[0]?.presentationTimeUs), 821944n,
+    'startup video splice lost its rainfall source RAP');
+  assert.equal(BigInt(splices.audio[0]?.presentationTimeUs), 821944n,
+    'startup audio splice was not mapped to the rainfall video RAP');
+  assert.equal(BigInt(splices.video[0]?.timestampOffsetUs), -821944n,
+    'startup video splice did not map rainfall output to timestamp zero');
+  assert.equal(BigInt(splices.audio[0]?.timestampOffsetUs), -821944n,
+    'startup audio splice did not use the video timestamp mapping');
+  assert.equal(startedLayers.length, 1,
+    'parser progress started a second automatic layer switch at a stalled playhead');
+  assert.equal(completedLayers.length, 1,
+    'parser progress completed a second automatic layer switch at a stalled playhead');
+  const firstSwitchStartIndex = eventOrder.findIndex(event =>
+    event.startsWith('switch-started:'));
+  const preferredInitIndex = eventOrder.findIndex(event =>
+    event === 'init:video:7680x4320');
+  const preferredDamageIndex = eventOrder.findIndex(event =>
+    event.startsWith(`damage:${tracks.get(0xf300).trackId}:`));
+  assert.ok(firstSwitchStartIndex >= 0 &&
+      (preferredInitIndex < 0 || firstSwitchStartIndex < preferredInitIndex) &&
+      (preferredDamageIndex < 0 || firstSwitchStartIndex < preferredDamageIndex),
+    `startup fallback followed preferred init/damage: ${JSON.stringify(eventOrder)}`);
 
   const minimumEndUs = expectedDurationUs - 1000000n;
   assert.ok(lastVideoEndUs !== null && lastVideoEndUs >= minimumEndUs,
@@ -228,11 +267,9 @@ try {
   assert.ok(durationUs >= minimumEndUs,
     'recording index duration stopped at the retired high-quality layer');
   assert.ok(demuxer.seekPointCount() > 0, 'switched recording index has no RAP entries');
-  const competingSeek = playbackDamage.find(damage =>
-    damage.severity === 'severe' && damage.action === 'seek' &&
-    damage.videoTrackId === tracks.get(0xf300).trackId);
+  const competingSeek = playbackDamage.find(damage => damage.action === 'seek');
   assert.equal(competingSeek, undefined,
-    `source-damage seek competed with the rainfall switch: ${JSON.stringify(
+    `playback-damage seek competed with the rainfall switch: ${JSON.stringify(
       playbackDamage, (_, value) => typeof value === 'bigint' ? value.toString() : value)}`);
 
   console.log(JSON.stringify({
@@ -254,6 +291,7 @@ try {
     completedLayers,
     playbackDamage,
     videoInits,
+    eventOrder,
   }, (_, value) => typeof value === 'bigint' ? value.toString() : value, 2));
 } finally {
   await input.close();

@@ -1016,6 +1016,71 @@ void test_alternate_audio_keeps_warming_while_selected_video_has_no_timeline() {
           "alternate audio was not mapped to the first replacement video RAP");
 }
 
+void test_startup_fallback_stages_splice_init_media_without_preferred_video() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.configureAutomaticLayerSwitch({2, 1, 3, 9});
+
+    constexpr std::int64_t frame = 1024;
+    for (std::int64_t index = 0; index < 120; ++index) {
+        remuxer.push(audio_unit(1, index * frame));
+        remuxer.push(audio_unit(9, index * frame));
+    }
+    check(std::none_of(sink.inits.begin(), sink.inits.end(),
+              [](const tlvdemux::MseTrackInit& init) { return init.type == "video"; }),
+          "test unexpectedly created a preferred video SourceBuffer init");
+
+    remuxer.push(hevc_unit(3, 100000, 100000, true, true));
+    const auto accepted = remuxer.push(
+        hevc_unit(3, 133367, 133367, false, false));
+    check(accepted.has_value() && accepted->video_track_id == 3 &&
+              accepted->audio_track_id == 9 &&
+              accepted->earliest_presentation_time_us == 0,
+          "startup fallback was not accepted at the current playback entry");
+    for (std::int64_t index = 2; index <= 20; ++index) {
+        const auto timestamp = 100000 + index * 33367;
+        remuxer.push(hevc_unit(3, timestamp, timestamp, false, false));
+    }
+
+    check(sink.layer_switch_starts.size() == 1 &&
+              sink.layer_switch_starts.front().reason ==
+                  tlvdemux::MseLayerSwitchReason::HealthDegradation,
+          "startup fallback did not publish one health-degradation acceptance");
+    check(sink.layer_switches.size() == 1 &&
+              sink.layer_switches.front().video_presentation_time_us == 100000 &&
+              sink.layer_switches.front().audio_presentation_time_us == 100000,
+          "startup fallback did not map A/V to the first rainfall RAP");
+    check(sink.video_splices.size() == 1 && sink.splices.size() == 1 &&
+              sink.video_splices.front().presentation_time_us == 100000 &&
+              sink.splices.front().presentation_time_us == 100000 &&
+              sink.video_splices.front().timestamp_offset_us == -100000 &&
+              sink.splices.front().timestamp_offset_us == -100000,
+          "startup fallback did not preserve source RAP while mapping MSE output to zero");
+    const auto start = std::find(
+        sink.events.begin(), sink.events.end(), "layer-switch-started");
+    const auto splice = std::find(start, sink.events.end(), "video-splice");
+    const auto init = std::find(splice, sink.events.end(), "init:video");
+    const auto media = std::find(init, sink.events.end(), "segment:video");
+    check(start < splice && splice < init && init < media,
+          "startup staging was not logical splice -> rainfall init -> media");
+    check(sink.playback_damage.empty(),
+          "startup fallback leaked preferred-layer seek advice");
+
+    remuxer.push(hevc_unit(3, 721008, 721008, false, false, 180000));
+    remuxer.flush();
+    const auto video_segments = segments_of(sink.segments, "video");
+    std::optional<std::int64_t> previous_end;
+    for (const auto& segment : video_segments) {
+        check(!previous_end || std::int64_t(segment.tfdt) >= *previous_end,
+              "startup-switch completion overlapped the next video fragment");
+        auto end = std::int64_t(segment.tfdt);
+        for (const auto& sample : segment.samples) end += sample.duration;
+        previous_end = end;
+    }
+}
+
 aribtlv::DamageSpan severe_source_damage(const std::uint64_t track_id) {
     aribtlv::DamageSpan damage;
     damage.track_id = track_id;
@@ -1053,8 +1118,8 @@ void warm_automatic_layer_pair(tlvdemux::MseRemuxer& remuxer) {
     for (std::int64_t timestamp = 0; timestamp <= 5000000;
          timestamp += 500000) {
         const bool rap = timestamp % 1000000 == 0;
-        remuxer.push(hevc_unit(3, timestamp, timestamp, rap, timestamp == 0));
         remuxer.push(hevc_unit(2, timestamp, timestamp, rap, timestamp == 0));
+        remuxer.push(hevc_unit(3, timestamp, timestamp, rap, timestamp == 0));
     }
 }
 
@@ -1782,6 +1847,7 @@ int main() {
     test_audio_switch_uses_cached_frame_boundary_without_video_rap();
     test_video_track_switch_preserves_prepared_alternate_audio();
     test_alternate_audio_keeps_warming_while_selected_video_has_no_timeline();
+    test_startup_fallback_stages_splice_init_media_without_preferred_video();
     test_source_damage_prefers_accepted_automatic_layer_switch();
     test_source_damage_waits_then_seeks_at_real_recovery_rap();
     test_fixed_mode_keeps_immediate_source_damage_seek();

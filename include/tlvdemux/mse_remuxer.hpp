@@ -35,10 +35,12 @@ struct MseMediaSegment {
 
 struct MseAudioSplice {
     std::int64_t presentation_time_us = 0;
+    std::int64_t timestamp_offset_us = 0;
 };
 
 struct MseVideoSplice {
     std::int64_t presentation_time_us = 0;
+    std::int64_t timestamp_offset_us = 0;
 };
 
 struct MseLayerSwitch {
@@ -185,6 +187,8 @@ public:
                      std::int64_t earliest_presentation_time_us);
     void configureAutomaticLayerSwitch(MseAutomaticLayerPair pair);
     void clearAutomaticLayerSwitch();
+    /** Report the real media playhead used to authorize rainfall recovery. */
+    void setPlaybackPosition(std::int64_t presentation_time_us);
     // Reinterpret an explicitly identified HLG video track as UHD SDR.
     void setSdrInHlg(std::uint64_t video_track_id, bool enabled);
     // Experimental 1/13/9 carrier for a controlled GPU HLG-to-SDR transform.

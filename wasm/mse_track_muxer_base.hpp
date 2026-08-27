@@ -52,10 +52,12 @@ public:
         }
         return std::pair{start, end};
     }
-    void set_staged_video_splice(const std::int64_t presentation_time_us) {
+    void set_staged_video_splice(const std::int64_t presentation_time_us,
+                                 const std::int64_t timestamp_offset_us) {
         for (auto& event : staged_video_events_) {
             if (auto* splice = std::get_if<tlvdemux::MseVideoSplice>(&event)) {
                 splice->presentation_time_us = presentation_time_us;
+                splice->timestamp_offset_us = timestamp_offset_us;
             }
         }
     }
@@ -135,14 +137,18 @@ public:
             tlvdemux::MseMediaSegment{"muxed", std::move(data), start_us, end_us});
     }
 
-    void audio_splice(const std::int64_t presentation_time_us) {
+    void audio_splice(const std::int64_t presentation_time_us,
+                      const std::int64_t timestamp_offset_us = 0) {
         if (!enabled_) return;
-        sink_.onMseAudioSplice(tlvdemux::MseAudioSplice{presentation_time_us});
+        sink_.onMseAudioSplice(tlvdemux::MseAudioSplice{
+            presentation_time_us, timestamp_offset_us});
     }
 
-    void video_splice(const std::int64_t presentation_time_us) {
+    void video_splice(const std::int64_t presentation_time_us,
+                      const std::int64_t timestamp_offset_us = 0) {
         if (!enabled_) return;
-        const tlvdemux::MseVideoSplice event{presentation_time_us};
+        const tlvdemux::MseVideoSplice event{
+            presentation_time_us, timestamp_offset_us};
         if (stage_video_) {
             staged_video_events_.push_back(event);
             return;

@@ -102,27 +102,57 @@ cmake --install build --prefix /desired/prefix
 映像・音声が揃っていれば core が切替を開始します。揃っていなければ現在のレイヤー向けに
 `PlaybackDamage` を通知し、明示的な復旧 RAP があれば直ちに `seek`、まだなければ
 `wait-for-recovery` とし、RAP 到着時に `seek` を通知します。損傷を EOF まで保留せず、
-観測していない区間の損傷を推定しません。降雨再生中も通常 tracker は更新され、連続 5 秒の
-decode 可能な基線と整列した RAP/AAC が揃えば通常へ戻ります。降雨レイヤー自身の損傷も
+観測していない区間の損傷を推定しません。降雨再生中も通常 tracker は更新され、caller が報告した
+実際の再生位置に連続 5 秒の decode 可能な基線と整列した RAP/AAC が揃えば通常へ戻ります。
+parser や録画 index の前進は再生時計ではありません。再生位置が timestamp 0 のままなのに数百秒先の
+通常 media を読んだことを理由に降雨 media を置換してはいけません。再生位置が報告されるまでは
+降雨→通常の自動復帰を準備状態のままにし、commit しません。降雨レイヤー自身の損傷も
 同じ規則を逆方向に適用します。
-通常から降雨への緊急切替は、現在付近の実 RAP、連続 DTS、利用可能な AAC を要件としますが、
-5 秒の healthy 基線を待ちません。この基線は、正常に降雨再生している間に通常へ自動復帰する
-判断だけに適用します。
+通常から降雨への緊急切替は起動時も対象です。選択中の通常 layer が decode 可能な MSE 映像入口を
+まだ出力しておらず、降雨 layer に実 RAP、その後の連続映像 DTS、連続 AAC、整列した A/V 境界が
+揃った時点で、core は `health-degradation` 理由で直ちに切り替えます。要求する最早時刻は現在の
+再生入口（録画の fresh 起動では timestamp 0）なので、cache 済み映像履歴は最後に観測した RAP
+ではなく最初の利用可能な降雨 RAP から選びます。通常 layer の後続 damage event も 5 秒の healthy
+基線も待ちません。この基線は、正常に降雨再生している間に通常へ自動復帰する判断だけに適用します。
 
 `onMseLayerSwitchStarted`、`onMseLayerSwitch`、
 `onMseLayerSwitchCancelled` は一回限りの A/V splice staging を表し、独立した復旧状態機械は
-構成しません。SourceBuffer mutation は remove → `changeType` → init segment → media の
+構成しません。SourceBuffer mutation は remove → timestamp offset → `changeType` →
+init segment → media の
 単一 queue 順序で行い、MIME 文字列が同じ場合も layer 切替時は両 track を再設定します。
 MediaElement の `waiting` または後方の buffered range は seek を許可せず、現在再生中の
 layer に対する `PlaybackDamage.action === "seek"` だけが位置変更できます。明示 PID または
 具体的な track 選択は固定 mode のままで、自動 layer 判断を無効にします。
-最初の利用可能な切替先 RAP で両 SourceBuffer を同じ境界に splice し、その境界より後に
+最初の利用可能な切替先 RAP で両 track を同じ境界に論理 splice し、その境界より後に
 append 済みの旧 layer 音声を remove して、新しい AAC を 22 ms 以内の同じ境界へ写像します。
-旧音声の先行 buffer を理由に映像切替を後続 RAP まで延期してはいけません。
+旧音声の先行 buffer を理由に映像切替を後続 RAP まで延期してはいけません。起動切替が通常映像
+SourceBuffer の作成前でも、staging 順は論理映像 splice → 降雨 init → 降雨 media とし、存在しない
+SourceBuffer には remove を行いません。破棄された staging の再試行は MIME が同一でも切替先 init
+を含む完全な順序を再構築します。
 
-`rain.tlv` の検証では、0:48 の layer 切替で観測された `-12909` を確定した失敗として扱います。
-この復旧 path の自動 acceptance は native VideoToolbox MSE probe と全 sample WASM assertion
-だけで行い、browser automation を起動せず、user を最初の runtime tester にしません。
+timestamp 0 から録画を fresh 起動するとき、起動処理と後方 buffered range は
+`MediaElement.currentTime` を代入してはいけません。位置変更を許可するのは user の明示 seek、
+layer 切替が不可能だった後の選択中 layer に対する `PlaybackDamage.action === "seek"`、または既存の
+live 起動 policy だけです。
+demo は位置変更を行わず、その media clock を復帰判断用に core へ報告します。
+
+fresh playback の入口より最初の降雨 RAP が後にある場合、splice は RAP の source PTS を維持しつつ、
+replacement A/V 出力を timestamp 0 へ写像する負の MSE timestamp offset を通知します。demo は同じ
+SourceBuffer mutation queue で replacement init／media より前にこの offset を適用します。入力の
+backpressure は parser の進捗ではなく共通 A/V buffered 区間を使用し、15 秒 ahead で request を止め、
+8 秒未満で再開します。再生入口を覆う共通区間がない間は、進捗なしに読み込める playback input を
+16 MiB に制限し、使い切った場合は録画を EOF まで取得せず `MSE_STARTUP_NO_COMMON_AV` で失敗します。
+
+`rain.tlv` の検証では、最初の自動切替を最初の降雨 RAP（現在約 `821944us`）で要求し、通常 layer
+の init、後続する約 46 秒の通常 damage event、あらゆる seek より先に完了させます。最初の切替先
+source 境界は `821944us` のまま、startup timestamp offset により最初の共通 MSE A/V 区間を
+timestamp 0 へ写像します。最初の init は `1920x1080/L123`、全 sample WASM 実行には
+`PlaybackDamage.seek` がなく、切替 A/V 境界差は AAC 1 frame の 22 ms 以内でなければなりません。
+startup flow-control は 16 MiB の進捗なし budget 内で共通区間へ到達し、通常 prefetch は 15 秒の
+high-water mark で停止して 711 MiB sample を EOF まで取得してはいけません。従来の 0:48 付近の切替と `-12909` は正常な切替点
+ではなく、今回修正する失敗です。この復旧 path の自動 acceptance は native VideoToolbox MSE probe
+と全 sample WASM assertion だけで行い、browser automation を起動せず、user を最初の runtime
+tester にしません。
 
 ## ライブラリの使い方
 
