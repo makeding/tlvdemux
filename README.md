@@ -24,10 +24,13 @@ ctest --test-dir build --output-on-failure
 
 `libaribtlv` owns the protocol and Zlib dependency. By default CMake fetches its
 HTTPS repository at the pinned revision
-`04791ee30e78d138c197e2a070b781c59872f1a7`. Point
+`7662d16536175aea85bfffe093d958279fbd6efa`. Point
 `TLVDEMUX_LIBARIBTLV_SOURCE_DIR` at a local checkout for offline development, or
 set `TLVDEMUX_USE_SYSTEM_LIBARIBTLV=ON` and add an installed package prefix to
 `CMAKE_PREFIX_PATH`. The local source directory takes precedence over both.
+With a source dependency, `BUILD_TESTING=ON` builds tlvdemux's integration tests
+without importing libaribtlv's repository-internal test executables; those run
+in libaribtlv's own CI.
 
 Shared-library builds are enabled by default. Linux produces
 `libtlvdemux.so.0` (with the versioned implementation file), while macOS
