@@ -16,6 +16,10 @@ export function shouldReprobeVideoLayerForSeek(track, explicitPacketId) {
   return explicitPacketId === undefined && (selectionLevel(track) ?? 0) > 0;
 }
 
+export function automaticLayerSwitchEnabled(explicitPacketId) {
+  return explicitPacketId === undefined;
+}
+
 export function sameVideoLayerGroup(left, right) {
   if (!left || !right || left.kind !== 'video' || right.kind !== 'video') return false;
   if (left.contextId !== undefined && right.contextId !== undefined &&

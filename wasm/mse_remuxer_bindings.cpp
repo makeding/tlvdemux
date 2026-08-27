@@ -68,6 +68,17 @@ const char* cancel_reason_name(
     return "end-of-input";
 }
 
+const char* switch_reason_name(
+    const tlvdemux::MseLayerSwitchReason reason) noexcept {
+    switch (reason) {
+    case tlvdemux::MseLayerSwitchReason::Manual: return "manual";
+    case tlvdemux::MseLayerSwitchReason::HealthDegradation:
+        return "health-degradation";
+    case tlvdemux::MseLayerSwitchReason::SourceDamage: return "source-damage";
+    }
+    return "manual";
+}
+
 const char* damage_severity_name(
     const tlvdemux::PlaybackDamageSeverity severity) noexcept {
     switch (severity) {
@@ -142,6 +153,20 @@ public:
         event.set("videoPresentationTimeUs", layer.video_presentation_time_us);
         event.set("audioPresentationTimeUs", layer.audio_presentation_time_us);
         emit("onMseLayerSwitch", event);
+    }
+
+    void onMseLayerSwitchStarted(
+        const tlvdemux::MseLayerSwitchStarted& started) override {
+        if (!has("onMseLayerSwitchStarted")) return;
+        auto event = val::object();
+        event.set("videoTrackId", started.video_track_id);
+        event.set("audioTrackId", started.audio_track_id);
+        event.set("previousVideoTrackId", started.previous_video_track_id);
+        event.set("previousAudioTrackId", started.previous_audio_track_id);
+        event.set("earliestPresentationTimeUs",
+                  started.earliest_presentation_time_us);
+        event.set("reason", std::string(switch_reason_name(started.reason)));
+        emit("onMseLayerSwitchStarted", event);
     }
 
     void onMseLayerSwitchCancelled(
@@ -284,12 +309,13 @@ void WasmMseRemuxer::setOutputEnabled(const bool enabled) {
     impl_->remuxer().setOutputEnabled(enabled);
 }
 
-std::optional<tlvdemux::MseAutomaticLayerSwitchRequest>
+std::optional<tlvdemux::MseAutomaticLayerSwitchAccepted>
 WasmMseRemuxer::push(const aribtlv::AccessUnit& unit) {
     return impl_->remuxer().push(unit);
 }
-void WasmMseRemuxer::observeDamage(const aribtlv::DamageSpan& damage) {
-    impl_->remuxer().observeDamage(damage);
+std::optional<tlvdemux::MseAutomaticLayerSwitchAccepted>
+WasmMseRemuxer::observeDamage(const aribtlv::DamageSpan& damage) {
+    return impl_->remuxer().observeDamage(damage);
 }
 void WasmMseRemuxer::flush() { impl_->remuxer().flush(); }
 std::optional<tlvdemux::MseLayerSwitchCancelled> WasmMseRemuxer::endOfStream() {

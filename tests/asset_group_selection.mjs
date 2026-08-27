@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  automaticLayerSwitchEnabled,
   audioSelectionIdentity,
   audioTrackChoices,
   correspondingAudioTrack,
@@ -49,6 +50,12 @@ assert.equal(shouldReprobeVideoLayerForSeek(videoLow, 0xf301), false,
   'explicit fallback selection was overridden during seek');
 assert.equal(shouldReprobeVideoLayerForSeek(videoHigh, undefined), false,
   'preferred layer seek unnecessarily requested a layer reprobe');
+assert.equal(automaticLayerSwitchEnabled(undefined), true,
+  'empty video PID did not enable automatic layer switching');
+assert.equal(automaticLayerSwitchEnabled(0xf300), false,
+  'explicit preferred PID incorrectly enabled automatic layer switching');
+assert.equal(automaticLayerSwitchEnabled(0xf301), false,
+  'explicit rainfall PID incorrectly enabled automatic layer switching');
 
 const ordinaryTracks = [audioMainHigh, audioSubHigh, audioMainLow, audioSubLow];
 assert.deepEqual(correspondingAudioTrack(

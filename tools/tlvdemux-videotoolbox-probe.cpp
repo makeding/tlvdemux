@@ -47,6 +47,7 @@ public:
           prepend_parameter_sets_on_irap_(options.prepend_parameter_sets_on_irap),
           mse_pipeline_(options.mse_pipeline), timeline_only_(options.timeline_only),
           require_hardware_(options.require_hardware),
+          expect_rainfall_init_(options.expect_rainfall_init),
           mse_remuxer_(*this) {}
 
     ~Probe() override {
@@ -120,14 +121,10 @@ public:
                              unit.codec == aribtlv::Codec::AacLatm)) {
             const auto request = mse_remuxer_.push(unit);
             if (request.has_value()) {
-                std::cerr << "automatic layer request video=" << request->video_track_id
+                std::cerr << "automatic layer switch accepted video="
+                          << request->video_track_id
                           << " audio=" << request->audio_track_id
                           << " earliest=" << request->earliest_presentation_time_us << '\n';
-                if (!mse_remuxer_.switchLayer(
-                        request->video_track_id, request->audio_track_id,
-                        request->earliest_presentation_time_us)) {
-                    fail_pipeline("automatic layer switch request was rejected");
-                }
             }
             return;
         }
@@ -196,6 +193,17 @@ public:
             return;
         }
         if (init.type != "video") return;
+        if (layer_switch_started_ && expect_rainfall_init_) {
+            fallback_video_init_seen_ = true;
+            fallback_video_init_valid_ = init.width == 1920 && init.height == 1080 &&
+                init.mime.find("L123") != std::string::npos;
+            if (!fallback_video_init_valid_) {
+                fail_pipeline("fallback video init is not 1920x1080/L123: " +
+                              init.mime + " " + std::to_string(init.width) + "x" +
+                              std::to_string(init.height));
+                return;
+            }
+        }
         chromium_video_policy_.reset();
         const auto mdhd = find_box_signature(init.data, "mdhd");
         if (!mdhd || mdhd->payload + 16 > mdhd->offset + mdhd->size) {
@@ -288,11 +296,26 @@ public:
     }
 
     void onMseLayerSwitch(const tlvdemux::MseLayerSwitch& layer) override {
+        const auto boundary_difference = static_cast<std::uint64_t>(std::llabs(
+            layer.video_presentation_time_us - layer.audio_presentation_time_us));
+        if (boundary_difference > 22000) {
+            fail_pipeline("layer switch A/V boundary exceeds one AAC frame: " +
+                          std::to_string(boundary_difference));
+            return;
+        }
         layer_switch_completed_ = true;
         std::cerr << "mse layer switch video=" << layer.video_track_id
                   << " audio=" << layer.audio_track_id
                   << " video_pts=" << layer.video_presentation_time_us
                   << " audio_pts=" << layer.audio_presentation_time_us << '\n';
+    }
+
+    void onMseLayerSwitchStarted(
+        const tlvdemux::MseLayerSwitchStarted& started) override {
+        layer_switch_started_ = true;
+        std::cerr << "mse layer switch started video=" << started.video_track_id
+                  << " audio=" << started.audio_track_id
+                  << " earliest=" << started.earliest_presentation_time_us << '\n';
     }
 
     void onMseLayerSwitchCancelled(
@@ -322,6 +345,8 @@ public:
     bool ok() const {
         return pipeline_ok_ && callback_status_.load() == noErr &&
             (!automatic_layer_configured_ || layer_switch_completed_) &&
+            (!expect_rainfall_init_ ||
+             (fallback_video_init_seen_ && fallback_video_init_valid_)) &&
             (timeline_only_ ? access_unit_count_ != 0 : decoded_count_.load() != 0);
     }
     OSStatus callback_status() const { return callback_status_.load(); }
@@ -879,6 +904,7 @@ private:
     bool mse_pipeline_ = false;
     bool timeline_only_ = false;
     bool require_hardware_ = true;
+    bool expect_rainfall_init_ = false;
     bool mse_flushed_ = false;
     bool pipeline_ok_ = true;
     std::uint8_t mse_nal_length_size_ = 4;
@@ -900,7 +926,10 @@ private:
     std::uint64_t largest_audio_timeline_gap_us_ = 0;
     tlvdemux::MseRemuxer mse_remuxer_;
     bool automatic_layer_configured_ = false;
+    bool layer_switch_started_ = false;
     bool layer_switch_completed_ = false;
+    bool fallback_video_init_seen_ = false;
+    bool fallback_video_init_valid_ = false;
     bool done_ = false;
 };
 

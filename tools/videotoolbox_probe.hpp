@@ -18,6 +18,7 @@ struct Options {
     bool mse_pipeline = false;
     bool timeline_only = false;
     bool require_hardware = true;
+    bool expect_rainfall_init = false;
     std::optional<std::uint32_t> service_context_id;
     std::optional<std::uint16_t> video_packet_id;
     std::optional<std::uint16_t> audio_packet_id;

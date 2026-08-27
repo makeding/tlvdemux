@@ -7,6 +7,7 @@ constexpr std::int64_t kAudioHistoryDurationUs = 20000000;
 constexpr std::int64_t kLayerSwitchVideoBufferUs = 400000;
 constexpr std::int64_t kLayerSwitchAudioBufferUs = 2000000;
 constexpr std::int64_t kLayerSwitchMaxAvGapUs = 500000;
+constexpr std::int64_t kLayerSwitchMaxAudioFrameUs = 22000;
 constexpr std::int64_t kLayerSwitchContinuityToleranceUs = 1000;
 
 Bytes u32(const std::uint64_t value) {
@@ -244,6 +245,7 @@ public:
 
 protected:
     virtual std::uint32_t default_duration() const = 0;
+    virtual void on_segment_emitted(const std::vector<Sample>&) {}
 
     void set_track(Mp4Track track, const bool emit = true) {
         if (track_) return;
@@ -333,6 +335,7 @@ protected:
             segment.push_back(std::move(ready_[index]));
         }
         output_.segment(type_, *track_, segment, sequence_++);
+        on_segment_emitted(segment);
         ready_.erase(ready_.begin(), ready_.begin() + static_cast<std::ptrdiff_t>(count));
         ready_duration_ -= emitted_duration;
     }

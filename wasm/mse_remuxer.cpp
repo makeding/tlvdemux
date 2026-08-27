@@ -13,7 +13,10 @@ namespace {
 
 using tlvdemux::detail::mse::VideoAccessUnitHistory;
 using tlvdemux::detail::mse::VideoLayerPair;
+using tlvdemux::detail::mse::VideoLayerObservation;
+using tlvdemux::detail::mse::VideoLayerSwitchReason;
 using tlvdemux::detail::mse::VideoLayerStateMachine;
+using tlvdemux::detail::mse::VideoLayerSwitchRequest;
 using tlvdemux::detail::mse::remux::AacMuxer;
 using tlvdemux::detail::mse::remux::HevcMuxer;
 using tlvdemux::detail::mse::remux::Output;
@@ -31,6 +34,9 @@ public:
 
     std::optional<MseLayerSwitchCancelled> select(
         const aribtlv::TrackKind kind, std::optional<std::uint64_t> id) {
+        if (kind == aribtlv::TrackKind::Video || kind == aribtlv::TrackKind::Audio) {
+            automatic_layers.clearUnrecoveredDamage();
+        }
         std::optional<MseLayerSwitchCancelled> cancelled;
         if (kind == aribtlv::TrackKind::Video || kind == aribtlv::TrackKind::Audio) {
             cancelled = cancel_layer(MseLayerSwitchCancelReason::SelectionChanged);
@@ -55,7 +61,7 @@ public:
             // can be emitted. The returned end is therefore a real buffered
             // boundary, not a guess based on an unflushed pending sample.
             active_audio->flush();
-            resume_at = active_audio->timeline_end();
+            resume_at = active_audio->emitted_timeline_end();
             resume_timescale = active_audio->track_timescale().value_or(0);
         }
         audio_id = id;
@@ -91,16 +97,26 @@ public:
 
     bool switch_layer(const std::uint64_t target_video_id,
                       const std::uint64_t target_audio_id,
-                      const std::int64_t earliest_presentation_time_us) {
+                      const std::int64_t earliest_presentation_time_us,
+                      const MseLayerSwitchReason reason,
+                      const bool user_initiated = false) {
         if (target_video_id == 0 || target_audio_id == 0 ||
             video_id == target_video_id || pending_layer) return false;
+        if (user_initiated) automatic_layers.clearUnrecoveredDamage();
         pending_layer = PendingLayerSwitch{
             target_video_id, target_audio_id,
             video_id.value_or(0), audio_id.value_or(0),
-            earliest_presentation_time_us, std::nullopt};
+            earliest_presentation_time_us, std::nullopt, reason};
         video.stage_next_switch();
-        automatic_layers.switchStarted(target_video_id);
         video_id = target_video_id;
+        sink.onMseLayerSwitchStarted(MseLayerSwitchStarted{
+            target_video_id,
+            target_audio_id,
+            pending_layer->previous_video_track_id,
+            pending_layer->previous_audio_track_id,
+            earliest_presentation_time_us,
+            reason,
+        });
         for (const auto& unit : video_history.take_from(
                  target_video_id, earliest_presentation_time_us)) {
             push_selected_video(unit);
@@ -144,24 +160,11 @@ public:
             video.retry_staged_switch();
             return;
         }
-        std::optional<std::int64_t> output_audio_boundary;
-        if (active_audio != nullptr) {
-            active_audio->flush();
-            const auto active_end = active_audio->timeline_end();
-            const auto active_timescale = active_audio->track_timescale();
-            if (active_end.has_value() && active_timescale.has_value()) {
-                const auto active_end_us = scaled(
-                    *active_end, *active_timescale, 1000000);
-                if (active_end_us > *audio_boundary) {
-                    output_audio_boundary = active_end_us;
-                }
-            }
-        }
         const auto completed = *pending_layer;
         pending_layer.reset();
         output.commit_staged_video();
         const auto boundary = switch_audio(
-            completed.audio_track_id, earliest_audio, output_audio_boundary);
+            completed.audio_track_id, earliest_audio, video_boundary);
         if (!boundary) return;
         output.layer_switch(
             completed.video_track_id, completed.audio_track_id,
@@ -170,24 +173,42 @@ public:
         damage_advisor.selectVideoTrack(completed.video_track_id);
     }
 
-    std::optional<tlvdemux::MseAutomaticLayerSwitchRequest> push(
+    std::optional<tlvdemux::MseAutomaticLayerSwitchAccepted> begin_automatic_switch(
+        const std::optional<VideoLayerSwitchRequest>& request,
+        const MseLayerSwitchReason reason) {
+        if (!request) return std::nullopt;
+        if (!switch_layer(request->video_track_id, request->audio_track_id,
+                          request->earliest_presentation_time_us, reason)) {
+            return std::nullopt;
+        }
+        return tlvdemux::MseAutomaticLayerSwitchAccepted{
+            request->video_track_id,
+            request->audio_track_id,
+            request->earliest_presentation_time_us,
+        };
+    }
+
+    std::optional<tlvdemux::MseAutomaticLayerSwitchAccepted> push(
         const aribtlv::AccessUnit& unit) {
         if ((unit.codec == aribtlv::Codec::Hevc ||
              unit.codec == aribtlv::Codec::AacLatm) &&
             (unit.pts.timescale <= 1 || unit.dts.timescale <= 1)) return std::nullopt;
         const auto automatic = automatic_layers.observe(unit);
+        if (!pending_layer && automatic.playback_damage) {
+            sink.onPlaybackDamage(*automatic.playback_damage);
+        }
         if (unit.codec == aribtlv::Codec::Hevc) {
             if (video_id && unit.track_id == *video_id) {
                 push_selected_video(unit);
             } else {
                 video_history.push(unit);
             }
-            if (!automatic) return std::nullopt;
-            return tlvdemux::MseAutomaticLayerSwitchRequest{
-                automatic->video_track_id,
-                automatic->audio_track_id,
-                automatic->earliest_presentation_time_us,
-            };
+            if (pending_layer) return std::nullopt;
+            return begin_automatic_switch(
+                automatic.switch_request,
+                automatic.switch_reason == VideoLayerSwitchReason::SourceDamage
+                    ? MseLayerSwitchReason::SourceDamage
+                    : MseLayerSwitchReason::HealthDegradation);
         }
         if (unit.codec == aribtlv::Codec::AacLatm) {
             auto [iterator, inserted] = audio.try_emplace(
@@ -203,13 +224,31 @@ public:
             if (pending_layer && unit.track_id == pending_layer->audio_track_id) {
                 complete_layer_switch();
             }
+            if (pending_layer) return std::nullopt;
+            return begin_automatic_switch(
+                automatic.switch_request,
+                automatic.switch_reason == VideoLayerSwitchReason::SourceDamage
+                    ? MseLayerSwitchReason::SourceDamage
+                    : MseLayerSwitchReason::HealthDegradation);
         }
         return std::nullopt;
     }
 
-    void observe_damage(const aribtlv::DamageSpan& damage) {
+    std::optional<tlvdemux::MseAutomaticLayerSwitchAccepted> observe_damage(
+        const aribtlv::DamageSpan& damage) {
         const auto playback_damage = damage_advisor.observe(damage);
-        if (playback_damage) sink.onPlaybackDamage(*playback_damage);
+        if (!playback_damage) return std::nullopt;
+        const auto observation = automatic_layers.observeDamage(*playback_damage);
+        if (!observation.playback_damage && !observation.switch_request) {
+            sink.onPlaybackDamage(*playback_damage);
+            return std::nullopt;
+        }
+        if (!pending_layer && observation.playback_damage) {
+            sink.onPlaybackDamage(*observation.playback_damage);
+        }
+        if (pending_layer) return std::nullopt;
+        return begin_automatic_switch(
+            observation.switch_request, MseLayerSwitchReason::SourceDamage);
     }
 
     void flush() {
@@ -219,6 +258,11 @@ public:
 
     std::optional<MseLayerSwitchCancelled> end_of_stream() {
         flush();
+        // Flushing can turn the final pending video sample into the staged
+        // interval and the final audio sample into the contiguous activation
+        // window needed by complete_layer_switch(). Give that fully prepared
+        // switch one last commit opportunity before treating EOF as failure.
+        complete_layer_switch();
         return cancel_layer(MseLayerSwitchCancelReason::EndOfInput);
     }
 
@@ -250,6 +294,7 @@ public:
         std::uint64_t previous_audio_track_id = 0;
         std::int64_t earliest_presentation_time_us = 0;
         std::optional<std::int64_t> video_boundary_us;
+        MseLayerSwitchReason reason = MseLayerSwitchReason::Manual;
     };
 
     void push_selected_video(const aribtlv::AccessUnit& unit) {
@@ -286,7 +331,6 @@ public:
             pending.previous_audio_track_id,
             reason,
         };
-        automatic_layers.switchCancelled(cancelled.previous_video_track_id);
         sink.onMseLayerSwitchCancelled(cancelled);
         return cancelled;
     }
@@ -324,8 +368,8 @@ std::optional<std::int64_t> tlvdemux::MseRemuxer::switchAudioTrack(
 bool tlvdemux::MseRemuxer::switchLayer(
     const std::uint64_t video_track_id, const std::uint64_t audio_track_id,
     const std::int64_t earliest_presentation_time_us) {
-    return impl_->switch_layer(
-        video_track_id, audio_track_id, earliest_presentation_time_us);
+    return impl_->switch_layer(video_track_id, audio_track_id,
+        earliest_presentation_time_us, MseLayerSwitchReason::Manual, true);
 }
 
 void tlvdemux::MseRemuxer::configureAutomaticLayerSwitch(
@@ -367,10 +411,11 @@ void tlvdemux::MseRemuxer::setOutputEnabled(const bool enabled) {
     }
 }
 
-std::optional<tlvdemux::MseAutomaticLayerSwitchRequest>
+std::optional<tlvdemux::MseAutomaticLayerSwitchAccepted>
 tlvdemux::MseRemuxer::push(const AccessUnit& unit) { return impl_->push(unit); }
-void tlvdemux::MseRemuxer::observeDamage(const aribtlv::DamageSpan& damage) {
-    impl_->observe_damage(damage);
+std::optional<tlvdemux::MseAutomaticLayerSwitchAccepted>
+tlvdemux::MseRemuxer::observeDamage(const aribtlv::DamageSpan& damage) {
+    return impl_->observe_damage(damage);
 }
 void tlvdemux::MseRemuxer::flush() { impl_->flush(); }
 std::optional<tlvdemux::MseLayerSwitchCancelled>

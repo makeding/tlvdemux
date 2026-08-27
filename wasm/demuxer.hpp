@@ -122,6 +122,16 @@ public:
         return true;
     }
 
+    void synchronizeAcceptedLayerSwitch(
+        const tlvdemux::MseAutomaticLayerSwitchAccepted& accepted) {
+        selected_audio_track_ = accepted.audio_track_id;
+        selected_video_track_ = accepted.video_track_id;
+        demuxer_.selectTrack(aribtlv::TrackKind::Video, std::nullopt);
+        if (index_active_ && recording_index_.state() == aribtlv::IndexState::Building) {
+            recording_index_.switchVideoTrack(accepted.video_track_id);
+        }
+    }
+
     void configureAutomaticLayerSwitch(
         const std::uint64_t preferred_video_track_id,
         const std::uint64_t preferred_audio_track_id,
@@ -541,10 +551,7 @@ public:
         if (index_active_) recording_index_.observe(unit);
         if (mse_enabled_) {
             const auto automatic = mse_remuxer_.push(unit);
-            if (automatic) {
-                switchLayer(automatic->video_track_id, automatic->audio_track_id,
-                            automatic->earliest_presentation_time_us);
-            }
+            if (automatic) synchronizeAcceptedLayerSwitch(*automatic);
         }
         const bool valid_playback_timestamp =
             unit.codec == aribtlv::Codec::Ttml ||
@@ -606,7 +613,8 @@ public:
     }
 
     void onDamage(const aribtlv::DamageSpan& damage) override {
-        mse_remuxer_.observeDamage(damage);
+        const auto accepted = mse_remuxer_.observeDamage(damage);
+        if (accepted) synchronizeAcceptedLayerSwitch(*accepted);
         if (!has_callback("onDamage")) return;
         auto event = val::object();
         event.set("trackId", damage.track_id);

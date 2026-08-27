@@ -62,18 +62,18 @@ macOS では、ブラウザーを起動せずに VideoToolbox probe でブラウ
 経路のネイティブ部分を検証できます。この probe は MMTS を実際の
 `MseRemuxer` に入力し、Chromium 互換の coded-frame discontinuity／RAP 規則を
 適用して、`tfdt`／`trun` の連続性と HEVC サンプルフラグを検証し、ハードウェア
-VideoToolbox デコーダーへ渡します。実際の `SourceBuffer` スケジューリングと
-描画は、別途 Chromium ブラウザーでの受け入れ確認が必要です。
+VideoToolbox デコーダーへ渡します。`SourceBuffer` 描画は別の統合境界であり、下記の
+直接降雨復旧 contract はブラウザーの起動・自動化なしで受け入れ確認します。
 
 次のコマンドは、境界サンプルで 4K から降雨対応映像・音声への自動切替を
 検証します。
 
 ```sh
 ./build/tlvdemux-videotoolbox-probe \
-  demo/20260728-101-162500_6fc8390b-bf23-41c3-beb6-6301b012be26-superimpose-sample.mmts \
+  demo/rain.tlv \
   --mse --video-packet-id 0xf300 --audio-packet-id 0xf310 \
   --fallback-video-packet-id 0xf301 --fallback-audio-packet-id 0xf314 \
-  --max-au 30000 --inflight 8
+  --expect-rainfall-init --max-au 30000 --inflight 8
 ```
 
 次の例では、サンプルを 3 倍速で送りながら、決定的なランダムバイト位置からの
@@ -96,11 +96,33 @@ cmake --install build --prefix /desired/prefix
 `tlvdemux::tlvdemux`、有効な場合は `tlvdemux` 実行ファイル、および MIT ライセンスが
 インストールされます。
 
-`MseRemuxer` は `libaribtlv` が通知する入力損傷区間を、選択中の映像トラック向けの
-`PlaybackDamage` に変換します。復旧点のある重大な損傷は、安定した WASM code
-`TLV_SOURCE_DAMAGE` と action `seek` で通知されます。復旧点がまだない場合の action は
-`wait-for-recovery` です。実際の `HTMLMediaElement` の seek は、現在の
-`MediaSource` timeline を所有する player 側が実行します。
+`MseRemuxer` は通常／降雨の A/V レイヤーを、連続 DTS、観測済み RAP、利用可能な AAC、
+および明示的な source-damage 区間から独立に追跡します。自動再生の mode は通常と降雨の
+2 つだけです。現在のレイヤーが損傷したとき、もう一方に同一 timeline 上の decode 可能な
+映像・音声が揃っていれば core が切替を開始します。揃っていなければ現在のレイヤー向けに
+`PlaybackDamage` を通知し、明示的な復旧 RAP があれば直ちに `seek`、まだなければ
+`wait-for-recovery` とし、RAP 到着時に `seek` を通知します。損傷を EOF まで保留せず、
+観測していない区間の損傷を推定しません。降雨再生中も通常 tracker は更新され、連続 5 秒の
+decode 可能な基線と整列した RAP/AAC が揃えば通常へ戻ります。降雨レイヤー自身の損傷も
+同じ規則を逆方向に適用します。
+通常から降雨への緊急切替は、現在付近の実 RAP、連続 DTS、利用可能な AAC を要件としますが、
+5 秒の healthy 基線を待ちません。この基線は、正常に降雨再生している間に通常へ自動復帰する
+判断だけに適用します。
+
+`onMseLayerSwitchStarted`、`onMseLayerSwitch`、
+`onMseLayerSwitchCancelled` は一回限りの A/V splice staging を表し、独立した復旧状態機械は
+構成しません。SourceBuffer mutation は remove → `changeType` → init segment → media の
+単一 queue 順序で行い、MIME 文字列が同じ場合も layer 切替時は両 track を再設定します。
+MediaElement の `waiting` または後方の buffered range は seek を許可せず、現在再生中の
+layer に対する `PlaybackDamage.action === "seek"` だけが位置変更できます。明示 PID または
+具体的な track 選択は固定 mode のままで、自動 layer 判断を無効にします。
+最初の利用可能な切替先 RAP で両 SourceBuffer を同じ境界に splice し、その境界より後に
+append 済みの旧 layer 音声を remove して、新しい AAC を 22 ms 以内の同じ境界へ写像します。
+旧音声の先行 buffer を理由に映像切替を後続 RAP まで延期してはいけません。
+
+`rain.tlv` の検証では、0:48 の layer 切替で観測された `-12909` を確定した失敗として扱います。
+この復旧 path の自動 acceptance は native VideoToolbox MSE probe と全 sample WASM assertion
+だけで行い、browser automation を起動せず、user を最初の runtime tester にしません。
 
 ## ライブラリの使い方
 
@@ -592,6 +614,8 @@ node demo/server.mjs
 
 demo はローカルの MMTS file または HTTP URL を受け取り、duration を probe してから、
 選択された HEVC／AAC track を Media Source Extensions で再生します。WASM が収集した
+新規の再生入口は常に timestamp 0 から開始します。preset の seek＋一時停止比較 button は
+置かず、その後の位置変更はユーザーが明示的に seek した場合だけ行います。
 application resource は、`libaribhtml5` に含まれる同一 origin の Service Worker VFS
 を通じ、sandbox 化された data-broadcast iframe に公開されます。receiver API、
 video-plane 処理、document preparation、内蔵 ROM sound、remote-control の動作も

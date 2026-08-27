@@ -72,6 +72,15 @@ function rememberLayerSelection(record, videoTrackId, audioTrackId) {
   }
 }
 
+function rememberLayerSwitchStarted(record, started) {
+  record.layerSwitch = {...started};
+  rememberLayerSelection(record, started.videoTrackId, started.audioTrackId);
+}
+
+function rememberLayerSwitchFinished(record) {
+  record.layerSwitch = null;
+}
+
 function defaultTrack(tracks, kind, targetLevel, maxAudioChannels) {
   let candidates = tracks.filter(track => track.kind === kind);
   if (kind === 'audio' && maxAudioChannels > 0) {
@@ -188,6 +197,7 @@ function createDemuxer(module, objectId, options) {
       subtitleIdentity: null,
     },
     tracks: new Map(),
+    layerSwitch: null,
   };
   const event = (name, transform = value => value) => value => {
     sendEvent(objectId, name, transform(value));
@@ -200,13 +210,19 @@ function createDemuxer(module, objectId, options) {
     onPlaybackDamage: event('onPlaybackDamage'),
     onMseVideoSplice: event('onMseVideoSplice'),
     onMseAudioSplice: event('onMseAudioSplice'),
+    onMseLayerSwitchStarted(started) {
+      rememberLayerSwitchStarted(record, started);
+      sendEvent(objectId, 'onMseLayerSwitchStarted', started);
+    },
     onMseLayerSwitch(layer) {
       rememberLayerSelection(record, layer.videoTrackId, layer.audioTrackId);
+      rememberLayerSwitchFinished(record);
       sendEvent(objectId, 'onMseLayerSwitch', layer);
     },
     onMseLayerSwitchCancelled(cancelled) {
       rememberLayerSelection(
         record, cancelled.previousVideoTrackId, cancelled.previousAudioTrackId);
+      rememberLayerSwitchFinished(record);
       sendEvent(objectId, 'onMseLayerSwitchCancelled', cancelled);
     },
     onMseInit(init) {

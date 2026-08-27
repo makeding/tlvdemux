@@ -16,8 +16,11 @@ const tracks = new Map();
 let selected = false;
 let automaticConfigured = false;
 let completedLayer = null;
+const completedLayers = [];
 let cancelledLayer = null;
+const startedLayers = [];
 const playbackDamage = [];
+const videoInits = [];
 let lastVideoEndUs = null;
 let lastAudioEndUs = null;
 const segmentRanges = {video: [], audio: []};
@@ -114,14 +117,31 @@ demuxer = new module.TlvDemuxer({
         ? endUs : lastAudioEndUs;
     }
   },
+  onMseInit(init) {
+    if (init.type !== 'video') return;
+    videoInits.push({
+      mime: init.mime,
+      width: init.width,
+      height: init.height,
+      afterSwitchStarted: startedLayers.length > 0,
+    });
+  },
   onMseLayerSwitch(layer) {
-    completedLayer = layer;
+    completedLayers.push(layer);
+    if (completedLayer === null) completedLayer = layer;
+  },
+  onMseLayerSwitchStarted(layer) {
+    startedLayers.push(layer);
   },
   onMseLayerSwitchCancelled(layer) {
     cancelledLayer = layer;
   },
   onPlaybackDamage(damage) {
-    playbackDamage.push(damage);
+    playbackDamage.push({
+      ...damage,
+      layerSwitchStarted: startedLayers.length > 0,
+      layerSwitchCompleted: completedLayer !== null,
+    });
   },
   onError(error) {
     if (!error.recoverable) throw new Error(error.message);
@@ -142,9 +162,16 @@ try {
 
   assert.equal(selected, true, 'initial high-quality A/V pair was not selected');
   assert.equal(automaticConfigured, true, 'automatic layer pair was not configured');
+  assert.ok(startedLayers.length > 0,
+    'automatic rainfall layer switch did not publish a start event');
+  assert.equal(startedLayers[0].previousVideoTrackId, tracks.get(0xf300).trackId);
+  assert.equal(startedLayers[0].videoTrackId, tracks.get(0xf301).trackId);
+  assert.ok(['health-degradation', 'source-damage'].includes(startedLayers[0].reason),
+    `unexpected automatic layer-switch reason ${startedLayers[0].reason}`);
   assert.notEqual(completedLayer, null,
     `full-file layer switch did not complete: ${JSON.stringify({
       automaticConfigured,
+      startedLayers,
       cancelledLayer,
       lastVideoEndUs: lastVideoEndUs?.toString(),
       lastAudioEndUs: lastAudioEndUs?.toString(),
@@ -153,12 +180,17 @@ try {
   const audioBoundaryUs = BigInt(completedLayer.audioPresentationTimeUs);
   const boundaryDifferenceUs = videoBoundaryUs > audioBoundaryUs
     ? videoBoundaryUs - audioBoundaryUs : audioBoundaryUs - videoBoundaryUs;
-  assert.ok(boundaryDifferenceUs <= 500000n,
-    `layer switch A/V boundary differs by ${boundaryDifferenceUs}us`);
-  assert.ok(videoBoundaryUs < 200000000n,
+  assert.ok(boundaryDifferenceUs <= 22000n,
+    `layer switch splice boundaries differ by ${boundaryDifferenceUs}us: ${JSON.stringify(
+      completedLayer, (_, value) => typeof value === 'bigint' ? value.toString() : value)}`);
+  const rainfallInit = videoInits.find(init => init.afterSwitchStarted &&
+    init.width === 1920 && init.height === 1080 && /L123(?:\.|\")/.test(init.mime));
+  assert.ok(rainfallInit,
+    `rainfall switch did not emit its 1920x1080/L123 init: ${JSON.stringify(videoInits)}`);
+  assert.ok(videoBoundaryUs < 100000000n,
     `quality-scored fallback switched too late at ${videoBoundaryUs}us`);
-  assert.ok(videoBoundaryUs > 120000000n,
-    `startup traffic triggered fallback at ${videoBoundaryUs}us`);
+  assert.ok(videoBoundaryUs > 40000000n && videoBoundaryUs < 60000000n,
+    `fallback did not begin at the sample's first damaged interval: ${videoBoundaryUs}us`);
 
   const minimumEndUs = expectedDurationUs - 1000000n;
   assert.ok(lastVideoEndUs !== null && lastVideoEndUs >= minimumEndUs,
@@ -175,26 +207,32 @@ try {
   const switchWindowVideoGapUs = largestGapInWindow(
     segmentRanges.video, videoBoundaryUs, switchWindowEndUs);
   const switchWindowAudioGapUs = largestGapInWindow(
-    segmentRanges.audio, audioBoundaryUs, switchWindowEndUs);
+    segmentRanges.audio, videoBoundaryUs, switchWindowEndUs);
   const switchWindowAudioGap = largestGapDetailInWindow(
-    segmentRanges.audio, audioBoundaryUs, switchWindowEndUs);
+    segmentRanges.audio, videoBoundaryUs, switchWindowEndUs);
+  const switchWindowAudioRanges = segmentRanges.audio.filter(range =>
+    range.endUs >= videoBoundaryUs - 2000000n &&
+    range.startUs <= switchWindowEndUs);
   assert.ok(switchWindowVideoGapUs < 1000000n,
     `automatic fallback left a ${switchWindowVideoGapUs}us video gap near the switch`);
-  assert.ok(switchWindowAudioGapUs < 1000000n,
-    `automatic fallback left a ${switchWindowAudioGapUs}us audio gap near the switch`);
+  const maximumAacFrameUs = 22000n;
+  assert.ok(switchWindowAudioGapUs <= maximumAacFrameUs,
+    `automatic fallback left a ${switchWindowAudioGapUs}us audio gap near the switch: ` +
+    `${switchWindowAudioGap.startUs}-${switchWindowAudioGap.endUs}; ranges=` +
+    JSON.stringify(switchWindowAudioRanges, (_, value) =>
+      typeof value === 'bigint' ? value.toString() : value) +
+    `; boundaries=${videoBoundaryUs}/${audioBoundaryUs}`);
   const duration = demuxer.indexDuration();
   assert.equal(duration?.status, 'complete');
   const durationUs = BigInt(duration.value) * 1000000n / BigInt(duration.timescale);
   assert.ok(durationUs >= minimumEndUs,
     'recording index duration stopped at the retired high-quality layer');
   assert.ok(demuxer.seekPointCount() > 0, 'switched recording index has no RAP entries');
-  const severeDamage = playbackDamage.find(damage =>
+  const competingSeek = playbackDamage.find(damage =>
     damage.severity === 'severe' && damage.action === 'seek' &&
-    damage.recoveryTimeUs !== null &&
-    BigInt(damage.recoveryTimeUs) - BigInt(damage.startTimeUs ?? damage.endTimeUs) >
-      20_000_000n);
-  assert.ok(severeDamage,
-    `large damaged interval did not expose a seek recovery event: ${JSON.stringify(
+    damage.videoTrackId === tracks.get(0xf300).trackId);
+  assert.equal(competingSeek, undefined,
+    `source-damage seek competed with the rainfall switch: ${JSON.stringify(
       playbackDamage, (_, value) => typeof value === 'bigint' ? value.toString() : value)}`);
 
   console.log(JSON.stringify({
@@ -212,7 +250,10 @@ try {
     },
     indexDurationUs: durationUs.toString(),
     seekPointCount: demuxer.seekPointCount(),
-    severeDamage,
+    startedLayers,
+    completedLayers,
+    playbackDamage,
+    videoInits,
   }, (_, value) => typeof value === 'bigint' ? value.toString() : value, 2));
 } finally {
   await input.close();

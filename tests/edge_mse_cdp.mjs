@@ -58,7 +58,7 @@ await new Promise(resolve => setTimeout(resolve, 500));
 await evaluate(`new Promise((resolve, reject) => {
   const deadline = performance.now() + 15000;
   const start = () => {
-    const button = document.getElementById('probeButton');
+    const button = document.getElementById('normalButton');
     if (button && !button.disabled) { button.click(); resolve(true); return; }
     if (performance.now() >= deadline) { reject(new Error('play button stayed disabled')); return; }
     setTimeout(start, 50);

@@ -15,6 +15,7 @@ public:
 
     void activate() {
         clear_resume();
+        contiguous_emitted_end_.reset();
         BaseMuxer::activate();
     }
 
@@ -34,9 +35,8 @@ public:
         first_after_resume_ = false;
     }
 
-    std::optional<std::int64_t> timeline_end() const noexcept {
-        if (!last_enqueued_dts_.has_value() || !track_.has_value()) return std::nullopt;
-        return *last_enqueued_dts_ + static_cast<std::int64_t>(default_duration());
+    std::optional<std::int64_t> emitted_timeline_end() const noexcept {
+        return contiguous_emitted_end_;
     }
 
     std::optional<std::uint32_t> track_timescale() const noexcept {
@@ -60,6 +60,7 @@ public:
             });
         if (first == history_.end()) return std::nullopt;
         clear_resume();
+        contiguous_emitted_end_.reset();
         const auto source_boundary = first->pts;
         const auto boundary_us = output_boundary_us.value_or(
             scaled(source_boundary, track_->timescale, 1000000));
@@ -71,8 +72,7 @@ public:
             auto sample = *iterator;
             sample.dts -= timestamp_shift;
             sample.pts -= timestamp_shift;
-            const auto dts = sample.dts;
-            if (enqueue(std::move(sample))) last_enqueued_dts_ = dts;
+            enqueue(std::move(sample));
         }
         flush();
         return boundary_us;
@@ -218,9 +218,7 @@ public:
         }
         if (!output_enabled) return;
         sample.duration = 0;
-        if (enqueue(std::move(sample))) {
-            last_enqueued_dts_ = timestamp;
-        }
+        enqueue(std::move(sample));
     }
 
 private:
@@ -248,13 +246,32 @@ private:
                       : 21333;
     }
 
+    void on_segment_emitted(const std::vector<Sample>& samples) override {
+        if (samples.empty()) return;
+        const auto start = samples.front().pts;
+        auto end = start + static_cast<std::int64_t>(samples.front().duration);
+        for (const auto& sample : samples) {
+            end = std::max(
+                end, sample.pts + static_cast<std::int64_t>(sample.duration));
+        }
+        if (!contiguous_emitted_end_.has_value()) {
+            contiguous_emitted_end_ = end;
+            return;
+        }
+        // Do not let a still-pending island after packet loss redefine the
+        // handoff boundary. The replacement track must start at the end of
+        // the old audio that a decoder can actually play continuously.
+        if (start <= *contiguous_emitted_end_ + 2) {
+            contiguous_emitted_end_ = std::max(*contiguous_emitted_end_, end);
+        }
+    }
+
     void clear_resume() noexcept {
         resume_at_ticks_.reset();
         resume_timescale_ = 0;
         resume_offset_ticks_.reset();
         resume_origin_ticks_.reset();
         first_after_resume_ = false;
-        last_enqueued_dts_.reset();
         timestamp_correction_ticks_ = 0;
     }
 
@@ -266,7 +283,7 @@ private:
     std::optional<std::int64_t> resume_offset_ticks_;
     std::optional<std::int64_t> resume_origin_ticks_;
     bool first_after_resume_ = false;
-    std::optional<std::int64_t> last_enqueued_dts_;
+    std::optional<std::int64_t> contiguous_emitted_end_;
     std::int64_t timestamp_correction_ticks_ = 0;
     std::optional<std::int64_t> timeline_offset_us_;
     std::deque<Sample> history_;

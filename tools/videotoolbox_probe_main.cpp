@@ -35,6 +35,8 @@ Options parse_options(const int argc, char** argv) {
             options.timeline_only = true;
         } else if (argument == "--allow-software") {
             options.require_hardware = false;
+        } else if (argument == "--expect-rainfall-init") {
+            options.expect_rainfall_init = true;
         } else if (argument == "--service") {
             options.service_context_id = static_cast<std::uint32_t>(
                 std::strtoul(value("--service").c_str(), nullptr, 0));
@@ -93,6 +95,7 @@ Options parse_options(const int argc, char** argv) {
                      "[--timeline-only] [--service ID] [--video-packet-id ID] "
                      "[--audio-packet-id ID] [--fallback-video-packet-id ID] "
                      "[--fallback-audio-packet-id ID] [--allow-software] "
+                     "[--expect-rainfall-init] "
                      "[--random-seeks N] [--seed N] [--target-seconds N]\n";
         std::exit(2);
     }
@@ -106,6 +109,11 @@ Options parse_options(const int argc, char** argv) {
          (!options.mse_pipeline || !options.video_packet_id.has_value() ||
           !options.audio_packet_id.has_value()))) {
         std::cerr << "fallback A/V packet ids require --mse and both preferred packet ids\n";
+        std::exit(2);
+    }
+    if (options.expect_rainfall_init &&
+        !options.fallback_video_packet_id.has_value()) {
+        std::cerr << "--expect-rainfall-init requires fallback A/V packet ids\n";
         std::exit(2);
     }
     if (options.target_seconds.has_value() &&

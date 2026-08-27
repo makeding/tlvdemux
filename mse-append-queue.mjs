@@ -83,9 +83,10 @@ export class MseAppendQueue {
     });
   }
 
-  appendInitialization(data, mime) {
+  appendInitialization(data, mime, forceChangeType = false) {
     this.enqueueAppend({
-      kind: 'append', data, mime, startTimeSeconds: null, endTimeSeconds: null,
+      kind: 'append', data, mime, forceChangeType,
+      startTimeSeconds: null, endTimeSeconds: null,
     });
   }
 
@@ -95,10 +96,13 @@ export class MseAppendQueue {
     if (this.state !== 'running') {
       throw new DOMException(`SourceBuffer queue is ${this.state}`, 'InvalidStateError');
     }
-    this.queue = this.queue.filter(item => item.kind !== 'append' ||
-      (item.mime === null &&
-       (item.startTimeSeconds === null || item.startTimeSeconds < time)));
-    this.queue.push({ kind: 'remove', startTimeSeconds: time });
+    this.queue = this.queue.filter(item => {
+      const keep = item.kind !== 'append' ||
+        (item.mime === null &&
+         (item.startTimeSeconds === null || item.startTimeSeconds < time));
+      return keep;
+    });
+    this.enqueueOperation({ kind: 'remove', startTimeSeconds: time });
     this.recountQueuedBytes();
     this.pump();
   }
@@ -108,9 +112,13 @@ export class MseAppendQueue {
     if (this.state !== 'running') {
       throw new DOMException(`SourceBuffer queue is ${this.state}`, 'InvalidStateError');
     }
-    this.queue.push(item);
+    this.enqueueOperation(item);
     this.queuedBytes += item.data.byteLength;
     this.pump();
+  }
+
+  enqueueOperation(item) {
+    this.queue.push(item);
   }
 
   pump() {
@@ -161,7 +169,7 @@ export class MseAppendQueue {
     const data = item.data;
     this.currentBytes = data.byteLength;
     try {
-      if (item.mime !== null && item.mime !== this.mime) {
+      if (item.mime !== null && (item.forceChangeType || item.mime !== this.mime)) {
         if (typeof this.sourceBuffer.changeType !== 'function') {
           throw new Error('SourceBuffer.changeType is not supported in this browser');
         }

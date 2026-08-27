@@ -5,14 +5,15 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
-#include <optional>
 #include <string>
 
 namespace {
 
+using tlvdemux::PlaybackDamage;
+using tlvdemux::PlaybackDamageSeverity;
+using tlvdemux::PlaybackRecoveryAction;
 using tlvdemux::detail::mse::VideoLayerPair;
 using tlvdemux::detail::mse::VideoLayerStateMachine;
-using tlvdemux::detail::mse::VideoLayerSwitchRequest;
 
 void check(const bool condition, const std::string& message) {
     if (condition) return;
@@ -20,109 +21,165 @@ void check(const bool condition, const std::string& message) {
     std::exit(1);
 }
 
-aribtlv::AccessUnit video_unit(const std::uint64_t track_id,
-                              const std::int64_t timestamp_us,
-                              const bool random_access = false,
-                              const bool discontinuity = false) {
-    aribtlv::AccessUnit unit;
-    unit.track_id = track_id;
-    unit.codec = aribtlv::Codec::Hevc;
-    unit.pts = {timestamp_us, 1000000};
-    unit.dts = unit.pts;
-    unit.random_access = random_access;
-    unit.discontinuity = discontinuity;
-    return unit;
+aribtlv::AccessUnit unit(const std::uint64_t track_id,
+                         const aribtlv::Codec codec,
+                         const std::int64_t timestamp_us,
+                         const bool random_access = false) {
+    aribtlv::AccessUnit result;
+    result.track_id = track_id;
+    result.codec = codec;
+    result.pts = {timestamp_us, 1000000};
+    result.dts = result.pts;
+    result.random_access = random_access;
+    result.input_offset = static_cast<std::uint64_t>(timestamp_us + 100);
+    result.restart_offset = static_cast<std::uint64_t>(timestamp_us + 50);
+    return result;
 }
 
-void test_startup_breaks_do_not_trigger_fallback() {
-    VideoLayerStateMachine machine;
-    machine.configure(VideoLayerPair{1, 11, 2, 22});
-    machine.select(1);
-
-    for (std::int64_t timestamp = 0; timestamp <= 7000000; timestamp += 500000) {
-        const bool startup_break = timestamp > 0 && timestamp <= 1500000;
-        const auto fallback = machine.observe(video_unit(
-            2, timestamp, timestamp % 1000000 == 0, false));
-        const auto preferred = machine.observe(video_unit(
-            1, timestamp, timestamp % 1000000 == 0, startup_break));
-        check(!fallback && !preferred,
-              "startup discontinuities triggered an automatic downgrade");
-    }
+PlaybackDamage damage(const std::uint64_t track_id,
+                      const bool recovered = false) {
+    return PlaybackDamage{
+        track_id,
+        5000000,
+        5500000,
+        recovered ? std::optional<std::int64_t>{8000000} : std::nullopt,
+        100,
+        200,
+        recovered ? 300U : 0U,
+        recovered ? 250U : 0U,
+        PlaybackDamageSeverity::Severe,
+        recovered ? PlaybackRecoveryAction::Seek
+                  : PlaybackRecoveryAction::WaitForRecovery,
+    };
 }
 
-void test_video_fallback_can_preserve_audio_track() {
-    VideoLayerStateMachine machine;
-    machine.configure(VideoLayerPair{1, 11, 2, 11});
-    machine.select(1);
-
-    for (std::int64_t timestamp = 0; timestamp <= 8000000; timestamp += 500000) {
-        machine.observe(video_unit(2, timestamp, timestamp % 1000000 == 0));
-        machine.observe(video_unit(1, timestamp, timestamp % 1000000 == 0));
-    }
-    machine.observe(video_unit(2, 8500000, true));
-    machine.observe(video_unit(1, 8500000, false, true));
-    machine.observe(video_unit(2, 9000000, true));
-    machine.observe(video_unit(1, 9000000, false, true));
-    machine.observe(video_unit(2, 9400000, true));
-    const auto fallback = machine.observe(video_unit(1, 9500000, false, true));
-    check(fallback.has_value(), "video-only fallback was not requested");
-    check(fallback->video_track_id == 2 && fallback->audio_track_id == 11,
-          "video-only fallback did not preserve the selected audio track");
-}
-
-void test_degraded_preferred_layer_falls_back_and_recovers() {
-    VideoLayerStateMachine machine;
-    machine.configure(VideoLayerPair{1, 11, 2, 22});
-    machine.select(1);
-
-    for (std::int64_t timestamp = 0; timestamp <= 8000000; timestamp += 500000) {
-        check(!machine.observe(video_unit(2, timestamp, timestamp % 1000000 == 0)),
-              "healthy fallback unexpectedly requested a switch");
-        check(!machine.observe(video_unit(1, timestamp, timestamp % 1000000 == 0)),
-              "healthy preferred layer unexpectedly requested a switch");
-    }
-
-    check(!machine.observe(video_unit(2, 8500000)),
-          "healthy fallback requested a switch");
-    check(!machine.observe(video_unit(1, 8500000, false, true)),
-          "one decode break triggered fallback");
-    check(!machine.observe(video_unit(2, 9000000, true)),
-          "healthy fallback requested a switch");
-    check(!machine.observe(video_unit(1, 9000000, false, true)),
-          "two decode breaks triggered fallback");
-    check(!machine.observe(video_unit(2, 9400000, true)),
-          "candidate observation triggered fallback before the threshold");
-    const auto fallback = machine.observe(video_unit(1, 9500000, false, true));
-    check(fallback.has_value(), "three nearby decode breaks did not trigger fallback");
-    check(fallback->video_track_id == 2 && fallback->audio_track_id == 22,
-          "fallback selected the wrong A/V pair");
-    check(fallback->earliest_presentation_time_us == 6500000,
-          "fallback did not request the configured preroll window");
-    machine.switchCompleted(2);
-
-    std::optional<VideoLayerSwitchRequest> recovery;
-    for (std::int64_t timestamp = 10000000; timestamp <= 15000000;
-         timestamp += 500000) {
-        const auto preferred = machine.observe(video_unit(
-            1, timestamp, timestamp % 1000000 == 0));
-        if (preferred) recovery = preferred;
-        const auto selected = machine.observe(video_unit(
-            2, timestamp, timestamp % 1000000 == 0));
-        if (selected) recovery = selected;
-        if (timestamp < 14500000) {
-            check(!recovery, "preferred layer recovered before five clean seconds");
+void warm(VideoLayerStateMachine& machine, const bool preferred,
+          const bool fallback, const std::int64_t from = 0,
+          const std::int64_t through = 5000000) {
+    for (std::int64_t timestamp = from; timestamp <= through; timestamp += 500000) {
+        const bool rap = timestamp % 1000000 == 0;
+        if (preferred) {
+            machine.observe(unit(11, aribtlv::Codec::AacLatm, timestamp));
+            machine.observe(unit(1, aribtlv::Codec::Hevc, timestamp, rap));
+        }
+        if (fallback) {
+            machine.observe(unit(22, aribtlv::Codec::AacLatm, timestamp));
+            machine.observe(unit(2, aribtlv::Codec::Hevc, timestamp, rap));
         }
     }
-    check(recovery.has_value(), "preferred layer did not recover after five clean seconds");
-    check(recovery->video_track_id == 1 && recovery->audio_track_id == 11,
-          "recovery selected the wrong A/V pair");
+}
+
+void test_preferred_damage_switches_without_seek_when_fallback_is_ready() {
+    VideoLayerStateMachine machine;
+    machine.configure(VideoLayerPair{1, 11, 2, 22});
+    machine.select(1);
+    // This is a decodable current-timeline entry, not a five-second health
+    // baseline: emergency fallback must not wait for the recovery threshold.
+    for (const auto timestamp : {5000000LL, 5500000LL}) {
+        machine.observe(unit(11, aribtlv::Codec::AacLatm, timestamp));
+        machine.observe(unit(1, aribtlv::Codec::Hevc, timestamp,
+                             timestamp == 5000000));
+        machine.observe(unit(22, aribtlv::Codec::AacLatm, timestamp));
+        machine.observe(unit(2, aribtlv::Codec::Hevc, timestamp,
+                             timestamp == 5000000));
+    }
+
+    const auto observation = machine.observeDamage(damage(1, true));
+    check(observation.switch_request.has_value() &&
+              observation.switch_request->video_track_id == 2 &&
+              observation.switch_request->audio_track_id == 22,
+          "healthy rainfall A/V did not accept preferred-layer damage");
+    check(!observation.playback_damage.has_value(),
+          "same-timeline rainfall switch leaked a competing seek");
+}
+
+void test_unavailable_fallback_waits_then_seeks_to_preferred_recovery_rap() {
+    VideoLayerStateMachine machine;
+    machine.configure(VideoLayerPair{1, 11, 2, 22});
+    machine.select(1);
+    warm(machine, true, false);
+
+    const auto waiting = machine.observeDamage(damage(1));
+    check(!waiting.switch_request.has_value() && waiting.playback_damage.has_value() &&
+              waiting.playback_damage->action == PlaybackRecoveryAction::WaitForRecovery,
+          "missing rainfall A/V did not publish wait-for-recovery");
+
+    const auto recovery = machine.observe(unit(1, aribtlv::Codec::Hevc, 6000000, true));
+    check(recovery.playback_damage.has_value() &&
+              recovery.playback_damage->action == PlaybackRecoveryAction::Seek &&
+              recovery.playback_damage->recovery_time_us ==
+                  std::optional<std::int64_t>{6000000} &&
+              recovery.playback_damage->recovery_input_offset == 6000100 &&
+              recovery.playback_damage->recovery_restart_offset == 6000050,
+          "preferred tracker did not seek at its first real recovery RAP");
+}
+
+void test_rainfall_mode_keeps_warming_preferred_and_returns_after_five_seconds() {
+    VideoLayerStateMachine machine;
+    machine.configure(VideoLayerPair{1, 11, 2, 22});
+    machine.select(1);
+    warm(machine, true, true);
+    const auto fallback = machine.observeDamage(damage(1));
+    check(fallback.switch_request.has_value(), "test could not enter rainfall mode");
+    machine.switchCompleted(2);
+
+    bool switched_back = false;
+    for (std::int64_t timestamp = 6000000; timestamp <= 11000000;
+         timestamp += 500000) {
+        machine.observe(unit(11, aribtlv::Codec::AacLatm, timestamp));
+        const auto preferred = machine.observe(unit(
+            1, aribtlv::Codec::Hevc, timestamp, timestamp % 1000000 == 0));
+        machine.observe(unit(22, aribtlv::Codec::AacLatm, timestamp));
+        const auto rainfall = machine.observe(unit(
+            2, aribtlv::Codec::Hevc, timestamp, timestamp % 1000000 == 0));
+        const auto request = preferred.switch_request
+            ? preferred.switch_request : rainfall.switch_request;
+        if (request) {
+            check(timestamp >= 11000000,
+                  "preferred layer returned before five continuous seconds");
+            check(request->video_track_id == 1 && request->audio_track_id == 11,
+                  "rainfall recovery selected the wrong A/V pair");
+            switched_back = true;
+            break;
+        }
+    }
+    check(switched_back, "rainfall mode did not keep warming the preferred tracker");
+}
+
+void test_rainfall_damage_uses_preferred_or_its_own_real_rap() {
+    VideoLayerStateMachine machine;
+    machine.configure(VideoLayerPair{1, 11, 2, 22});
+    machine.select(1);
+    warm(machine, true, true);
+    machine.switchCompleted(2);
+
+    const auto preferred = machine.observeDamage(damage(2));
+    check(preferred.switch_request.has_value() &&
+              preferred.switch_request->video_track_id == 1,
+          "rainfall damage did not return directly to healthy preferred A/V");
+
+    VideoLayerStateMachine isolated;
+    isolated.configure(VideoLayerPair{1, 11, 2, 22});
+    isolated.select(2);
+    warm(isolated, false, true);
+    const auto waiting = isolated.observeDamage(damage(2));
+    check(!waiting.switch_request && waiting.playback_damage &&
+              waiting.playback_damage->action == PlaybackRecoveryAction::WaitForRecovery,
+          "unavailable preferred A/V invented a rainfall recovery target");
+    const auto recovery = isolated.observe(
+        unit(2, aribtlv::Codec::Hevc, 6500000, true));
+    check(recovery.playback_damage &&
+              recovery.playback_damage->recovery_time_us ==
+                  std::optional<std::int64_t>{6500000},
+          "rainfall tracker did not publish its own real recovery RAP");
 }
 
 } // namespace
 
 int main() {
-    test_startup_breaks_do_not_trigger_fallback();
-    test_video_fallback_can_preserve_audio_track();
-    test_degraded_preferred_layer_falls_back_and_recovers();
+    test_preferred_damage_switches_without_seek_when_fallback_is_ready();
+    test_unavailable_fallback_waits_then_seeks_to_preferred_recovery_rap();
+    test_rainfall_mode_keeps_warming_preferred_and_returns_after_five_seconds();
+    test_rainfall_damage_uses_preferred_or_its_own_real_rap();
     std::cout << "video layer state machine tests passed\n";
 }

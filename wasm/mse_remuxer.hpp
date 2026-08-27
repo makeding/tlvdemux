@@ -36,9 +36,10 @@ public:
     void setVideoSignalling(std::uint64_t video_track_id,
                             tlvdemux::MseVideoSignalling signalling);
     void setOutputEnabled(bool enabled);
-    std::optional<tlvdemux::MseAutomaticLayerSwitchRequest> push(
+    std::optional<tlvdemux::MseAutomaticLayerSwitchAccepted> push(
         const aribtlv::AccessUnit& unit);
-    void observeDamage(const aribtlv::DamageSpan& damage);
+    std::optional<tlvdemux::MseAutomaticLayerSwitchAccepted> observeDamage(
+        const aribtlv::DamageSpan& damage);
     void flush();
     std::optional<tlvdemux::MseLayerSwitchCancelled> endOfStream();
     std::optional<tlvdemux::MseLayerSwitchCancelled> reset();

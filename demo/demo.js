@@ -1,6 +1,7 @@
 import { DataBroadcastController } from './data-broadcast.js?v=webkit-canvas-plane-v4';
 import { HlgSdrRenderer } from '../hlg-sdr-renderer.mjs?v=cpp-color-lut-v1';
 import {
+  automaticLayerSwitchEnabled,
   audioTrackChoices,
   correspondingAudioTrack,
   preferredSeekVideoRap,
@@ -45,17 +46,13 @@ const LAYER_HEALTH_CRITICAL_LAG_US = 500000n;
 const DEFAULT_PLAYBACK_RATE = 2;
 const LIVE_PLAYBACK_RATE = 1;
 const SHORT_RECORDING_THRESHOLD_SECONDS = 60;
-const DEFAULT_DEMO_SEEK_SECONDS = 3 * 60 + 19;
-const DEFAULT_DEMO_PAUSE_SECONDS = 3 * 60 + 20;
-const HIGHLIGHT_DEMO_SEEK_SECONDS = 5 * 60 + 50;
-const HIGHLIGHT_DEMO_PAUSE_SECONDS = 5 * 60 + 51;
 const URL_STORAGE_KEY = 'tlvdemux.demo.httpUrl';
 const AUDIO_STORAGE_KEY = 'tlvdemux.demo.audioPacketId';
 const SUBTITLE_STORAGE_KEY = 'tlvdemux.demo.subtitlePacketId';
 const EXPOSE_DEBUG_QUEUES = new URLSearchParams(location.search).has('tlvdemuxDebug');
 const elements = Object.fromEntries([
   'wasmStatus', 'fileInput', 'urlInput', 'initialRange', 'maxRange',
-  'videoPacketId', 'normalButton', 'probeButton', 'highlightButton', 'cancelButton', 'clearButton',
+  'videoPacketId', 'normalButton', 'cancelButton', 'clearButton',
   'probeState', 'duration', 'videoColor', 'sourceSize', 'transferred', 'log',
   'video', 'mediaInfo', 'liveMode', 'videoTrack', 'audioTrack', 'subtitleTrack', 'subtitleOverlay',
   'toneMappingMode', 'hlgSdrCanvas', 'hlgSdrWebGpuCanvas',
@@ -108,6 +105,7 @@ let seekTimer = null;
 let internalSeekTarget = null;
 let currentLiveMode = false;
 let activeVideoSwitch = null;
+let activeVideoSelectionMode = null;
 let activeAudioSwitch = null;
 let activeSubtitleSwitch = null;
 let activeSubtitleRenderer = null;
@@ -117,6 +115,7 @@ let selectedAudioPacketId = null;
 let selectedAudioGroupId = null;
 let preferredAudioPacketId = null;
 let selectedVideoPacketId = null;
+let videoSelectionMode = 'auto';
 let knownVideoTracks = new Map();
 let currentVideoPresentationHint = null;
 let currentVideoProperties = null;
@@ -184,7 +183,8 @@ function renderVideoTracks() {
     option.textContent = videoTrackLabel(track);
     elements.videoTrack.append(option);
   }
-  elements.videoTrack.value = selectedVideoPacketId !== null &&
+  elements.videoTrack.value = videoSelectionMode === 'fixed' &&
+    selectedVideoPacketId !== null &&
     knownVideoTracks.has(selectedVideoPacketId) ? String(selectedVideoPacketId) : '';
   elements.videoTrack.disabled = knownVideoTracks.size < 2;
 }
@@ -400,12 +400,6 @@ function formatDuration(duration) {
   return `${clock} (${seconds.toFixed(6)}s)`;
 }
 
-function formatClockSeconds(seconds) {
-  const whole = Math.max(0, Math.floor(seconds));
-  const minutes = Math.floor(whole / 60);
-  return `${String(minutes).padStart(2, '0')}:${String(whole % 60).padStart(2, '0')}`;
-}
-
 function toSafeNumber(value, label) {
   if (value < 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new Error(`${label} がブラウザーの安全な整数範囲を超えています`);
@@ -523,8 +517,6 @@ function once(target, event) {
 
 function setRunning(running) {
   elements.normalButton.disabled = running || !wasmModule;
-  elements.probeButton.disabled = running || !wasmModule;
-  elements.highlightButton.disabled = running || !wasmModule;
   elements.cancelButton.disabled = !running;
   elements.fileInput.disabled = running;
   elements.urlInput.disabled = running;
@@ -576,6 +568,7 @@ function releaseMedia() {
   activeMediaSource = null;
   activeAudioSwitch = null;
   activeVideoSwitch = null;
+  activeVideoSelectionMode = null;
   activeSubtitleSwitch = null;
   activeGapRecovery = null;
   activeSubtitleRenderer?.destroy();
@@ -603,6 +596,7 @@ function stopPlayback(quiet = false, preserveMedia = false) {
   activeDemuxer = null;
   activeAudioSwitch = null;
   activeVideoSwitch = null;
+  activeVideoSelectionMode = null;
   activeSubtitleSwitch = null;
   activeGapRecovery = null;
   activeSubtitleRenderer?.reset();
@@ -724,8 +718,7 @@ async function playbackBackpressure(generation) {
 }
 
 async function playSource(source, probeResult, generation, startTimeSeconds = 0,
-                          liveMode = false, reuseMedia = false,
-                          pauseAtSeconds = null) {
+                          liveMode = false, reuseMedia = false) {
   const recordingDurationSeconds = liveMode ? Infinity : durationSeconds(probeResult.duration);
   const playbackRate = liveMode || recordingDurationSeconds < SHORT_RECORDING_THRESHOLD_SECONDS
     ? LIVE_PLAYBACK_RATE
@@ -820,6 +813,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   let selectedVideo = null;
   let selectedVideoTrack = null;
   let pendingLayerSwitch = null;
+  let switchInFlight = false;
   let automaticLayerPairSignature = null;
   let selectedAudio = null;
   let selectedSubtitle = null;
@@ -845,10 +839,9 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
 
   const gapRecovery = createMseGapRecovery({
     media: elements.video,
-    queues,
-    liveMode,
-    liveStartupBufferSeconds: LIVE_STARTUP_BUFFER_SECONDS,
     isActive: () => generation === runGeneration,
+    isCurrentLayer: damage => damage.videoTrackId === selectedVideo,
+    switchInFlight: () => switchInFlight,
     seek: (target, previousTime) => {
       internalSeekTarget = target;
       elements.video.currentTime = target;
@@ -875,28 +868,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     }
     played = true;
     monitorPlaybackQuality(generation);
-    if (pauseAtSeconds !== null) {
-      const startLabel = formatClockSeconds(startTimeSeconds);
-      const pauseLabel = formatClockSeconds(pauseAtSeconds);
-      const pauseAtPresentedFrame = (_now, metadata) => {
-        if (generation !== runGeneration) return;
-        if (metadata.mediaTime < pauseAtSeconds) {
-          elements.video.requestVideoFrameCallback(pauseAtPresentedFrame);
-          return;
-        }
-        elements.video.pause();
-        elements.video.playbackRate = playbackRate;
-        elements.probeState.textContent = `${pauseLabel} 描画完了・一時停止`;
-        appendLog(`${startLabel} から再生し、${pauseLabel} の描画フレームで一時停止しました`);
-      };
-      elements.video.playbackRate = 1;
-      elements.probeState.textContent = `${pauseLabel} まで描画中`;
-      elements.video.requestVideoFrameCallback(pauseAtPresentedFrame);
-      elements.video.play().catch(() => {
-        appendLog('自動再生がブロックされました。再生ボタンを押してください');
-      });
-      return;
-    }
     elements.probeState.textContent = liveMode ? 'Live 再生中' : '再生中';
     if (liveMode) appendLog(`Live 共通バッファ ${commonAhead.toFixed(1)}s で再生開始 (1×)`);
     elements.video.play().catch(() => {
@@ -905,7 +876,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   };
   const onMseUpdateEnd = () => {
     maybeStartPlayback();
-    gapRecovery.update();
   };
   for (const queue of activeQueues) queue.onUpdateEnd = onMseUpdateEnd;
 
@@ -970,7 +940,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
           }
           // Keep the reconfiguration in the same SourceBuffer mutation queue:
           // old media -> changeType (when needed) -> new init -> new media.
-          queue.appendInitialization(init.data, init.mime);
+          queue.appendInitialization(init.data, init.mime, pendingLayerSwitch !== null);
           if (type === 'video') {
             elements.mediaInfo.textContent = elements.mediaInfo.textContent.replace(
               / · video [^·]+/, ` · video ${init.width}x${init.height}`);
@@ -1019,8 +989,9 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         ? pending.video : tracks.get(layer.videoTrackId);
       const audio = pending?.audio.trackId === layer.audioTrackId
         ? pending.audio : tracks.get(layer.audioTrackId);
-      if (!video || !audio) return;
       pendingLayerSwitch = null;
+      switchInFlight = false;
+      if (!video || !audio) return;
       selectedVideo = video.trackId;
       selectedVideoTrack = video;
       selectedVideoPacketId = video.packetId;
@@ -1035,12 +1006,20 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         `(映像=${(Number(layer.videoPresentationTimeUs) / 1000000).toFixed(6)}s, ` +
         `音声=${(Number(layer.audioPresentationTimeUs) / 1000000).toFixed(6)}s, ` +
         `packet_id=0x${audio.packetId.toString(16)})`);
+      if (pending?.reason === 'source-damage' ||
+          pending?.reason === 'health-degradation') {
+        elements.playbackNotice.textContent = selectionLevel(video) > 0
+          ? '通常映像の受信状態が悪いため、降雨対応映像で再生しています。通常映像が安定すると自動的に戻ります。'
+          : '通常映像が安定したため、自動的に復帰しました。';
+        elements.playbackNotice.hidden = false;
+      }
     } catch (error) { callbackError = error; }
   };
   const onMseLayerSwitchCancelled = cancelled => {
     try {
       const pending = pendingLayerSwitch;
       pendingLayerSwitch = null;
+      switchInFlight = false;
       renderVideoTracks();
       renderAudioTracks();
       const reason = {
@@ -1052,6 +1031,30 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       const target = pending?.video ?? tracks.get(cancelled.videoTrackId);
       appendLog(`${pending ? '' : '自動 · '}${target ? videoTrackLabel(target) : '映像'} ` +
         `への切替を中止: ${reason}`);
+    } catch (error) { callbackError = error; }
+  };
+  const onMseLayerSwitchStarted = started => {
+    try {
+      switchInFlight = true;
+      const video = tracks.get(started.videoTrackId);
+      const audio = tracks.get(started.audioTrackId);
+      if (!video || !audio) return;
+      pendingLayerSwitch = {
+        video,
+        audio,
+        groupIdentification: audio.assetGroups?.find(group =>
+          group.selectionLevel === selectionLevel(video))?.groupIdentification ?? null,
+        reason: started.reason,
+      };
+      const automatic = started.reason !== 'manual';
+      appendLog(`${automatic ? '自動 · ' : ''}${videoTrackLabel(video)} への切替開始 ` +
+        `(理由=${started.reason}, 最早=${(Number(started.earliestPresentationTimeUs) /
+          1000000).toFixed(6)}s)`);
+      if (started.reason === 'source-damage') {
+        elements.playbackNotice.textContent =
+          '通常映像の受信データが破損しているため、降雨対応映像へ切り替えています。通常映像が安定すると自動的に戻ります。 [TLV_SOURCE_DAMAGE]';
+        elements.playbackNotice.hidden = false;
+      }
     } catch (error) { callbackError = error; }
   };
   const onPlaybackDamage = damage => {
@@ -1085,10 +1088,12 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   };
   const wantedVideoPacketId = parsePacketId();
   const initialVideoPacketId = wantedVideoPacketId;
+  videoSelectionMode = automaticLayerSwitchEnabled(wantedVideoPacketId)
+    ? 'auto' : 'fixed';
 
   const configureAutomaticLayerPair = () => {
     if (!demuxer) return;
-    if (wantedVideoPacketId !== undefined) {
+    if (videoSelectionMode === 'fixed') {
       if (automaticLayerPairSignature !== 'disabled') {
         automaticLayerPairSignature = 'disabled';
         void demuxer.clearAutomaticLayerSwitch();
@@ -1208,6 +1213,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     onMseSegment,
     onMseAudioSplice,
     onMseVideoSplice,
+    onMseLayerSwitchStarted,
     onMseLayerSwitch,
     onMseLayerSwitchCancelled,
     onPlaybackDamage,
@@ -1468,6 +1474,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       video: track,
       audio: corresponding.track,
       groupIdentification: corresponding.groupIdentification,
+      reason: 'manual',
     };
     const accepted = await demuxer.switchLayer(
       track.trackId, corresponding.track.trackId, earliest,
@@ -1477,6 +1484,31 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       throw new Error('映像レイヤー切替を開始できませんでした');
     }
     appendLog(`${videoTrackLabel(track)} を次の RAP で切り替えます`);
+  };
+  activeVideoSelectionMode = async packetId => {
+    if (packetId === null) {
+      elements.videoPacketId.value = '';
+      videoSelectionMode = 'auto';
+      automaticLayerPairSignature = null;
+      configureAutomaticLayerPair();
+      renderVideoTracks();
+      appendLog('映像レイヤーを自動選択に設定しました');
+      return;
+    }
+    elements.videoPacketId.value = String(packetId);
+    videoSelectionMode = 'fixed';
+    automaticLayerPairSignature = 'disabled';
+    await demuxer.clearAutomaticLayerSwitch();
+    if (pendingLayerSwitch && selectedVideo !== null) {
+      await demuxer.selectTrack('video', selectedVideo);
+    }
+    const target = knownVideoTracks.get(packetId);
+    if (target?.trackId === selectedVideo) {
+      renderVideoTracks();
+      appendLog(`${videoTrackLabel(target)} を固定選択に設定しました`);
+      return;
+    }
+    await activeVideoSwitch(packetId);
   };
   activeAudioSwitch = async (packetId, groupIdentification = null, earliestUs = null) => {
     let track = [...tracks.values()].find(
@@ -1687,6 +1719,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   activeDemuxer = null;
   activeAudioSwitch = null;
   activeVideoSwitch = null;
+  activeVideoSelectionMode = null;
   activeSubtitleSwitch = null;
   if (generation !== runGeneration) return;
   const finalized = await finalizeMseMediaSource(mediaSource, activeQueues, {
@@ -1700,7 +1733,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
 }
 
 async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false,
-                           operationLabel = null, pauseAtSeconds = null,
                            initialLoad = false) {
   if (initialLoad) dataBroadcast.beginSession();
   if (!reuseMedia) {
@@ -1711,6 +1743,7 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false,
     currentVideoProperties = null;
     updateVideoColorStatus();
     selectedVideoPacketId = null;
+    videoSelectionMode = elements.videoPacketId.value.trim() === '' ? 'auto' : 'fixed';
     selectedAudioPacketId = null;
     selectedAudioGroupId = null;
     renderAudioTracks();
@@ -1735,7 +1768,6 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false,
   elements.playbackNotice.hidden = true;
   elements.playbackNotice.textContent = '';
   elements.log.textContent = '';
-  if (operationLabel) appendLog(operationLabel);
   try {
     let liveMode = elements.liveMode.checked;
     currentLiveMode = liveMode;
@@ -1772,10 +1804,7 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false,
       elements.duration.textContent = formatDuration(probeResult.duration);
       appendLog(`再生時間 ${durationSeconds(probeResult.duration).toFixed(6)}s、検出読み込み ${formatBytes(probeResult.transferred)}`);
     }
-    await playSource(
-      source, probeResult, generation, startTimeSeconds, liveMode, reuseMedia,
-      pauseAtSeconds,
-    );
+    await playSource(source, probeResult, generation, startTimeSeconds, liveMode, reuseMedia);
   } catch (error) {
     if (generation !== runGeneration || error.name === 'AbortError') return;
     elements.probeState.textContent = '失敗';
@@ -1794,21 +1823,7 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false,
   }
 }
 
-const loadComparisonFrame = () => loadAndPlay(
-  DEFAULT_DEMO_SEEK_SECONDS, false,
-  '03:19 から比較フレーム 03:20 まで描画します',
-  DEFAULT_DEMO_PAUSE_SECONDS, true,
-);
-
-const loadHighlightFrame = () => loadAndPlay(
-  HIGHLIGHT_DEMO_SEEK_SECONDS, false,
-  '05:50 から比較フレーム 05:51 まで描画します',
-  HIGHLIGHT_DEMO_PAUSE_SECONDS, true,
-);
-
-elements.normalButton.addEventListener('click', () => loadAndPlay(0, false, null, null, true));
-elements.probeButton.addEventListener('click', loadComparisonFrame);
-elements.highlightButton.addEventListener('click', loadHighlightFrame);
+elements.normalButton.addEventListener('click', () => loadAndPlay(0, false, true));
 elements.cancelButton.addEventListener('click', stopPlayback);
 elements.clearButton.addEventListener('click', () => { elements.log.textContent = ''; });
 elements.toneMappingMode.addEventListener('change', () => {
@@ -1819,8 +1834,8 @@ elements.toneMappingMode.addEventListener('change', () => {
 });
 elements.videoTrack.addEventListener('change', () => {
   const value = elements.videoTrack.value;
-  if (value === '' || !activeVideoSwitch) return;
-  activeVideoSwitch(Number(value)).catch(error => {
+  if (!activeVideoSelectionMode) return;
+  activeVideoSelectionMode(value === '' ? null : Number(value)).catch(error => {
     appendLog(`映像レイヤー切替エラー ${error.message || error}`);
     console.error(error);
     renderVideoTracks();
@@ -1879,14 +1894,12 @@ elements.video.addEventListener('error', () => {
 elements.video.addEventListener('waiting', () => {
   activeGapRecovery?.notifyWaiting();
 });
-elements.video.addEventListener('play', () => {
-  activeGapRecovery?.update();
-});
 elements.video.addEventListener('seeking', () => {
   if (currentLiveMode || !activeMediaSource) return;
   const target = elements.video.currentTime;
   if (internalSeekTarget !== null && Math.abs(target - internalSeekTarget) < 0.1) return;
   internalSeekTarget = null;
+  activeGapRecovery?.reset();
   const currentVideoTrack = knownVideoTracks.get(selectedVideoPacketId);
   const automaticFallbackActive = shouldReprobeVideoLayerForSeek(
     currentVideoTrack, parsePacketId());
@@ -1918,7 +1931,7 @@ createWorkerTlvDemuxModule().then(module => {
   elements.wasmStatus.textContent = 'WASM Worker 準備完了';
   elements.wasmStatus.className = 'badge';
   setRunning(false);
-  loadComparisonFrame();
+  loadAndPlay(0, false, true);
 }).catch(error => {
   elements.wasmStatus.textContent = 'WASM Worker 読み込み失敗';
   elements.wasmStatus.className = 'badge error';

@@ -107,7 +107,7 @@ public:
         const bool track_switch_boundary = input_track_id_.has_value() &&
             *input_track_id_ != unit.track_id && irap >= 0;
         const bool requested_switch_boundary =
-            stage_next_switch_ && unit.discontinuity && irap >= 0;
+            stage_next_switch_ && irap >= 0;
         bool configuration_boundary = false;
         if (parameter_sets_.count(32) != 0 && parameter_sets_.count(33) != 0 &&
             parameter_sets_.count(34) != 0) {
@@ -174,6 +174,11 @@ public:
             }
             splice_boundary_us_ = scaled(boundary_pts, track_->timescale, 1000000);
             output_.video_splice(*splice_boundary_us_);
+            // A layer-switch attempt is a self-contained decoder transition.
+            // This is required even when the codec string and hvcC happen to
+            // match, and especially after a discarded staging attempt has
+            // already installed the target configuration internally.
+            if (requested_switch_boundary) emit_init();
             started_ = false;
             no_rasl_output_ = false;
             sequence_start_ = true;

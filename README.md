@@ -63,18 +63,19 @@ On macOS, the VideoToolbox probe exercises the native part of the browser-facing
 MSE path without launching a browser. It feeds MMTS through the production
 `MseRemuxer`, applies Chromium-compatible coded-frame discontinuity and random
 access rules, validates `tfdt`/`trun` continuity and HEVC sample flags, and
-submits the result to hardware VideoToolbox decoding. Actual `SourceBuffer`
-scheduling and rendering still require a Chromium browser acceptance run.
+submits the result to hardware VideoToolbox decoding. `SourceBuffer` rendering
+is a separate integration surface; the direct-rainfall recovery contract below
+is accepted without launching or automating a browser.
 
 This command covers automatic 4K-to-rainfall video/audio fallback on the edge
 sample:
 
 ```sh
 ./build/tlvdemux-videotoolbox-probe \
-  demo/20260728-101-162500_6fc8390b-bf23-41c3-beb6-6301b012be26-superimpose-sample.mmts \
+  demo/rain.tlv \
   --mse --video-packet-id 0xf300 --audio-packet-id 0xf310 \
   --fallback-video-packet-id 0xf301 --fallback-audio-packet-id 0xf314 \
-  --max-au 30000 --inflight 8
+  --expect-rainfall-init --max-au 30000 --inflight 8
 ```
 
 The following repeats a run at sixteen deterministic random byte landings
@@ -99,12 +100,40 @@ The install includes the playback/MSE library, public headers, the
 `tlvdemux::tlvdemux` CMake package target, the `tlvdemux` executable when enabled,
 and the MIT license. Its CMake package requires an installed `aribtlv` package.
 
-`MseRemuxer` converts source-damage spans from `libaribtlv` into
-`PlaybackDamage` advice for the selected video track. A severe recovered span
-uses the stable WASM code `TLV_SOURCE_DAMAGE` with action `seek`; an unrecovered
-span uses action `wait-for-recovery`. Players remain responsible for applying
-the seek to their `HTMLMediaElement`, because only the browser owns the active
-`MediaSource` timeline.
+`MseRemuxer` tracks the preferred and rainfall A/V layers independently from
+their continuous DTS, observed RAPs, usable AAC, and explicit source-damage
+spans. Automatic playback has only two modes: preferred or rainfall. If the
+active layer is damaged, the core starts a same-timeline switch when the other
+layer already has aligned decodable video and audio. Otherwise it emits
+`PlaybackDamage` for the active layer: `seek` as soon as that layer has an
+explicit recovery RAP, or `wait-for-recovery` until such a RAP arrives. Damage
+is never retained until EOF and never inferred across an unobserved interval.
+The emergency preferred-to-rainfall decision requires a nearby real RAP,
+continuous DTS, and usable AAC, but does not wait for the five-second health
+baseline. That baseline applies only while rainfall playback is healthy and is
+being considered for an automatic return to the preferred layer.
+While rainfall playback is active, the preferred tracker keeps warming and may
+switch back after five continuous decodable seconds with aligned RAP/AAC.
+Damage on the rainfall layer follows the same rule in the opposite direction.
+
+`onMseLayerSwitchStarted`, `onMseLayerSwitch`, and
+`onMseLayerSwitchCancelled` describe the one-shot A/V splice staging; they do
+not form a separate recovery state machine. SourceBuffer mutations use one
+ordered queue: remove, `changeType`, initialization segment, then media. A layer
+switch reconfigures both tracks even when the MIME string is unchanged. A bare
+MediaElement `waiting` event or a later buffered range never authorizes a seek;
+only `PlaybackDamage.action === "seek"` for the currently playing layer may
+reposition the media element. Explicit PID or concrete track selection remains
+fixed mode and disables automatic layer decisions.
+At the first usable target RAP, both SourceBuffers are spliced at that boundary:
+already-appended old-layer audio after it is removed, and replacement AAC is
+mapped to the same boundary within one 22 ms AAC frame. Old buffered audio must
+never postpone the video switch to a later RAP.
+
+The `rain.tlv` validation contract treats the observed 0:48 layer-switch
+`-12909` failure as authoritative. Automated acceptance for this recovery path
+uses the native VideoToolbox MSE probe plus the full-sample WASM assertions; it
+must not invoke browser automation or ask a user to be the runtime tester.
 
 ## Library usage
 
@@ -614,6 +643,9 @@ provide the required Range behavior.
 
 The demo accepts either a local MMTS file or an HTTP URL, probes its duration,
 then plays the selected HEVC and AAC tracks through Media Source Extensions.
+Every fresh playback entry starts at timestamp zero. The demo intentionally has
+no preset seek-and-pause comparison buttons; later positioning is only an
+explicit user seek.
 Application resources collected by WASM are exposed to a sandboxed data-
 broadcast iframe through the same-origin Service Worker VFS shipped by
 `libaribhtml5`. The receiver API, video-plane handling, document preparation,

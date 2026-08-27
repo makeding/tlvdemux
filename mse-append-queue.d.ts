@@ -46,7 +46,7 @@ export declare class MseAppendQueue {
   );
 
   append(data: Uint8Array, timing?: MseAppendTiming): void;
-  appendInitialization(data: Uint8Array, mime: string): void;
+  appendInitialization(data: Uint8Array, mime: string, forceChangeType?: boolean): void;
   replaceFrom(time: number): void;
   pump(): void;
   bufferedAhead(): number;

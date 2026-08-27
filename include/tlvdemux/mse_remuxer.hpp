@@ -48,6 +48,21 @@ struct MseLayerSwitch {
     std::int64_t audio_presentation_time_us = 0;
 };
 
+enum class MseLayerSwitchReason {
+    Manual,
+    HealthDegradation,
+    SourceDamage,
+};
+
+struct MseLayerSwitchStarted {
+    std::uint64_t video_track_id = 0;
+    std::uint64_t audio_track_id = 0;
+    std::uint64_t previous_video_track_id = 0;
+    std::uint64_t previous_audio_track_id = 0;
+    std::int64_t earliest_presentation_time_us = 0;
+    MseLayerSwitchReason reason = MseLayerSwitchReason::Manual;
+};
+
 struct MseAutomaticLayerPair {
     std::uint64_t preferred_video_track_id = 0;
     std::uint64_t preferred_audio_track_id = 0;
@@ -55,7 +70,7 @@ struct MseAutomaticLayerPair {
     std::uint64_t fallback_audio_track_id = 0;
 };
 
-struct MseAutomaticLayerSwitchRequest {
+struct MseAutomaticLayerSwitchAccepted {
     std::uint64_t video_track_id = 0;
     std::uint64_t audio_track_id = 0;
     std::int64_t earliest_presentation_time_us = 0;
@@ -147,6 +162,7 @@ public:
     virtual void onMseSegment(MseMediaSegment&&) = 0;
     virtual void onMseAudioSplice(const MseAudioSplice&) {}
     virtual void onMseVideoSplice(const MseVideoSplice&) {}
+    virtual void onMseLayerSwitchStarted(const MseLayerSwitchStarted&) {}
     virtual void onMseLayerSwitch(const MseLayerSwitch&) {}
     virtual void onMseLayerSwitchCancelled(const MseLayerSwitchCancelled&) {}
     virtual void onMseVideoStart(const MseVideoStart&) {}
@@ -176,8 +192,10 @@ public:
     void setVideoSignalling(std::uint64_t video_track_id,
                             MseVideoSignalling signalling);
     void setOutputEnabled(bool enabled);
-    std::optional<MseAutomaticLayerSwitchRequest> push(const AccessUnit& unit);
-    void observeDamage(const aribtlv::DamageSpan& damage);
+    // Returns only switches already accepted and started by this remuxer.
+    std::optional<MseAutomaticLayerSwitchAccepted> push(const AccessUnit& unit);
+    std::optional<MseAutomaticLayerSwitchAccepted> observeDamage(
+        const aribtlv::DamageSpan& damage);
     void flush();
     std::optional<MseLayerSwitchCancelled> endOfStream();
     std::optional<MseLayerSwitchCancelled> reset();

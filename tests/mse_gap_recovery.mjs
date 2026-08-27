@@ -23,158 +23,73 @@ const media = currentTime => ({
 
 {
   const sourceQueues = queues(
-    [{start: 0, end: 307.14}, {start: 334.37, end: 375.63}],
-    [{start: 0, end: 306.94}, {start: 334.48, end: 375.22}],
+    [{start: 0, end: 46}, {start: 71, end: 90}],
+    [{start: 0, end: 46}, {start: 71, end: 90}],
   );
   assert.deepEqual(commonBufferedRanges(sourceQueues), [
-    {start: 0, end: 306.94},
-    {start: 334.48, end: 375.22},
+    {start: 0, end: 46},
+    {start: 71, end: 90},
   ]);
-
-  const player = media(306.94);
-  let producerFinished = false;
+  const player = media(46);
   const jumps = [];
   const recovery = createMseGapRecovery({
     media: player,
-    queues: sourceQueues,
-    seek: (target, previous) => {
-      jumps.push({target, previous, producerFinished});
-      player.currentTime = target;
-    },
-  });
-  producerFinished = true;
-  recovery.notifyWaiting();
-  assert.deepEqual(jumps, [{target: 334.48, previous: 306.94, producerFinished: true}],
-    'a waiting event after input finalization did not cross the recorded A/V gap');
-  assert.equal(player.playCount, 1);
-}
-
-{
-  const sourceQueues = queues(
-    [{start: 0, end: 307.14}, {start: 334.37, end: 375.63}],
-    [{start: 0, end: 306.94}, {start: 334.48, end: 375.22}],
-  );
-  const player = media(298.0);
-  const jumps = [];
-  const recovery = createMseGapRecovery({
-    media: player,
-    queues: sourceQueues,
-    seek: (target, previous) => {
-      jumps.push({target, previous});
-      player.currentTime = target;
-    },
-  });
-  recovery.notifyWaiting();
-  assert.deepEqual(jumps, [{target: 334.48, previous: 298.0}],
-    'decoder underflow inside an optimistic buffered range did not skip to later A/V data');
-}
-
-{
-  const sourceQueues = queues(
-    [{start: 0, end: 375.63}],
-    [{start: 0, end: 375.22}],
-  );
-  const player = media(298.0);
-  const jumps = [];
-  const recovery = createMseGapRecovery({
-    media: player,
-    queues: sourceQueues,
-    seek: (target, previous) => {
-      jumps.push({target, previous});
-      player.currentTime = target;
-    },
-  });
-  recovery.reportDamage({
-    action: 'seek',
-    startTimeUs: 298000000,
-    endTimeUs: 334901211,
-    recoveryTimeUs: 334901211,
-  });
-  recovery.notifyWaiting();
-  assert.deepEqual(jumps, [{target: 334.901211, previous: 298.0}],
-    'known source damage did not override Chromium\'s optimistic continuous range');
-}
-
-{
-  const sourceQueues = queues(
-    [{start: 0, end: 375.63}],
-    [{start: 0, end: 375.22}],
-  );
-  const player = media(306.108);
-  const jumps = [];
-  const recovery = createMseGapRecovery({
-    media: player,
-    queues: sourceQueues,
-    seek: (target, previous) => {
-      jumps.push({target, previous});
-      player.currentTime = target;
-    },
-  });
-  recovery.reportDamage({
-    action: 'seek',
-    startTimeUs: 307407077,
-    endTimeUs: 334901211,
-    recoveryTimeUs: 334901211,
-  });
-  recovery.notifyWaiting();
-  assert.deepEqual(jumps, [{target: 334.901211, previous: 306.108}],
-    'source-damage lead tolerance did not cover the last decodable sample boundary');
-}
-
-{
-  let videoRanges = [
-    {start: 0, end: 10},
-    {start: 20, end: 20.2},
-  ];
-  let audioRanges = [
-    {start: 0, end: 10},
-    {start: 20, end: 20.2},
-  ];
-  const sourceQueues = queues(videoRanges, audioRanges);
-  sourceQueues.get('video').bufferedRanges = () => videoRanges;
-  sourceQueues.get('audio').bufferedRanges = () => audioRanges;
-  const player = media(10);
-  const jumps = [];
-  const recovery = createMseGapRecovery({
-    media: player,
-    queues: sourceQueues,
-    liveMode: true,
-    liveStartupBufferSeconds: 0.5,
     seek: target => {
       jumps.push(target);
       player.currentTime = target;
     },
   });
-
   recovery.notifyWaiting();
-  assert.deepEqual(jumps, [], 'Live recovery accepted an undersized future range');
-  videoRanges = [...videoRanges, {start: 21, end: 22}];
-  audioRanges = [...audioRanges, {start: 21.1, end: 21.8}];
-  recovery.update();
-  assert.deepEqual(jumps, [21.1], 'Live recovery did not resume after enough common data arrived');
+  assert.equal(player.currentTime, 46,
+    'waiting inferred that the unobserved interval was damaged');
+  assert.deepEqual(jumps, [],
+    'a later buffered range authorized an unsupported seek');
 }
 
 {
-  const sourceQueues = queues(
-    [{start: 0, end: 10}, {start: 20, end: 30}],
-    [{start: 0, end: 10}, {start: 20, end: 30}],
-  );
-  const player = media(10);
-  player.paused = true;
+  const player = media(46);
   const jumps = [];
+  let currentVideoTrackId = 2;
+  let switchInFlight = false;
   const recovery = createMseGapRecovery({
     media: player,
-    queues: sourceQueues,
-    seek: target => jumps.push(target),
+    isCurrentLayer: damage => damage.videoTrackId === currentVideoTrackId,
+    switchInFlight: () => switchInFlight,
+    seek: (target, previous) => {
+      jumps.push({target, previous});
+      player.currentTime = target;
+    },
   });
-  recovery.notifyWaiting();
-  player.paused = false;
-  player.seeking = true;
-  recovery.update();
-  assert.deepEqual(jumps, [], 'paused or seeking playback crossed a buffered gap');
-  player.seeking = false;
-  recovery.update();
-  assert.deepEqual(jumps, [20]);
+  recovery.reportDamage({
+    videoTrackId: 3,
+    action: 'seek',
+    recoveryTimeUs: 60_000_000,
+  });
+  assert.deepEqual(jumps, [], 'inactive-layer damage repositioned playback');
+
+  switchInFlight = true;
+  recovery.reportDamage({
+    videoTrackId: 2,
+    action: 'seek',
+    recoveryTimeUs: 61_000_000,
+  });
+  assert.deepEqual(jumps, [], 'layer switch and seek ran concurrently');
+
+  switchInFlight = false;
+  currentVideoTrackId = 3;
+  recovery.reportDamage({
+    videoTrackId: 3,
+    action: 'wait-for-recovery',
+    recoveryTimeUs: null,
+  });
+  assert.deepEqual(jumps, [], 'wait-for-recovery invented a target');
+  recovery.reportDamage({
+    videoTrackId: 3,
+    action: 'seek',
+    recoveryTimeUs: 62_000_000,
+  });
+  assert.deepEqual(jumps, [{target: 62, previous: 46}],
+    'current-layer recovery RAP did not authorize the exact seek');
 }
 
 console.log('MSE gap recovery tests passed');

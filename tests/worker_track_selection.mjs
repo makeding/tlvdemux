@@ -13,11 +13,14 @@ const context = {
 context.globalThis = context;
 vm.runInNewContext(`${source}\n` +
   'globalThis.__trackSelectionTest = {' +
-  'rememberSelection, rememberLayerSelection, reconcileMptSelection};', context);
+  'rememberSelection, rememberLayerSelection, rememberLayerSwitchStarted, ' +
+  'rememberLayerSwitchFinished, reconcileMptSelection};', context);
 
 const {
   rememberSelection,
   rememberLayerSelection,
+  rememberLayerSwitchStarted,
+  rememberLayerSwitchFinished,
   reconcileMptSelection,
 } = context.__trackSelectionTest;
 const group = (groupIdentification, selectionLevel) =>
@@ -63,6 +66,20 @@ assert.equal(record.selection.videoTrack, highVideo.trackId);
 assert.equal(record.selection.videoPacketId, highVideo.packetId);
 assert.equal(record.selection.audioTrack, highAudio.trackId);
 assert.equal(record.selection.audioPacketId, highAudio.packetId);
+rememberLayerSelection(record, lowVideo.trackId, lowAudio.trackId);
+
+rememberLayerSwitchStarted(record, {
+  videoTrackId: highVideo.trackId,
+  audioTrackId: highAudio.trackId,
+  previousVideoTrackId: lowVideo.trackId,
+  previousAudioTrackId: lowAudio.trackId,
+  reason: 'source-damage',
+});
+assert.equal(record.layerSwitch.reason, 'source-damage');
+assert.equal(record.selection.videoTrack, highVideo.trackId);
+assert.equal(record.selection.audioTrack, highAudio.trackId);
+rememberLayerSwitchFinished(record);
+assert.equal(record.layerSwitch, null);
 rememberLayerSelection(record, lowVideo.trackId, lowAudio.trackId);
 
 reconcileMptSelection(record, {tracks: [lowVideo, reboundLowAudio]});

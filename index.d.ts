@@ -658,6 +658,15 @@ declare namespace createTlvDemuxModule {
     audioPresentationTimeUs: bigint;
   }
 
+  interface MseLayerSwitchStarted {
+    videoTrackId: bigint;
+    audioTrackId: bigint;
+    previousVideoTrackId: bigint;
+    previousAudioTrackId: bigint;
+    earliestPresentationTimeUs: bigint;
+    reason: "manual" | "health-degradation" | "source-damage";
+  }
+
   interface MseLayerSwitchCancelled {
     videoTrackId: bigint;
     audioTrackId: bigint;
@@ -800,6 +809,7 @@ declare namespace createTlvDemuxModule {
     onMseSegment?: (segment: MseMediaSegment) => void;
     onMseAudioSplice?: (splice: MseAudioSplice) => void;
     onMseVideoSplice?: (splice: MseVideoSplice) => void;
+    onMseLayerSwitchStarted?: (started: MseLayerSwitchStarted) => void;
     onMseLayerSwitch?: (layer: MseLayerSwitch) => void;
     onMseLayerSwitchCancelled?: (cancelled: MseLayerSwitchCancelled) => void;
     onMseVideoStart?: (start: MseVideoStart) => void;
