@@ -189,6 +189,30 @@ EOF、または budget 消費の場合は `MSE_SEEK_NO_COMMON_AV` で読み込�
 `MSE_STARTUP_NO_COMMON_AV` として報告したり、MediaElement の hidden seek や録画全体の scan に
 fallback してはいけません。
 
+自動の 2 映像 track を持つ録画では、public な録画 timeline は通常映像と降雨映像の
+presentation range の和集合です。録画開始はより早い最初の映像 frame、録画終了はその
+track の推定最終 frame duration を含むより遅い最後の映像 frame とし、public duration は
+`end - start` です。media time 0 はこの和集合の開始に対応し、もう一方の映像 layer は同じ
+origin からの本来の offset を維持します。duration 表示、`MediaSource.duration`、fresh startup、
+録画の明示 seek、選択 layer の damage recovery、および MSE timestamp offset はすべてこの
+単一 mapping を使用します。明示的な `videoPacketId` は範囲をその一つの映像 track に制限します。
+
+選択 layer の自動 recovery は録画の明示 seek とは別です。現在 layer の
+`PlaybackDamage.action === "seek"` が具体的な recovery timestamp を持つ場合だけ、同じ
+和集合 origin mapping で media clock を一度だけ変更できます。duration probe の再実行、
+source scan、A/V layer switch との並行実行は禁止します。後方の buffered range、非選択 layer
+の damage、`wait-for-recovery` だけでは seek を許可しません。parser の先読みで見つかった
+damage は許可として保持しますが、playback clock がその damage span に到達する前の正常 media
+を飛ばしてはいけません。その後の `waiting` は保持済みの現在 layer の許可を一度だけ実行でき、
+対応する許可がなければ何もしません。
+
+復旧可能な AAC source-damage marker は、既に queue 済みの audio を捨てたり、選択 audio の
+fragment timeline を再開始したりしてはいけません。欠落 AAC frame は次の 1024-sample 境界へ
+詰め、後続 fragment を連続させます。そうしない場合、映像が buffered 済みでも Chromium は
+`DEMUXER_UNDERFLOW` を報告し、共通 A/V buffer がほぼ 0 のままになります。captured sample
+`20260828-101-021500_8deb3dd2-39e9-471c-a9ba-a6dfe23feeb6.mmts` は、繰り返す audio
+discontinuity marker があっても audio buffering が前進することを検証します。
+
 Worker client は public API に渡されたすべての `Uint8Array` を caller 所有として扱います。
 `TlvDemuxer.push()`、duration probe の `pushRange()`、`setMseEdid()` は SDK 所有の copy だけを
 transfer し、caller の `ArrayBuffer` を detach してはいけません。特に明示 seek は、detached

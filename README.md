@@ -218,6 +218,36 @@ exhaustion fails with `MSE_SEEK_NO_COMMON_AV` and stops reading. It must never b
 reported as `MSE_STARTUP_NO_COMMON_AV`, cause a hidden media-element seek, or
 fall back to scanning the complete recording.
 
+For automatic dual-video recordings, the public recorded timeline is the union
+of the preferred and rainfall video presentation ranges. The recording start is
+the earlier first video frame, the recording end is the later last video frame
+including that track's inferred final-frame duration, and public duration is
+`end - start`. Media time zero maps to that union start; the other video layer
+keeps its original offset from the same origin. Duration display,
+`MediaSource.duration`, fresh startup, explicit recorded seek, selected-layer
+damage recovery, and MSE timestamp offsets must all use this one mapping. An
+explicit `videoPacketId` intentionally restricts the range to that single video
+track instead of forming the automatic pair's union.
+
+Selected-layer automatic recovery remains distinct from an explicit recorded
+seek. Only a current-layer `PlaybackDamage.action === "seek"` with a concrete
+recovery timestamp may move the media clock, exactly once, and it uses the same
+union-origin mapping. It must not restart duration probing, scan the source, or
+run concurrently with an A/V layer switch; a later buffered range, damage on an
+inactive layer, and `wait-for-recovery` never authorize a seek. Damage found by
+parser prefetch is retained as authorization but must not jump over healthy
+media before the playback clock reaches that damage span. A later `waiting`
+event may execute that retained authorization once; without matching retained
+current-layer damage it remains a no-op.
+
+Recoverable AAC source-damage markers must not discard already queued audio or
+restart the selected audio fragment timeline. Missing AAC frames are compacted
+onto the next 1024-sample boundary so subsequent fragments remain contiguous;
+otherwise Chromium reports `DEMUXER_UNDERFLOW` while video is buffered and the
+common A/V buffer remains near zero. The captured
+`20260828-101-021500_8deb3dd2-39e9-471c-a9ba-a6dfe23feeb6.mmts` regression must
+advance audio buffering despite repeated audio discontinuity markers.
+
 The Worker client treats every public `Uint8Array` input as caller-owned.
 `TlvDemuxer.push()`, duration-probe `pushRange()`, and `setMseEdid()` transfer an
 SDK-owned copy and must never detach the caller's `ArrayBuffer`. In particular,

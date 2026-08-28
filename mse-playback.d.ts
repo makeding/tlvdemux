@@ -77,7 +77,7 @@ export declare function createMsePlaybackDamageRecovery(options: {
   switchInFlight?: () => boolean;
   seek: (targetSeconds: number, previousTimeSeconds: number) => void;
 }): {
-  notifyWaiting(): null;
+  notifyWaiting(): {start: number; end: number} | null;
   reset(): void;
   reportDamage(damage: {
     action: string;

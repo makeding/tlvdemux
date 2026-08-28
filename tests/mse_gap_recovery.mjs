@@ -146,6 +146,7 @@ const media = currentTime => ({
   recovery.reportDamage({
     videoTrackId: 3,
     action: 'seek',
+    startTimeUs: 48_000_000,
     recoveryTimeUs: 62_000_000,
   });
   assert.deepEqual(jumps, [{target: 60, previous: 46}],
@@ -153,6 +154,7 @@ const media = currentTime => ({
   recovery.reportDamage({
     videoTrackId: 3,
     action: 'seek',
+    startTimeUs: 48_000_000,
     recoveryTimeUs: 62_000_000,
   });
   assert.equal(jumps.length, 1, 'the same playback damage repositioned media more than once');
@@ -161,10 +163,37 @@ const media = currentTime => ({
   recovery.reportDamage({
     videoTrackId: 3,
     action: 'seek',
+    startTimeUs: 48_000_000,
     recoveryTimeUs: 62_000_000,
   });
   assert.deepEqual(jumps, [{target: 60, previous: 46}, {target: 60, previous: 46}],
     'an explicit recovery reset did not allow a later playback session to recover');
+}
+
+{
+  const player = media(1);
+  const jumps = [];
+  const recovery = createMsePlaybackDamageRecovery({
+    media: player,
+    seek: target => {
+      jumps.push(target);
+      player.currentTime = target;
+    },
+  });
+  recovery.reportDamage({
+    videoTrackId: 2,
+    action: 'seek',
+    startTimeUs: 10_000_000,
+    recoveryTimeUs: 15_000_000,
+  });
+  assert.deepEqual(jumps, [], 'parser prefetch skipped healthy media before its damage span');
+  recovery.notifyWaiting();
+  assert.deepEqual(jumps, [], 'waiting before the authorized damage span triggered a seek');
+  player.currentTime = 9.95;
+  recovery.notifyWaiting();
+  recovery.notifyWaiting();
+  assert.deepEqual(jumps, [15],
+    'waiting did not execute the retained PlaybackDamage seek exactly once');
 }
 
 console.log('MSE gap recovery tests passed');

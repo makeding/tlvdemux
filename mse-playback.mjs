@@ -85,22 +85,54 @@ export function createMsePlaybackDamageRecovery({
   seek,
 }) {
   const completedDamage = new Set();
+  const pendingDamage = new Map();
+  const damageKey = damage => [
+    damage.videoTrackId, damage.startInputOffset, damage.endInputOffset,
+    damage.recoveryTimeUs,
+  ].map(value => String(value ?? '')).join(':');
+
+  const prepare = damage => {
+    if (damage.action !== 'seek' || damage.recoveryTimeUs === null ||
+        !isActive() || !isCurrentLayer(damage) || switchInFlight()) return null;
+    const target = Number(BigInt(damage.recoveryTimeUs) - BigInt(presentationStartUs)) / 1000000;
+    if (!Number.isFinite(target) || target < 0) return null;
+    const start = damage.startTimeUs === null || damage.startTimeUs === undefined
+      ? null
+      : Number(BigInt(damage.startTimeUs) - BigInt(presentationStartUs)) / 1000000;
+    if (start !== null && (!Number.isFinite(start) || start < 0)) return null;
+    return {damage, key: damageKey(damage), target, start};
+  };
+
+  const recover = candidate => {
+    if (!candidate || completedDamage.has(candidate.key) ||
+        !isActive() || !isCurrentLayer(candidate.damage) ||
+        switchInFlight() || media.seeking) return null;
+    const previousTime = media.currentTime;
+    completedDamage.add(candidate.key);
+    pendingDamage.delete(candidate.key);
+    seek(candidate.target, previousTime);
+    if (!media.paused) media.play().catch(() => {});
+    return {start: candidate.target, end: candidate.target};
+  };
+
   return {
-    notifyWaiting() { return null; },
-    reset() { completedDamage.clear(); },
+    notifyWaiting() {
+      const currentTime = media.currentTime;
+      const candidate = [...pendingDamage.values()]
+        .filter(item => item.start === null || item.start <= currentTime + 0.1)
+        .sort((left, right) => left.target - right.target)[0] ?? null;
+      return recover(candidate);
+    },
+    reset() {
+      completedDamage.clear();
+      pendingDamage.clear();
+    },
     reportDamage(damage) {
-      if (damage.action !== 'seek' || damage.recoveryTimeUs === null ||
-          !isActive() || !isCurrentLayer(damage) || switchInFlight() || media.seeking) return null;
-      const target = Number(BigInt(damage.recoveryTimeUs) - BigInt(presentationStartUs)) / 1000000;
-      if (!Number.isFinite(target) || target < 0) return null;
-      const key = [damage.videoTrackId, damage.startInputOffset, damage.endInputOffset,
-        damage.recoveryTimeUs].map(value => String(value ?? '')).join(':');
-      if (completedDamage.has(key)) return null;
-      completedDamage.add(key);
-      const previousTime = media.currentTime;
-      seek(target, previousTime);
-      if (!media.paused) media.play().catch(() => {});
-      return {start: target, end: target};
+      const candidate = prepare(damage);
+      if (!candidate || completedDamage.has(candidate.key)) return null;
+      pendingDamage.set(candidate.key, candidate);
+      if (candidate.start === null || media.currentTime + 0.1 < candidate.start) return null;
+      return recover(candidate);
     },
   };
 }

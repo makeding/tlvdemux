@@ -3,6 +3,8 @@ import {open} from 'node:fs/promises';
 import {createRequire} from 'node:module';
 import {resolve} from 'node:path';
 
+import {createMsePlaybackDamageRecovery} from '../mse-playback.mjs';
+
 const [modulePathArgument, samplePathArgument] = process.argv.slice(2);
 assert.ok(modulePathArgument && samplePathArgument,
   'usage: node tests/wasm_audio_damage_flow_sample.mjs DIST_JS SAMPLE');
@@ -92,12 +94,39 @@ try {
     const duration = range.endUs - range.startUs;
     return duration > longest ? duration : longest;
   }, 0n);
+  const recoveryMedia = {
+    currentTime: 0,
+    seeking: false,
+    paused: true,
+    play() { return Promise.resolve(); },
+  };
+  const automaticJumps = [];
+  const recovery = createMsePlaybackDamageRecovery({
+    media: recoveryMedia,
+    isCurrentLayer: damage => damage.videoTrackId === selectedVideo,
+    seek: target => {
+      automaticJumps.push(target);
+      recoveryMedia.currentTime = target;
+    },
+  });
+  for (const damage of playbackDamage) recovery.reportDamage(damage);
+  assert.deepEqual(automaticJumps, [],
+    'parser prefetch executed automatic seeks before playback reached damage');
+  const firstSeekDamage = playbackDamage.find(damage => damage.action === 'seek');
+  assert.ok(firstSeekDamage?.startTimeUs !== null,
+    'captured damaged sample exposed no concrete automatic recovery span');
+  recoveryMedia.currentTime = Number(firstSeekDamage.startTimeUs) / 1_000_000 - 0.05;
+  recovery.notifyWaiting();
+  recovery.notifyWaiting();
+  assert.deepEqual(automaticJumps, [Number(firstSeekDamage.recoveryTimeUs) / 1_000_000],
+    'captured damage waiting did not execute its retained seek exactly once');
   const summary = {
     bytesRead: position,
     audioDiscontinuities,
     audioDiscontinuityReasons: Object.fromEntries(audioDiscontinuityReasons),
     commonUs: commonUs.toString(),
     longestAudioUs: longestAudioUs.toString(),
+    automaticJumps,
     playbackDamage: playbackDamage.map(damage => ({
       action: damage.action,
       recoveryTimeUs: damage.recoveryTimeUs === null
