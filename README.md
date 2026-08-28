@@ -163,6 +163,20 @@ resume below 8 seconds. Before any common interval covers the playback entry,
 at most 16 MiB of playback input may be read without progress; exhaustion fails
 with `MSE_STARTUP_NO_COMMON_AV` instead of fetching the recording to EOF.
 
+An explicit recorded seek is a separate public playback-entry contract. From
+head discovery through every RAP probe and the final A/V preroll,
+`createMseRecordedSeekSession()` shares one hard 16 MiB source-read budget.
+Overlapping probe and landing ranges are reused, and no source request is issued
+after exhaustion. A RAP before the requested media time is valid preroll: seek
+continues until the common buffered A/V interval covers the requested time,
+then normal 15-second/8-second backpressure resumes. The probe records RAPs only
+through target + 50 ms, stops when observed candidate frontiers pass the target,
+and selects the closest RAP not later than the target without waiting for an
+unobserved layer. Later-only common A/V, disjoint A/V, no RAP, EOF, or budget
+exhaustion fails with `MSE_SEEK_NO_COMMON_AV` and stops reading. It must never be
+reported as `MSE_STARTUP_NO_COMMON_AV`, cause a hidden media-element seek, or
+fall back to scanning the complete recording.
+
 The `rain.tlv` validation contract requires its first automatic switch at the
 earliest rainfall RAP (currently about `821944us`), before any preferred-layer
 init, the later approximately 46-second preferred damage event, or any seek. The
@@ -180,6 +194,30 @@ assertions; it must not invoke browser automation or ask a user to be the
 runtime tester.
 
 ## Library usage
+
+Browser integrations import the recorded-seek coordinator instead of copying
+demo probe logic:
+
+```js
+import {createMsePlaybackFlowControl, createMseRecordedSeekSession}
+  from 'tlvdemux/mse-playback';
+
+const flowControl = createMsePlaybackFlowControl({
+  media, queues, entryKind: 'seek', entryTimeSeconds: targetSeconds,
+});
+const seek = createMseRecordedSeekSession({
+  targetTimeSeconds: targetSeconds,
+  source, durationUs, demuxer, media, queues, flowControl,
+  headReady: () => selectedVideo !== null,
+});
+callbacks.onTrack = track => seek.observeTrack(track);
+callbacks.onTrackRemoved = track => seek.observeTrackRemoved(track);
+callbacks.onAccessUnit = unit => seek.observeAccessUnit(unit);
+const {nextOffset} = await seek.run();
+```
+
+The coordinator accepts synchronous native-WASM methods and Promise-returning
+worker wrappers, so a DPlayer adapter can use the same lifecycle.
 
 Implement `aribtlv::Sink`, keep it alive for the lifetime of the demuxer, and
 feed arbitrary-sized chunks synchronously:

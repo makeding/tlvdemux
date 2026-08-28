@@ -4,7 +4,7 @@ import {
   MSE_STARTUP_NO_COMMON_AV,
   commonBufferedAhead,
   createMsePlaybackFlowControl,
-} from '../demo/mse-playback-flow-control.mjs';
+} from '../mse-playback.mjs';
 
 const queue = ranges => ({
   ranges,

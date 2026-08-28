@@ -4,7 +4,6 @@ import {
   audioSelectionIdentity,
   audioTrackChoices,
   correspondingAudioTrack,
-  preferredSeekVideoRap,
   resolveAudioSelection,
   sameVideoLayerGroup,
   selectionLevel,
@@ -35,15 +34,6 @@ assert.equal(selectionLevel({}), null);
 assert.equal(sameVideoLayerGroup(videoBase, videoLow), true);
 assert.equal(sameVideoLayerGroup(videoHigh, videoLow), true);
 assert.equal(sameVideoLayerGroup(videoBase, {...videoBase, packetId: 0xf303}), false);
-assert.equal(preferredSeekVideoRap([
-  {track: videoHigh, rap: {ptsUs: 33000000n}},
-  {track: videoLow, rap: {ptsUs: 33200000n}},
-], 500000n).track, videoHigh);
-assert.equal(preferredSeekVideoRap([
-  {track: videoHigh, rap: {ptsUs: 190000000n}},
-  {track: videoLow, rap: {ptsUs: 237000000n}},
-], 500000n).track, videoLow);
-assert.equal(preferredSeekVideoRap([], 500000n), null);
 assert.equal(shouldReprobeVideoLayerForSeek(videoLow, undefined), true,
   'automatic fallback seek did not request layer reprobe');
 assert.equal(shouldReprobeVideoLayerForSeek(videoLow, 0xf301), false,

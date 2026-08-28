@@ -33,21 +33,6 @@ export function sameVideoLayerGroup(left, right) {
       leftGroup.groupIdentification === rightGroup.groupIdentification));
 }
 
-export function preferredSeekVideoRap(candidates, maximumLagUs) {
-  const video = [...candidates].filter(candidate =>
-    candidate.track?.kind === 'video' && candidate.rap?.ptsUs !== undefined);
-  if (!video.length) return null;
-  const latestPtsUs = video.reduce(
-    (latest, candidate) => candidate.rap.ptsUs > latest ? candidate.rap.ptsUs : latest,
-    video[0].rap.ptsUs,
-  );
-  return video
-    .filter(candidate => latestPtsUs - candidate.rap.ptsUs <= maximumLagUs)
-    .sort((left, right) =>
-      (selectionLevel(left.track) ?? 0xff) - (selectionLevel(right.track) ?? 0xff) ||
-      (left.rap.ptsUs === right.rap.ptsUs ? 0 : left.rap.ptsUs > right.rap.ptsUs ? -1 : 1))[0];
-}
-
 export function correspondingAudioTrack(tracks, currentTrack, targetLevel, activeGroupId = null) {
   if (!currentTrack || targetLevel === null) return null;
   const currentGroups = currentTrack.assetGroups || [];

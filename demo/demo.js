@@ -4,7 +4,6 @@ import {
   automaticLayerSwitchEnabled,
   audioTrackChoices,
   correspondingAudioTrack,
-  preferredSeekVideoRap,
   sameVideoLayerGroup,
   selectionLevel,
   shouldReprobeVideoLayerForSeek,
@@ -16,8 +15,10 @@ import {
   createMseGapRecovery,
   startMsePlayback,
 } from './mse-gap-recovery.mjs?v=damage-recovery-v1';
-import {createMsePlaybackFlowControl} from
-  './mse-playback-flow-control.mjs?v=startup-buffer-v1';
+import {
+  createMsePlaybackFlowControl,
+  createMseRecordedSeekSession,
+} from '../mse-playback.mjs?v=recorded-seek-v1';
 import { createWorkerTlvDemuxModule } from './worker-tlvdemux.js?v=cpp-layer-state-v1';
 import {
   MseAppendQueue,
@@ -40,12 +41,6 @@ const BACK_BUFFER_SECONDS = 8;
 const SOURCE_QUEUE_HIGH_BYTES = 4 * 1024 * 1024;
 const LIVE_PUSH_TARGET_BYTES = 512 * 1024;
 const LIVE_PUSH_MAX_DELAY_MS = 25;
-const MIN_SEEK_PREROLL_BYTES = 16n * MiB;
-const MAX_SEEK_PREROLL_BYTES = 128n * MiB;
-const SEEK_PREROLL_US = 8000000n;
-const SEEK_PROBE_BYTES = 64n * MiB;
-const MAX_SEEK_PROBE_ATTEMPTS = 5;
-const LAYER_HEALTH_CRITICAL_LAG_US = 500000n;
 const DEFAULT_PLAYBACK_RATE = 2;
 const LIVE_PLAYBACK_RATE = 1;
 const SHORT_RECORDING_THRESHOLD_SECONDS = 60;
@@ -384,13 +379,6 @@ function formatBytes(value) {
 
 function durationSeconds(duration) { return Number(duration.value) / duration.timescale; }
 
-function seekPrerollBytes(sourceSize, durationUs) {
-  if (durationUs <= 0n) return MIN_SEEK_PREROLL_BYTES;
-  const estimated = sourceSize * SEEK_PREROLL_US / durationUs;
-  return estimated < MIN_SEEK_PREROLL_BYTES ? MIN_SEEK_PREROLL_BYTES
-    : estimated > MAX_SEEK_PREROLL_BYTES ? MAX_SEEK_PREROLL_BYTES : estimated;
-}
-
 function formatDuration(duration) {
   const seconds = durationSeconds(duration);
   const whole = Math.max(0, Math.floor(seconds));
@@ -558,10 +546,6 @@ function timestampMilliseconds(value, timescale) {
     return undefined;
   }
   return Number(value) * 1000 / timescale;
-}
-
-function timestampMicroseconds(value, timescale) {
-  return BigInt(value) * 1000000n / BigInt(timescale);
 }
 
 function releaseMedia() {
@@ -811,11 +795,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   let incompleteInputTail = false;
   let played = startTimeSeconds === 0 && reuseMedia && !elements.video.paused;
   let suppressOutput = startTimeSeconds > 0;
-  let headVideoSeen = false;
-  let seekProbeActive = false;
-  let seekProbeRap = null;
-  let seekProbeTargetUs = 0n;
-  const seekProbeRaps = new Map();
+  let seekSession = null;
   const pendingInits = new Map();
   const pendingSplices = new Map();
   const pendingSegments = new Map([['video', []], ['audio', []]]);
@@ -826,6 +806,8 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const playbackFlow = createMsePlaybackFlowControl({
     media: elements.video,
     queues,
+    entryKind: startTimeSeconds > 0 ? 'seek' : 'startup',
+    entryTimeSeconds: startTimeSeconds,
     highSeconds: FORWARD_BUFFER_HIGH_SECONDS,
     lowSeconds: FORWARD_BUFFER_LOW_SECONDS,
     backBufferSeconds: BACK_BUFFER_SECONDS,
@@ -1234,6 +1216,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     onPlaybackDamage,
     onTrack(track) {
       tracks.set(track.trackId, track);
+      seekSession?.observeTrack(track);
       appendLog(`トラック ${track.kind} packet_id=0x${track.packetId.toString(16)} codec=${track.codec}`);
       if (track.kind === 'video') {
         knownVideoTracks.set(track.packetId, track);
@@ -1307,6 +1290,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       configureAutomaticLayerPair();
     },
     onTrackRemoved(track) {
+      seekSession?.observeTrackRemoved(track);
       if (pendingLayerSwitch &&
           (track.trackId === pendingLayerSwitch.video.trackId ||
            track.trackId === pendingLayerSwitch.audio.trackId)) {
@@ -1372,19 +1356,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     },
     onPlaybackAccessUnitView(unit) {
       try {
-        if (unit.codec === 'hevc') {
-          const ptsUs = timestampMicroseconds(unit.ptsValue, unit.ptsTimescale);
-          if (seekProbeActive && unit.randomAccess && ptsUs <= seekProbeTargetUs + 50000n) {
-            const previous = seekProbeRaps.get(unit.trackId);
-            if (!previous || ptsUs > previous.ptsUs) {
-              seekProbeRaps.set(unit.trackId, {
-                ptsUs,
-                seconds: Number(unit.ptsValue) / unit.ptsTimescale,
-                restartOffset: BigInt(unit.restartOffset),
-              });
-            }
-          }
-        }
+        seekSession?.observeAccessUnit(unit);
         const subtitleTrack = tracks.get(unit.trackId);
         if (!suppressOutput && unit.codec === 'ttml' && subtitleTrack?.kind === 'subtitle') {
           dataBroadcast.captionDataChanged(unit);
@@ -1396,7 +1368,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
               `PTS=${(Number(unit.ptsValue) / unit.ptsTimescale).toFixed(6)}s ` +
               `RAP=${unit.randomAccess}`);
           }
-          if (unit.randomAccess) headVideoSeen = true;
         } else if (unit.trackId === selectedAudio) {
           if (unit.discontinuity) {
             audioDiscontinuityCount += 1;
@@ -1588,106 +1559,65 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   let playbackBytes = 0n;
   let lastReported = 0n;
   if (startTimeSeconds > 0) {
-    let headEnd = 0n;
-    const maximumHead = 64n * MiB < source.size ? 64n * MiB : source.size;
-    while ((!selectedVideo || !headVideoSeen) && headEnd < maximumHead) {
-      const length = maximumHead - headEnd < PLAYBACK_CHUNK
-        ? maximumHead - headEnd : PLAYBACK_CHUNK;
-      const data = await source.read(headEnd, length);
-      if (generation !== runGeneration) return;
-      if (!await demuxer.push(data)) {
-        throw new Error(`先頭解析に失敗しました: ${headEnd}`);
-      }
-      if (callbackError) throw callbackError;
-      headEnd += length;
-      playbackBytes += length;
-    }
-    if (!selectedVideo || !headVideoSeen) throw new Error('シーク準備中に選択した映像を検出できませんでした');
-    const targetUs = BigInt(Math.round(startTimeSeconds * 1000000));
-    seekProbeTargetUs = targetUs;
-    await demuxer.setIndexDuration(externalDurationUs);
-    const estimate = await demuxer.estimateOffset(targetUs, source.size);
-    if (estimate === null) throw new Error('シーク先のバイト位置を推定できませんでした');
-    let preroll = seekPrerollBytes(source.size, externalDurationUs);
-    let candidate = 0n;
-    let attempt = 0;
-    for (;;) {
-      candidate = estimate > preroll ? estimate - preroll : 0n;
-      await demuxer.reposition(candidate, true);
-      seekProbeRap = null;
-      seekProbeRaps.clear();
-      seekProbeActive = true;
-      let probeOffset = candidate;
-      const probeLimit = candidate + SEEK_PROBE_BYTES < source.size
-        ? candidate + SEEK_PROBE_BYTES : source.size;
-      while (probeOffset < probeLimit) {
-        const length = probeLimit - probeOffset < PLAYBACK_CHUNK
-          ? probeLimit - probeOffset : PLAYBACK_CHUNK;
-        const data = await source.read(probeOffset, length);
-        if (generation !== runGeneration) return;
-        if (!await demuxer.push(data)) {
-          throw new Error(`シーク位置の検証に失敗しました: ${probeOffset}`);
-        }
-        if (callbackError) throw callbackError;
-        probeOffset += length;
-        playbackBytes += length;
-        const latestRap = [...seekProbeRaps.values()].reduce(
-          (latest, rap) => latest === null || rap.ptsUs > latest.ptsUs ? rap : latest,
-          null,
+    seekSession = createMseRecordedSeekSession({
+      targetTimeSeconds: startTimeSeconds,
+      source,
+      durationUs: externalDurationUs,
+      demuxer,
+      media: elements.video,
+      queues,
+      flowControl: playbackFlow,
+      signal: activeController?.signal,
+      isActive: () => generation === runGeneration,
+      headReady: () => selectedVideo !== null,
+      candidateVideoTrack: track => track.kind === 'video' &&
+        (track.trackId === selectedVideo || sameVideoLayerGroup(selectedVideoTrack, track)),
+      videoTrackPriority: track => selectionLevel(track) ?? 0xff,
+      activateVideoTrack: async track => {
+        if (!track || track.trackId === selectedVideo) return;
+        selectedVideo = track.trackId;
+        selectedVideoTrack = track;
+        selectedVideoPacketId = track.packetId;
+        await demuxer.selectTrack('video', selectedVideo);
+        const currentAudio = [...tracks.values()].find(
+          candidate => candidate.kind === 'audio' && candidate.trackId === selectedAudio,
         );
-        const videoTracks = [...tracks.values()].filter(track =>
-          track.kind === 'video' &&
-          (track.trackId === selectedVideo || sameVideoLayerGroup(selectedVideoTrack, track)));
-        if (latestRap && targetUs - latestRap.ptsUs <= LAYER_HEALTH_CRITICAL_LAG_US &&
-            videoTracks.every(track => seekProbeRaps.has(track.trackId))) break;
-      }
-      seekProbeActive = false;
-      const chosen = preferredSeekVideoRap(
-        [...seekProbeRaps.entries()].map(
-          ([trackId, rap]) => ({track: tracks.get(trackId), rap}),
-        ),
-        LAYER_HEALTH_CRITICAL_LAG_US,
-      );
-      if (chosen) {
-        seekProbeRap = chosen.rap;
-        if (chosen.track.trackId !== selectedVideo) {
-          selectedVideo = chosen.track.trackId;
-          selectedVideoTrack = chosen.track;
-          selectedVideoPacketId = chosen.track.packetId;
-          await demuxer.selectTrack('video', selectedVideo);
-          const currentAudio = [...tracks.values()].find(
-            track => track.kind === 'audio' && track.trackId === selectedAudio,
-          );
-          const corresponding = correspondingAudioTrack(
-            [...tracks.values()].filter(track => track.kind === 'audio'),
-            currentAudio, selectionLevel(chosen.track), selectedAudioGroupId,
-          );
-          if (corresponding) {
-            selectAudioTrack(corresponding.track, corresponding.groupIdentification);
-          }
-          renderVideoTracks();
-          appendLog(`シーク位置では ${videoTrackLabel(chosen.track)} を選択します`);
+        const corresponding = correspondingAudioTrack(
+          [...tracks.values()].filter(candidate => candidate.kind === 'audio'),
+          currentAudio, selectionLevel(track), selectedAudioGroupId,
+        );
+        if (corresponding) {
+          selectAudioTrack(corresponding.track, corresponding.groupIdentification);
+          await demuxer.selectTrack('audio', corresponding.track.trackId);
         }
-      }
-      if (seekProbeRap !== null && seekProbeRap.seconds <= startTimeSeconds + 0.05) break;
-      if (candidate === 0n || ++attempt >= MAX_SEEK_PROBE_ATTEMPTS) {
-        const found = seekProbeRap === null ? 'RAP なし' : `RAP ${seekProbeRap.seconds.toFixed(3)}s`;
-        throw new Error(`シーク先より前の映像開始点を検出できませんでした (${found})`);
-      }
-      const found = seekProbeRap === null ? 'RAP なし' : `RAP ${seekProbeRap.seconds.toFixed(3)}s`;
-      appendLog(`シーク再探索 ${found} > ${startTimeSeconds.toFixed(3)}s、preroll を拡大します`);
-      preroll *= 2n;
-      if (preroll > estimate) preroll = estimate;
-    }
-    offset = seekProbeRap.restartOffset;
-    await demuxer.reposition(offset, true);
-    suppressOutput = false;
-    await demuxer.setMseOutputEnabled(true);
-    if (!reuseMedia) {
-      internalSeekTarget = startTimeSeconds;
-      elements.video.currentTime = startTimeSeconds;
-    }
-    appendLog(`シーク ${startTimeSeconds.toFixed(3)}s -> 推定 ${formatBytes(estimate)}、RAP ${seekProbeRap.seconds.toFixed(3)}s @ ${formatBytes(offset)}、preroll ${formatBytes(preroll)}`);
+        renderVideoTracks();
+        appendLog(`シーク位置では ${videoTrackLabel(track)} を選択します`);
+      },
+      beforeLanding: async () => {
+        suppressOutput = false;
+        if (!reuseMedia) {
+          internalSeekTarget = startTimeSeconds;
+          elements.video.currentTime = startTimeSeconds;
+        }
+      },
+      waitForAppends: async () => {
+        await Promise.all([...queues.values()].map(queue => queue.waitStable()));
+      },
+      checkError: () => { if (callbackError) throw callbackError; },
+      onProgress: progress => {
+        playbackBytes = progress.bytesRead;
+        elements.transferred.textContent =
+          `${formatBytes(probeResult.transferred + playbackBytes)} / seek 16 MiB`;
+      },
+    });
+    const result = await seekSession.run();
+    if (generation !== runGeneration) return;
+    offset = result.nextOffset;
+    playbackBytes = result.bytesRead;
+    appendLog(`シーク ${startTimeSeconds.toFixed(3)}s -> 推定 ` +
+      `${formatBytes(result.estimateOffset)}、RAP ` +
+      `${(Number(result.rapPresentationTimeUs) / 1000000).toFixed(3)}s @ ` +
+      `${formatBytes(result.restartOffset)}、総読み込み ${formatBytes(result.bytesRead)}`);
   }
   if (liveMode && source.stream) {
     for await (const data of source.stream()) {

@@ -143,6 +143,17 @@ backpressure は parser の進捗ではなく共通 A/V buffered 区間を使用
 8 秒未満で再開します。再生入口を覆う共通区間がない間は、進捗なしに読み込める playback input を
 16 MiB に制限し、使い切った場合は録画を EOF まで取得せず `MSE_STARTUP_NO_COMMON_AV` で失敗します。
 
+録画の明示 seek は別の public playback-entry contract です。head discovery、すべての RAP probe、
+正式な A/V preroll は `createMseRecordedSeekSession()` の単一 16 MiB source-read budget を共有します。
+probe と landing が重なる範囲は再利用し、budget 消費後は source request を発行しません。要求時刻より
+前の RAP は正常な preroll であり、共通 A/V buffered 区間が user の要求時刻を覆うまで seek を継続し、
+その後だけ通常の 15 秒停止／8 秒再開 backpressure へ移行します。probe は target + 50 ms までの RAP
+だけを記録し、観測済み候補の解析前縁が target を越えた時点で停止して、未観測 layer を待たず target
+より後でない最も近い RAP を選択します。共通 A/V が target より後だけ、A/V が非交差、RAP なし、
+EOF、または budget 消費の場合は `MSE_SEEK_NO_COMMON_AV` で読み込みを停止します。これを
+`MSE_STARTUP_NO_COMMON_AV` として報告したり、MediaElement の hidden seek や録画全体の scan に
+fallback してはいけません。
+
 `rain.tlv` の検証では、最初の自動切替を最初の降雨 RAP（現在約 `821944us`）で要求し、通常 layer
 の init、後続する約 46 秒の通常 damage event、あらゆる seek より先に完了させます。最初の切替先
 source 境界は `821944us` のまま、startup timestamp offset により最初の共通 MSE A/V 区間を
@@ -155,6 +166,29 @@ high-water mark で停止して 711 MiB sample を EOF まで取得してはい�
 tester にしません。
 
 ## ライブラリの使い方
+
+browser integration は demo の probe logic を複製せず、録画 seek coordinator を import します。
+
+```js
+import {createMsePlaybackFlowControl, createMseRecordedSeekSession}
+  from 'tlvdemux/mse-playback';
+
+const flowControl = createMsePlaybackFlowControl({
+  media, queues, entryKind: 'seek', entryTimeSeconds: targetSeconds,
+});
+const seek = createMseRecordedSeekSession({
+  targetTimeSeconds: targetSeconds,
+  source, durationUs, demuxer, media, queues, flowControl,
+  headReady: () => selectedVideo !== null,
+});
+callbacks.onTrack = track => seek.observeTrack(track);
+callbacks.onTrackRemoved = track => seek.observeTrackRemoved(track);
+callbacks.onAccessUnit = unit => seek.observeAccessUnit(unit);
+const {nextOffset} = await seek.run();
+```
+
+coordinator は同期 native-WASM method と Promise を返す worker wrapper の両方を受け入れるため、
+DPlayer adapter も同じ lifecycle を利用できます。
 
 `aribtlv::Sink` を実装し、demuxer の生存期間中はそのインスタンスを保持して、
 任意のサイズに分割したデータを同期的に入力します。
