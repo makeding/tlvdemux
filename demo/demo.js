@@ -963,7 +963,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     ? 'auto' : 'fixed';
 
   const refreshAutomaticLayerPair = () => {
-    if (!demuxer) return;
+    if (!demuxer) return Promise.resolve(null);
     const currentAudio = [...knownAudioTracks.values()].find(
       track => track.trackId === selectedAudio,
     );
@@ -971,7 +971,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       [...knownVideoTracks.values(), ...knownAudioTracks.values()],
       selectedVideoTrack, currentAudio, selectedAudioGroupId,
     ) : null;
-    automaticLayerPairUpdate = automaticLayerPairUpdate.then(async () => {
+    const update = automaticLayerPairUpdate.then(async () => {
       const previous = automaticLayerPairSignature;
       const signature = await configureSdkAutomaticLayerPair(
         demuxer, pair, previous, {manual: videoSelectionMode === 'fixed'},
@@ -982,7 +982,10 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
           `0x${pair.preferred.video.packetId.toString(16)} ↔ ` +
           `0x${pair.fallback.video.packetId.toString(16)}`);
       }
-    }).catch(error => { callbackError = error; });
+      return signature;
+    });
+    automaticLayerPairUpdate = update.catch(error => { callbackError = error; });
+    return update;
   };
 
   const selectAudioTrack = (track, groupIdentification = null) => {
@@ -1328,10 +1331,21 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     if (packetId === null) {
       elements.videoPacketId.value = '';
       videoSelectionMode = 'auto';
-      automaticLayerPairSignature = null;
-      refreshAutomaticLayerPair();
-      renderVideoTracks();
-      appendLog('映像レイヤーを自動選択に設定しました');
+      try {
+        await refreshAutomaticLayerPair();
+        renderVideoTracks();
+        appendLog('映像レイヤーを自動選択に戻し、状態を再評価しました');
+      } catch (error) {
+        videoSelectionMode = 'fixed';
+        elements.videoPacketId.value = selectedVideoPacketId === null
+          ? '' : String(selectedVideoPacketId);
+        automaticLayerPairSignature = await configureSdkAutomaticLayerPair(
+          demuxer, null, automaticLayerPairSignature,
+          {manual: true, force: true},
+        );
+        renderVideoTracks();
+        throw error;
+      }
       return;
     }
     elements.videoPacketId.value = String(packetId);

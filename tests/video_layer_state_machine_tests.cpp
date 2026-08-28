@@ -151,6 +151,28 @@ void test_rainfall_mode_keeps_warming_preferred_and_returns_after_five_seconds()
     check(switched_back, "rainfall mode did not keep warming the preferred tracker");
 }
 
+void test_manual_mode_keeps_health_observations_for_automatic_restore() {
+    VideoLayerStateMachine machine;
+    const VideoLayerPair pair{1, 11, 2, 22};
+    machine.configure(pair);
+    machine.select(1);
+    machine.setSelectedOutputStarted(true);
+    warm(machine, true, true);
+    machine.setPlaybackPosition(5000000);
+
+    machine.suspend();
+    machine.switchCompleted(2);
+    check(!machine.reevaluate().switch_request,
+          "suspended manual mode initiated an automatic layer switch");
+
+    machine.configure(pair);
+    const auto restored = machine.reevaluate();
+    check(restored.switch_request.has_value() &&
+              restored.switch_request->video_track_id == 1 &&
+              restored.switch_request->audio_track_id == 11,
+          "manual mode discarded preferred health needed when automatic mode resumed");
+}
+
 void test_parser_frontier_cannot_restore_preferred_at_stalled_playhead() {
     VideoLayerStateMachine machine;
     machine.configure(VideoLayerPair{1, 11, 2, 22});
@@ -271,6 +293,7 @@ int main() {
     test_preferred_damage_switches_without_seek_when_fallback_is_ready();
     test_unavailable_fallback_waits_then_seeks_to_preferred_recovery_rap();
     test_rainfall_mode_keeps_warming_preferred_and_returns_after_five_seconds();
+    test_manual_mode_keeps_health_observations_for_automatic_restore();
     test_parser_frontier_cannot_restore_preferred_at_stalled_playhead();
     test_rainfall_damage_uses_preferred_or_its_own_real_rap();
     std::cout << "video layer state machine tests passed\n";

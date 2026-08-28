@@ -29,6 +29,8 @@ current MPT membership、selection level、同一 video group、対応 audio、c
 compatibility、preferred/fallback A/V pair を pure typed helper として公開します。automatic layer の
 設定操作は SDK、UI mode と表示文言は consumer に残します。demo の `asset-groups.mjs`／
 `subtitle-tracks.mjs` と DPlayer の重複 protocol selection を移行後に削除します。
+manual mode 中も layer health 観測を保持し、自動へ戻した時に正常な preferred A/V pair へ直ちに
+復帰することを acceptance に含めます。
 
 ## Batch 3: Worker RPC
 

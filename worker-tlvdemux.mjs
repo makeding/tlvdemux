@@ -234,6 +234,7 @@ class WorkerDemuxer extends WorkerObject {
       fallbackVideoTrackId, fallbackAudioTrackId,
     ]);
   }
+  suspendAutomaticLayerSwitch() { return this.call('suspendAutomaticLayerSwitch'); }
   clearAutomaticLayerSwitch() { return this.call('clearAutomaticLayerSwitch'); }
   setMsePlaybackPosition(presentationTimeUs) {
     return this.call('setMsePlaybackPosition', [presentationTimeUs]);

@@ -100,6 +100,10 @@ fake.event(1, 'onApplicationResourcesReset', {});
 assert.equal(demuxer.applicationEntry(1), null);
 assert.equal(demuxer.applicationResources().length, 0);
 const bytes = Uint8Array.of(1, 2, 3);
+await demuxer.suspendAutomaticLayerSwitch();
+assert.equal(fake.messages.some(entry =>
+  entry.message.method === 'suspendAutomaticLayerSwitch'), true,
+'worker proxy did not expose automatic-layer suspension');
 await demuxer.push(bytes);
 const pushMessage = fake.messages.find(entry => entry.message.method === 'push');
 assert.deepEqual(pushMessage.transferByteLengths, [3]);

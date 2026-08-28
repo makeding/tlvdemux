@@ -13,6 +13,8 @@
   release action とし、その後の DPlayer 通常 npm cutover と consumer acceptance まで batch は未完了です。
 - Worker 境界で caller 所有の `Uint8Array` を保持し、録画 seek の probe／landing 間の cache 再利用が
   detached `ArrayBuffer` で失敗しないよう修正しました。
+- 手動の降雨対応 layer から自動選択へ戻すと、次の利用可能な RAP で preferred A/V pair へ能動的に
+  復帰し、未完了の手動切替も置き換えるよう修正しました。
 
 ## [0.2.4] - 2026-08-26
 

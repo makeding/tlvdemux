@@ -38,9 +38,15 @@ void VideoLayerStateMachine::configure(const VideoLayerPair pair) {
         fallback_ = {};
     }
     pair_ = pair;
+    enabled_ = true;
+}
+
+void VideoLayerStateMachine::suspend() noexcept {
+    enabled_ = false;
 }
 
 void VideoLayerStateMachine::clearConfiguration() noexcept {
+    enabled_ = false;
     pair_.reset();
     preferred_ = {};
     fallback_ = {};
@@ -303,6 +309,7 @@ VideoLayerStateMachine::requestStartupFallback() const {
 
 VideoLayerObservation VideoLayerStateMachine::decide() const {
     VideoLayerObservation result;
+    if (!enabled_) return result;
     const auto* current = activeLayer();
     if (!current) return result;
     if (const auto startup = requestStartupFallback()) {
@@ -325,6 +332,10 @@ VideoLayerObservation VideoLayerStateMachine::decide() const {
         result.switch_reason = VideoLayerSwitchReason::HealthDegradation;
     }
     return result;
+}
+
+VideoLayerObservation VideoLayerStateMachine::reevaluate() const {
+    return decide();
 }
 
 VideoLayerObservation VideoLayerStateMachine::observe(

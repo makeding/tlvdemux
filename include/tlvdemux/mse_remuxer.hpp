@@ -186,6 +186,7 @@ public:
     bool switchLayer(std::uint64_t video_track_id, std::uint64_t audio_track_id,
                      std::int64_t earliest_presentation_time_us);
     void configureAutomaticLayerSwitch(MseAutomaticLayerPair pair);
+    void suspendAutomaticLayerSwitch();
     void clearAutomaticLayerSwitch();
     /** Report the real media playhead used to authorize rainfall recovery. */
     void setPlaybackPosition(std::int64_t presentation_time_us);

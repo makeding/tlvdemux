@@ -51,8 +51,9 @@ readers and their fixtures.
 
 Acceptance: explicit PID remains fixed, automatic mode uses only the current
 MPT, fallback audio matches group and selection level, unsupported multichannel
-audio is excluded honestly, and every existing selection test targets the
-public module.
+audio is excluded honestly, manual mode preserves layer-health observations so
+returning to automatic immediately restores a healthy preferred A/V pair, and
+every existing selection test targets the public module.
 
 ## Batch 3: Worker RPC
 

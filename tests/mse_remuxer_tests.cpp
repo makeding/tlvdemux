@@ -1269,6 +1269,30 @@ void test_layer_switch_coordinates_video_rap_and_prepared_audio() {
           "completed layer switch was later reported as cancelled");
 }
 
+void test_automatic_mode_supersedes_pending_manual_layer_switch() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.push(hevc_unit(2, 0, 0, true, true));
+
+    constexpr std::int64_t frame = 1024;
+    for (std::int64_t index = 0; index < 120; ++index) {
+        remuxer.push(audio_unit(1, index * frame));
+        remuxer.push(audio_unit(9, index * frame));
+    }
+    check(remuxer.switchLayer(3, 9, 100000),
+          "manual rainfall switch was not accepted for automatic-mode recovery test");
+    remuxer.configureAutomaticLayerSwitch({2, 1, 3, 9});
+
+    check(sink.layer_switch_cancellations.size() == 1 &&
+              sink.layer_switch_cancellations.front().video_track_id == 3 &&
+              sink.layer_switch_cancellations.front().previous_video_track_id == 2 &&
+              sink.layer_switch_cancellations.front().reason ==
+                  tlvdemux::MseLayerSwitchCancelReason::SelectionChanged,
+          "automatic mode did not supersede the unfinished manual rainfall switch");
+}
+
 void test_layer_switch_replays_cached_target_video_from_requested_rap() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
@@ -1853,6 +1877,7 @@ int main() {
     test_fixed_mode_keeps_immediate_source_damage_seek();
     test_reposition_discards_retained_source_damage();
     test_layer_switch_coordinates_video_rap_and_prepared_audio();
+    test_automatic_mode_supersedes_pending_manual_layer_switch();
     test_layer_switch_replays_cached_target_video_from_requested_rap();
     test_layer_switch_waits_for_target_audio_after_video_rap();
     test_layer_switch_retries_distant_audio_at_later_video_boundary();

@@ -36,6 +36,7 @@ struct VideoLayerObservation {
 class VideoLayerStateMachine {
 public:
     void configure(VideoLayerPair pair);
+    void suspend() noexcept;
     void clearConfiguration() noexcept;
     void select(std::optional<std::uint64_t> video_track_id) noexcept;
     void resetObservations() noexcept;
@@ -45,6 +46,7 @@ public:
     void setPlaybackPosition(std::int64_t presentation_time_us) noexcept;
     VideoLayerObservation observe(const aribtlv::AccessUnit& unit);
     VideoLayerObservation observeDamage(const PlaybackDamage& damage);
+    VideoLayerObservation reevaluate() const;
 
 private:
     struct Continuity {
@@ -101,6 +103,7 @@ private:
     std::optional<std::uint64_t> selected_video_id_;
     std::optional<std::int64_t> playback_position_us_;
     bool selected_output_started_ = false;
+    bool enabled_ = false;
     LayerTracker preferred_;
     LayerTracker fallback_;
 };

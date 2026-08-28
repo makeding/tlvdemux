@@ -132,8 +132,11 @@ export async function configureAutomaticLayerPair(
   demuxer, pair, previousSignature, {manual = false, force = false} = {},
 ) {
   if (manual) {
-    if (force || previousSignature !== 'disabled') await demuxer.clearAutomaticLayerSwitch();
-    return 'disabled';
+    if (force || !previousSignature?.startsWith('disabled:')) {
+      await demuxer.suspendAutomaticLayerSwitch();
+    }
+    return previousSignature?.startsWith('disabled:')
+      ? previousSignature : `disabled:${previousSignature ?? 'unavailable'}`;
   }
   if (!pair?.fallback) {
     if (force || previousSignature !== 'unavailable') await demuxer.clearAutomaticLayerSwitch();

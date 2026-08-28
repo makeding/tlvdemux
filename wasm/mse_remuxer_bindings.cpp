@@ -287,6 +287,10 @@ void WasmMseRemuxer::configureAutomaticLayerSwitch(
     impl_->remuxer().configureAutomaticLayerSwitch(pair);
 }
 
+void WasmMseRemuxer::suspendAutomaticLayerSwitch() {
+    impl_->remuxer().suspendAutomaticLayerSwitch();
+}
+
 void WasmMseRemuxer::clearAutomaticLayerSwitch() {
     impl_->remuxer().clearAutomaticLayerSwitch();
 }

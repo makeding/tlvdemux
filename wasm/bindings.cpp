@@ -747,6 +747,8 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("switchLayer", &WasmDemuxer::switchLayer)
         .function("configureAutomaticLayerSwitch",
                   &WasmDemuxer::configureAutomaticLayerSwitch)
+        .function("suspendAutomaticLayerSwitch",
+                  &WasmDemuxer::suspendAutomaticLayerSwitch)
         .function("clearAutomaticLayerSwitch",
                   &WasmDemuxer::clearAutomaticLayerSwitch)
         .function("setMsePlaybackPosition",

@@ -146,6 +146,10 @@ public:
         });
     }
 
+    void suspendAutomaticLayerSwitch() {
+        mse_remuxer_.suspendAutomaticLayerSwitch();
+    }
+
     void clearAutomaticLayerSwitch() {
         mse_remuxer_.clearAutomaticLayerSwitch();
     }

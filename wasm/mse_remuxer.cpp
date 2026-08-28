@@ -396,12 +396,30 @@ bool tlvdemux::MseRemuxer::switchLayer(
 
 void tlvdemux::MseRemuxer::configureAutomaticLayerSwitch(
     const MseAutomaticLayerPair pair) {
+    // Re-enabling automatic selection supersedes an unfinished user-requested
+    // layer switch. Restore the still-active layer before installing the
+    // automatic pair; the public coordinator can then decide whether a
+    // completed rainfall selection needs an immediate preferred-layer return.
+    if (impl_->pending_layer &&
+        impl_->pending_layer->reason == MseLayerSwitchReason::Manual) {
+        impl_->cancel_layer(MseLayerSwitchCancelReason::SelectionChanged);
+    }
     impl_->automatic_layers.configure(VideoLayerPair{
         pair.preferred_video_track_id,
         pair.preferred_audio_track_id,
         pair.fallback_video_track_id,
         pair.fallback_audio_track_id,
     });
+    const auto automatic = impl_->automatic_layers.reevaluate();
+    impl_->begin_automatic_switch(
+        automatic.switch_request,
+        automatic.switch_reason == VideoLayerSwitchReason::SourceDamage
+            ? MseLayerSwitchReason::SourceDamage
+            : MseLayerSwitchReason::HealthDegradation);
+}
+
+void tlvdemux::MseRemuxer::suspendAutomaticLayerSwitch() {
+    impl_->automatic_layers.suspend();
 }
 
 void tlvdemux::MseRemuxer::clearAutomaticLayerSwitch() {

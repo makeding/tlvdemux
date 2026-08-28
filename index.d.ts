@@ -842,6 +842,7 @@ declare namespace createTlvDemuxModule {
       fallbackVideoTrackId: bigint,
       fallbackAudioTrackId: bigint,
     ): void;
+    suspendAutomaticLayerSwitch(): void;
     clearAutomaticLayerSwitch(): void;
     /** Report the unchanged media clock for automatic layer recovery decisions. */
     setMsePlaybackPosition(presentationTimeUs: bigint): void;

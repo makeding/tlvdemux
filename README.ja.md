@@ -171,6 +171,13 @@ high-water mark で停止して 711 MiB sample を EOF まで取得してはい�
 と全 sample WASM assertion だけで行い、browser automation を起動せず、user を最初の runtime
 tester にしません。
 
+手動から自動への layer 選択変更は policy flag だけではなく、能動的な遷移です。user が降雨対応
+layer を手動選択している場合、自動選択を有効にすると preferred／fallback A/V pair を設定し、次の
+利用可能な RAP で、保持した health 観測により正常と判定された preferred video と対応 audio へ
+直ちに協調復帰しなければなりません。preferred layer が利用不能または破損中なら、EOF まで pending
+switch を残さず利用可能な降雨対応出力を維持します。自動 mode の再有効化は未完了の手動 request も
+置き換えます。
+
 ## ライブラリの使い方
 
 残る共通 browser playback behavior を public SDK へ移す段階的な計画は

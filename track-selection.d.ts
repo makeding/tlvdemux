@@ -57,6 +57,7 @@ export declare function resolveLayerPair<T extends PlaybackTrack>(
 ): LayerPair<T> | null;
 export declare function configureAutomaticLayerPair(
   demuxer: {
+    suspendAutomaticLayerSwitch(): unknown | Promise<unknown>;
     clearAutomaticLayerSwitch(): unknown | Promise<unknown>;
     configureAutomaticLayerSwitch(
       preferredVideoTrackId: bigint | number, preferredAudioTrackId: bigint | number,

@@ -49,6 +49,7 @@ export interface WorkerDemuxer {
   switchAudioTrack(trackId: bigint, earliestPresentationTimeUs: bigint): Promise<bigint | null>;
   switchLayer(videoTrackId: bigint, audioTrackId: bigint, earliestPresentationTimeUs: bigint): Promise<boolean>;
   configureAutomaticLayerSwitch(preferredVideoTrackId: bigint, preferredAudioTrackId: bigint, fallbackVideoTrackId: bigint, fallbackAudioTrackId: bigint): Promise<void>;
+  suspendAutomaticLayerSwitch(): Promise<void>;
   clearAutomaticLayerSwitch(): Promise<void>;
   setMsePlaybackPosition(presentationTimeUs: bigint): Promise<void>;
   setMseSdrInHlg(videoTrackId: bigint, enabled: boolean): Promise<void>;

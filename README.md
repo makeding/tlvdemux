@@ -199,6 +199,14 @@ acceptance uses the native VideoToolbox MSE probe plus the full-sample WASM
 assertions; it must not invoke browser automation or ask a user to be the
 runtime tester.
 
+Manual-to-automatic layer selection is an active transition, not only a policy
+flag. If the user has manually selected the rainfall layer, enabling automatic
+selection must reactivate the preserved preferred/fallback health observations
+and immediately stage a coordinated return to healthy preferred video and its
+corresponding audio at the next usable RAP. An unavailable or damaged preferred
+layer keeps the usable rainfall output instead of leaving a switch pending to
+EOF. Re-enabling automatic mode also supersedes an unfinished manual request.
+
 ## Library usage
 
 The staged plan for moving the remaining shared browser playback behavior into
