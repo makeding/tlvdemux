@@ -4,6 +4,7 @@ export interface MseAppendQueueOptions {
   forwardBufferHighSeconds?: number;
   trimGranularitySeconds?: number;
   getMediaError?: (media: HTMLMediaElement) => string;
+  destroyOnSourceClose?: boolean;
 }
 
 export interface MseBufferedRange {
@@ -37,6 +38,7 @@ export declare class MseAppendQueue {
   state: 'running' | 'quiescing' | 'idle' | 'destroyed';
   onUpdateEnd: (() => void) | null;
   scheduledTimestampOffsetSeconds: number;
+  destroyOnSourceClose: boolean;
 
   constructor(
     mediaSource: MediaSource,

@@ -140,12 +140,12 @@ export function createMseOutputPipeline({
   };
 
   const onMseInit = init => {
-    onInitObserved(init);
     if (!required(init.type)) {
       pendingInits.delete(init.type);
       discard('init', init);
       return;
     }
+    onInitObserved(init);
     if (queues.has(init.type)) {
       const queue = queues.get(init.type);
       if (!queue) throw new Error(`Missing ${init.type} SourceBuffer for ${init.mime}.`);
@@ -160,7 +160,7 @@ export function createMseOutputPipeline({
   };
 
   const onMseSegment = segment => {
-    if (!segmentTypes.has(segment.type)) {
+    if (required(segment.type) && !segmentTypes.has(segment.type)) {
       segmentTypes.add(segment.type);
       onFirstSegment(segment.type, segment);
     }

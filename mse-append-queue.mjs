@@ -52,6 +52,7 @@ export class MseAppendQueue {
     this.forwardBufferHighSeconds = options.forwardBufferHighSeconds ?? DEFAULT_FORWARD_BUFFER_HIGH_SECONDS;
     this.trimGranularitySeconds = options.trimGranularitySeconds ?? DEFAULT_TRIM_GRANULARITY_SECONDS;
     this.getMediaError = options.getMediaError ?? defaultMediaError;
+    this.destroyOnSourceClose = options.destroyOnSourceClose ?? true;
 
     this.sourceBuffer.addEventListener('updateend', () => {
       this.currentBytes = 0;
@@ -70,7 +71,9 @@ export class MseAppendQueue {
       this.fail(new Error(this.getMediaError(this.mediaElement) || `SourceBuffer error: ${mime}`));
     });
     this.mediaSource.addEventListener('sourceclose', () => {
-      if (this.state !== 'destroyed') this.destroy(new Error('MediaSource closed'));
+      if (this.destroyOnSourceClose && this.state !== 'destroyed') {
+        this.destroy(new Error('MediaSource closed'));
+      }
     });
   }
 

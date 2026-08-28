@@ -127,7 +127,7 @@ export function createMsePlaybackDamageRecovery({
   const completedDamage = new Set();
   const pendingDamage = new Map();
   const randomAccessPoints = new Map();
-  const frameObservationSupported =
+  const frameObservationSupported = media.videoFrameCallbackSupported ??
     typeof media.requestVideoFrameCallback === 'function';
   let waitingTime = null;
   let waitingGeneration = 0;
@@ -355,6 +355,7 @@ export function createMsePlaybackResilienceController({
   presentationStartUs = 0n,
   generation = 0,
   initialMode = MsePlaybackMode.AUDIO_VIDEO,
+  initialRestoreTarget = null,
   maximumRecoveryAttempts = 3,
   isActive = () => true,
   isCurrentLayer = () => true,
@@ -370,8 +371,13 @@ export function createMsePlaybackResilienceController({
     throw new TypeError('maximumRecoveryAttempts must be a positive integer.');
   }
   if (initialMode !== MsePlaybackMode.AUDIO_VIDEO &&
-      initialMode !== MsePlaybackMode.AUDIO_ONLY) {
-    throw new TypeError('initialMode must be audio-video or audio-only.');
+      initialMode !== MsePlaybackMode.AUDIO_ONLY &&
+      initialMode !== MsePlaybackMode.RESTORING_VIDEO) {
+    throw new TypeError('initialMode must be audio-video, audio-only, or restoring-video.');
+  }
+  if (initialMode === MsePlaybackMode.RESTORING_VIDEO &&
+      (!Number.isFinite(initialRestoreTarget) || initialRestoreTarget < 0)) {
+    throw new TypeError('initialRestoreTarget is required for restoring-video.');
   }
   let currentGeneration = generation;
   let mode = initialMode;
@@ -379,8 +385,9 @@ export function createMsePlaybackResilienceController({
   let sourceEnded = false;
   let attempts = [];
   let lastPresentedTime = null;
-  let restoreTarget = null;
-  let lastRestoreTarget = null;
+  let restoreTarget = initialMode === MsePlaybackMode.RESTORING_VIDEO
+    ? initialRestoreTarget : null;
+  let lastRestoreTarget = restoreTarget;
   let frameCallbackId = null;
 
   const modeDetail = detail => ({
@@ -475,7 +482,8 @@ export function createMsePlaybackResilienceController({
     return lastPresentedTime;
   };
 
-  const frameObservationSupported = typeof media.requestVideoFrameCallback === 'function';
+  const frameObservationSupported = media.videoFrameCallbackSupported ??
+    typeof media.requestVideoFrameCallback === 'function';
   const scheduleFrameObservation = () => {
     if (destroyed || !frameObservationSupported) return;
     frameCallbackId = media.requestVideoFrameCallback((_now, metadata) => {
@@ -485,6 +493,17 @@ export function createMsePlaybackResilienceController({
     });
   };
   scheduleFrameObservation();
+
+  const notifyVideoRestoreFailed = (
+    target = restoreTarget, reason = 'restore-candidate-failed',
+  ) => {
+    if (mode !== MsePlaybackMode.RESTORING_VIDEO || target === null ||
+        Math.abs(target - restoreTarget) > 0.0005) return null;
+    restoreTarget = null;
+    const event = setMode(MsePlaybackMode.AUDIO_ONLY, {reason, target});
+    Promise.resolve(onAudioOnlyRequested(event)).catch(() => {});
+    return event;
+  };
 
   return {
     get mode() { return mode; },
@@ -498,6 +517,10 @@ export function createMsePlaybackResilienceController({
     },
     notifyWaiting() {
       if (!usable() || media.paused || switchInFlight()) return null;
+      if (mode === MsePlaybackMode.RESTORING_VIDEO && restoreTarget !== null &&
+          (lastPresentedTime === null || lastPresentedTime + 0.001 < restoreTarget)) {
+        return notifyVideoRestoreFailed(restoreTarget, 'restore-candidate-stalled');
+      }
       const currentAttempt = attempts.at(-1);
       if (mode === MsePlaybackMode.RECOVERING_VIDEO &&
           attempts.length >= maximumRecoveryAttempts && currentAttempt &&
@@ -531,18 +554,20 @@ export function createMsePlaybackResilienceController({
       });
       Promise.resolve(onVideoRestoreRequested(event)).catch(() => {
         if (!destroyed && mode === MsePlaybackMode.RESTORING_VIDEO && restoreTarget === target) {
-          restoreTarget = null;
-          setMode(MsePlaybackMode.AUDIO_ONLY, {reason: 'restore-request-failed', target});
+          notifyVideoRestoreFailed(target, 'restore-request-failed');
         }
       });
       return event;
     },
     observePresentedFrame,
-    notifyVideoRestoreFailed(target = restoreTarget, reason = 'restore-candidate-failed') {
-      if (mode !== MsePlaybackMode.RESTORING_VIDEO || target === null ||
-          Math.abs(target - restoreTarget) > 0.0005) return null;
-      restoreTarget = null;
-      return setMode(MsePlaybackMode.AUDIO_ONLY, {reason, target});
+    notifyVideoRestoreFailed,
+    notifyMediaElementChanged() {
+      if (frameCallbackId !== null &&
+          typeof media.cancelVideoFrameCallback === 'function') {
+        media.cancelVideoFrameCallback(frameCallbackId);
+      }
+      frameCallbackId = null;
+      scheduleFrameObservation();
     },
     notifyExplicitSeek(nextGeneration = currentGeneration) {
       return resetState({nextGeneration, reason: 'explicit-seek'});

@@ -4,6 +4,13 @@
 > `tlvdemux` 命名空间。相关条目以 **旧 `tlvdemux` 实现** 标记；这只是历史名称，
 > 并非独立产品线。
 
+## [Unreleased]
+
+- 增加公开的 video-unavailable resilience 模式：连续三次前向 RAP 恢复仍无新画面后，
+  将缓冲要求切为纯音频；只有后续 RAP 的帧真正提交到 compositor 后才恢复视频。
+- 增加有界的录制/Live 切换契约、运行时 `activeSourceBuffers` 验证，以及不改变视频区域
+  几何的稳定 `TLV_VIDEO_UNAVAILABLE` demo 状态。
+
 ## [0.3.3] - 2026-08-28
 
 - 将自动双视频录制的时间线定义为首选轨与降雨轨 presentation range 的并集，公开其

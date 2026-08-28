@@ -30,6 +30,8 @@ import {
   MsePlaybackMode,
   createDemoPlaybackResilience,
 } from './playback-resilience.js?v=audio-only-resilience-v1';
+import {createLiveMseTransitionManager}
+  from '../mse-live-transition.mjs?v=audio-only-resilience-v1';
 import {
   RangeUnsupportedError,
   createBlobRecordedSource,
@@ -120,6 +122,7 @@ let activeAudioSwitch = null;
 let activeSubtitleSwitch = null;
 let activeSubtitleRenderer = null;
 let activeGapRecovery = null;
+let activeLiveTransitionManager = null;
 let subtitleRendererRequest = 0;
 let selectedAudioPacketId = null;
 let selectedAudioGroupId = null;
@@ -138,6 +141,7 @@ let preferredSubtitlePacketId = null;
 let knownSubtitleTracks = new Map();
 let knownTtmlTracks = new Map();
 let playbackQualityTimer = null;
+let playbackMediaEventAbort = null;
 
 elements.video.defaultPlaybackRate = DEFAULT_PLAYBACK_RATE;
 elements.video.playbackRate = DEFAULT_PLAYBACK_RATE;
@@ -166,6 +170,31 @@ const AUDIO_LAYOUTS = [
 ];
 const MSE_MAX_AUDIO_CHANNELS = 6;
 const BrowserMediaSource = globalThis.ManagedMediaSource || globalThis.MediaSource;
+
+// Long-lived SDK objects use this proxy so an already-buffered candidate
+// MediaElement can replace the visible element without retaining stale media
+// clocks or frame-callback registrations.
+const playbackMedia = {
+  get currentTime() { return elements.video.currentTime; },
+  set currentTime(value) { elements.video.currentTime = value; },
+  get paused() { return elements.video.paused; },
+  get seeking() { return elements.video.seeking; },
+  get ended() { return elements.video.ended; },
+  get error() { return elements.video.error; },
+  get buffered() { return elements.video.buffered; },
+  get videoFrameCallbackSupported() {
+    return typeof elements.video.requestVideoFrameCallback === 'function';
+  },
+  play() { return elements.video.play(); },
+  pause() { return elements.video.pause(); },
+  requestVideoFrameCallback(callback) {
+    const media = elements.video;
+    return {media, id: media.requestVideoFrameCallback(callback)};
+  },
+  cancelVideoFrameCallback(request) {
+    request?.media?.cancelVideoFrameCallback?.(request.id);
+  },
+};
 
 function mseAudioTrackSupported(track) {
   const channels = track.audio?.channels ?? 0;
@@ -518,6 +547,8 @@ function releaseMedia() {
   activeSubtitleSwitch = null;
   activeGapRecovery?.destroy();
   activeGapRecovery = null;
+  activeLiveTransitionManager?.destroy();
+  activeLiveTransitionManager = null;
   activeSubtitleRenderer?.destroy();
   activeSubtitleRenderer = null;
   internalSeekTarget = null;
@@ -546,6 +577,8 @@ function stopPlayback(quiet = false, preserveMedia = false) {
   activeSubtitleSwitch = null;
   activeGapRecovery?.destroy();
   activeGapRecovery = null;
+  activeLiveTransitionManager?.destroy();
+  activeLiveTransitionManager = null;
   activeSubtitleRenderer?.reset();
   currentVideoPresentationHint = null;
   currentVideoProperties = null;
@@ -655,6 +688,25 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     appendLog(`60 秒未満の録画は ${LIVE_PLAYBACK_RATE}× で再生します`);
   }
   let mediaSource;
+  const openDetachedMediaSource = async (MediaSourceClass, mediaElement) => {
+    const fresh = new MediaSourceClass();
+    const opened = fresh.readyState === 'open'
+      ? Promise.resolve()
+      : once(fresh, 'sourceopen');
+    const url = URL.createObjectURL(fresh);
+    if (typeof globalThis.ManagedMediaSource === 'function' &&
+        fresh instanceof globalThis.ManagedMediaSource) {
+      mediaElement.disableRemotePlayback = true;
+    }
+    mediaElement.src = url;
+    mediaElement.load();
+    if (typeof globalThis.ManagedMediaSource === 'function' &&
+        fresh instanceof globalThis.ManagedMediaSource) {
+      await mediaElement.play().catch(() => {});
+    }
+    await opened;
+    return {mediaSource: fresh, url};
+  };
   const openFreshMediaSource = async () => {
     if (!BrowserMediaSource) {
       throw new Error('このブラウザーは Media Source Extensions に対応していません');
@@ -734,7 +786,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   for (const queue of activeQueues) queue.resume();
   createSubtitleRenderer(liveMode);
 
-  const queues = reuseMedia ? new Map(activeQueueByType) : new Map();
+  let queues = reuseMedia ? new Map(activeQueueByType) : new Map();
   const requiredTracks = initialPlaybackMode === MsePlaybackMode.AUDIO_ONLY
     ? ['audio'] : ['video', 'audio'];
   const tracks = new Map();
@@ -762,8 +814,8 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     probeResult.presentationStart);
   const presentationEndUs = liveMode ? null : timestampMicroseconds(
     probeResult.presentationEnd);
-  const playbackFlow = createMsePlaybackFlowControl({
-    media: elements.video,
+  let playbackFlow = createMsePlaybackFlowControl({
+    media: playbackMedia,
     queues,
     requiredTracks,
     entryKind: liveMode ? 'live' : startTimeSeconds > 0 ? 'seek' : 'startup',
@@ -775,6 +827,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   });
 
   let msePipeline = null;
+  let liveTransitionManager = null;
   let audioOnlyTransitionScheduled = false;
   const scheduleRecordedRebuild = (mode, target) => {
     if (audioOnlyTransitionScheduled || liveMode || generation !== runGeneration) return;
@@ -788,14 +841,16 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     });
   };
   const gapRecovery = createDemoPlaybackResilience({
-    media: elements.video,
-    mediaSource,
-    queues,
-    playbackFlow,
+    media: playbackMedia,
+    mediaSource: () => mediaSource,
+    queues: () => queues,
+    playbackFlow: () => playbackFlow,
     pipeline: () => msePipeline,
     presentationStartUs,
     generation,
     initialMode: initialPlaybackMode,
+    initialRestoreTarget: initialPlaybackMode === MsePlaybackMode.RESTORING_VIDEO
+      ? startTimeSeconds : null,
     liveMode,
     isActive: () => generation === runGeneration && !suppressOutput,
     isCurrentLayer: damage => damage.videoTrackId === selectedVideo,
@@ -814,10 +869,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     playbackStateElement: elements.probeState,
     appendLog,
     scheduleRecordedRebuild,
-    removeActiveVideoQueue(videoQueue) {
-      activeQueueByType.delete('video');
-      activeQueues = activeQueues.filter(queue => queue !== videoQueue);
-    },
+    requestLiveTransition: (mode, target) => liveTransitionManager.transition(mode, target),
   });
   activeGapRecovery = gapRecovery;
 
@@ -895,20 +947,94 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       `source=${splice.sourceBoundarySeconds.toFixed(6)}s ` +
       `output=${splice.outputBoundarySeconds.toFixed(6)}s`),
   });
+  if (liveMode) {
+    liveTransitionManager = createLiveMseTransitionManager({
+      MediaSourceClass: BrowserMediaSource,
+      media: playbackMedia,
+      queueOptions: {
+        backBufferSeconds: BACK_BUFFER_SECONDS,
+        forwardBufferHighSeconds: FORWARD_BUFFER_HIGH_SECONDS,
+        getMediaError: media => mediaErrorMessage(media.error),
+      },
+      isActive: () => generation === runGeneration,
+      openMediaSource: openDetachedMediaSource,
+      async commit(candidate) {
+        if (generation !== runGeneration) return;
+        const previousMedia = elements.video;
+        const previousUrl = activeObjectUrl;
+        const resume = !previousMedia.paused;
+        const target = previousMedia.currentTime;
+        const promotedMedia = candidate.probeMedia;
+        promotedMedia.pause();
+        for (const queue of queues.values()) queue.destroy();
+        previousMedia.pause();
+        promotedMedia.removeAttribute('aria-hidden');
+        promotedMedia.removeAttribute('style');
+        promotedMedia.controls = previousMedia.controls;
+        promotedMedia.muted = previousMedia.muted;
+        promotedMedia.volume = previousMedia.volume;
+        promotedMedia.defaultPlaybackRate = previousMedia.defaultPlaybackRate;
+        promotedMedia.playbackRate = previousMedia.playbackRate;
+        previousMedia.removeAttribute('id');
+        promotedMedia.id = 'video';
+        previousMedia.replaceWith(promotedMedia);
+        elements.video = promotedMedia;
+        bindPlaybackMediaEvents(promotedMedia);
+        dataBroadcast.setVideoElement(promotedMedia);
+        hlgSdrRenderer.setVideoElement(promotedMedia);
+        createSubtitleRenderer(liveMode);
+        gapRecovery.notifyMediaElementChanged();
+        mediaSource = candidate.mediaSource;
+        queues = candidate.queues;
+        playbackFlow = candidate.flow;
+        msePipeline = candidate.pipeline;
+        mediaSource.tlvdemuxQueues = queues;
+        activeMediaSource = mediaSource;
+        activeObjectUrl = candidate.url;
+        activeQueueByType = new Map(queues);
+        activeQueues = [...queues.values()];
+        for (const queue of activeQueues) {
+          queue.onUpdateEnd = onMseUpdateEnd;
+          queue.resume();
+        }
+        promotedMedia.currentTime = Math.max(target, playbackFlow.entryRange()?.start ?? target);
+        if (resume) await promotedMedia.play().catch(() => {});
+        previousMedia.removeAttribute('src');
+        previousMedia.load();
+        if (previousUrl) URL.revokeObjectURL(previousUrl);
+        appendLog(`Live ${candidate.mode === MsePlaybackMode.AUDIO_ONLY ? '純音声' : 'A/V'} ` +
+          'MediaSource へ原子切替しました');
+      },
+      appendLog,
+    });
+    activeLiveTransitionManager = liveTransitionManager;
+  }
   const onMseInit = init => {
-    try { msePipeline.onMseInit(init); }
+    try {
+      liveTransitionManager?.observeInit(init);
+      msePipeline.onMseInit(init);
+    }
     catch (error) { callbackError = error; }
   };
   const onMseSegment = segment => {
-    try { msePipeline.onMseSegment(segment); }
+    try {
+      liveTransitionManager?.observeSegment(segment);
+      msePipeline.onMseSegment(segment);
+    }
     catch (error) { callbackError = error; }
   };
   const onMseAudioSplice = splice => {
-    try { msePipeline.onMseAudioSplice(splice); }
+    try {
+      liveTransitionManager?.observeSplice('audio', splice);
+      msePipeline.onMseAudioSplice(splice);
+    }
     catch (error) { callbackError = error; }
   };
   const onMseVideoSplice = splice => {
-    try { msePipeline.onMseVideoSplice(splice); }
+    try {
+      liveTransitionManager?.observeSplice('video', splice);
+      msePipeline.onMseVideoSplice(splice);
+    }
     catch (error) { callbackError = error; }
   };
   const onMseLayerSwitch = layer => {
@@ -1600,6 +1726,10 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     }
   }
   if (generation !== runGeneration) return;
+  liveTransitionManager?.destroy();
+  if (activeLiveTransitionManager === liveTransitionManager) {
+    activeLiveTransitionManager = null;
+  }
   gapRecovery.notifySourceEnded();
   await demuxer.flush();
   if (callbackError) throw callbackError;
@@ -1662,7 +1792,7 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false,
   elements.playbackNotice.hidden = true;
   elements.playbackNotice.textContent = '';
   elements.videoRecoveryStatus.textContent = '';
-  elements.log.textContent = '';
+  if (initialLoad) elements.log.textContent = '';
   try {
     let liveMode = elements.liveMode.checked;
     currentLiveMode = liveMode;
@@ -1782,49 +1912,56 @@ elements.captionVisible.addEventListener('change', () => {
 elements.superimposeVisible.addEventListener('change', () => {
   activeSubtitleRenderer?.setTrackVisibility('superimpose', elements.superimposeVisible.checked);
 });
-elements.video.addEventListener('error', () => {
-  const message = mediaErrorMessage();
-  appendLog(`映像エラー ${message || '不明'}`);
-  elements.probeState.textContent = 'デコード失敗';
-  elements.mediaInfo.textContent = message || 'MediaElement エラー';
-  activeController?.abort();
-});
-elements.video.addEventListener('waiting', () => {
-  appendLog(`MediaElement waiting ${elements.video.currentTime.toFixed(3)}s`);
-  activeGapRecovery?.notifyWaiting();
-});
-elements.video.addEventListener('seeking', () => {
-  if (currentLiveMode || !activeMediaSource) return;
-  const target = elements.video.currentTime;
-  if (internalSeekTarget !== null && Math.abs(target - internalSeekTarget) < 0.1) return;
-  internalSeekTarget = null;
-  activeGapRecovery?.notifyExplicitSeek(runGeneration);
-  const currentVideoTrack = knownVideoTracks.get(selectedVideoPacketId);
-  const automaticFallbackActive = shouldReprobeVideoLayerForSeek(
-    currentVideoTrack, parsePacketId());
-  if (isTimeBuffered(target) && !automaticFallbackActive) return;
-  clearTimeout(seekTimer);
-  seekTimer = setTimeout(() => {
-    if (!activeMediaSource) return;
-    appendLog(`ユーザーシーク ${target.toFixed(3)}s` +
-      (automaticFallbackActive ? '、映像層を再評価します' : ''));
-    // A SourceBuffer that has already changed from the preferred 4K decoder
-    // configuration to the rainfall 1080p configuration is unsafe to reuse
-    // for a backwards seek into 4K. Chromium retains per-frame decoder config
-    // history, and overlapping the old timeline can eventually surface as
-    // VideoToolbox -17694. Rebuild MSE only for this cross-layer seek.
-    const reuseMedia = !automaticFallbackActive;
-    stopPlayback(true, reuseMedia);
-    loadAndPlay(target, reuseMedia);
-  }, 120);
-});
-elements.video.addEventListener('seeked', () => {
-  if (internalSeekTarget !== null &&
-      Math.abs(elements.video.currentTime - internalSeekTarget) < 0.1) {
+function bindPlaybackMediaEvents(media) {
+  playbackMediaEventAbort?.abort();
+  playbackMediaEventAbort = new AbortController();
+  const options = {signal: playbackMediaEventAbort.signal};
+  media.addEventListener('error', () => {
+    const message = mediaErrorMessage();
+    appendLog(`映像エラー ${message || '不明'}`);
+    elements.probeState.textContent = 'デコード失敗';
+    elements.mediaInfo.textContent = message || 'MediaElement エラー';
+    activeController?.abort();
+  }, options);
+  media.addEventListener('waiting', () => {
+    appendLog(`MediaElement waiting ${media.currentTime.toFixed(3)}s`);
+    activeGapRecovery?.notifyWaiting();
+  }, options);
+  media.addEventListener('seeking', () => {
+    if (currentLiveMode || !activeMediaSource) return;
+    const target = media.currentTime;
+    if (internalSeekTarget !== null && Math.abs(target - internalSeekTarget) < 0.1) return;
     internalSeekTarget = null;
-  }
-  activeGapRecovery?.notifyBufferedChange();
-});
+    activeGapRecovery?.notifyExplicitSeek(runGeneration);
+    const currentVideoTrack = knownVideoTracks.get(selectedVideoPacketId);
+    const automaticFallbackActive = shouldReprobeVideoLayerForSeek(
+      currentVideoTrack, parsePacketId());
+    if (isTimeBuffered(target) && !automaticFallbackActive) return;
+    clearTimeout(seekTimer);
+    seekTimer = setTimeout(() => {
+      if (!activeMediaSource) return;
+      appendLog(`ユーザーシーク ${target.toFixed(3)}s` +
+        (automaticFallbackActive ? '、映像層を再評価します' : ''));
+      // A SourceBuffer that has already changed from the preferred 4K decoder
+      // configuration to the rainfall 1080p configuration is unsafe to reuse
+      // for a backwards seek into 4K. Chromium retains per-frame decoder config
+      // history, and overlapping the old timeline can eventually surface as
+      // VideoToolbox -17694. Rebuild MSE only for this cross-layer seek.
+      const reuseMedia = !automaticFallbackActive;
+      stopPlayback(true, reuseMedia);
+      loadAndPlay(target, reuseMedia);
+    }, 120);
+  }, options);
+  media.addEventListener('seeked', () => {
+    if (internalSeekTarget !== null &&
+        Math.abs(media.currentTime - internalSeekTarget) < 0.1) {
+      internalSeekTarget = null;
+    }
+    activeGapRecovery?.notifyBufferedChange();
+  }, options);
+}
+
+bindPlaybackMediaEvents(elements.video);
 
 createWorkerTlvDemuxModule().then(module => {
   wasmModule = module;

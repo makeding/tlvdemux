@@ -90,6 +90,42 @@ const damage = {
   controller.destroy();
 }
 
+{
+  const player = media(5);
+  const controller = createMsePlaybackResilienceController({
+    media: player,
+    initialMode: MsePlaybackMode.RESTORING_VIDEO,
+    initialRestoreTarget: 5,
+    seek() {},
+  });
+  controller.observePresentedFrame(4.99);
+  assert.equal(controller.mode, MsePlaybackMode.RESTORING_VIDEO,
+    'a rebuilt restore candidate committed before its RAP was presented');
+  controller.observePresentedFrame(5);
+  assert.equal(controller.mode, MsePlaybackMode.AUDIO_VIDEO,
+    'a rebuilt restore candidate did not commit after actual presentation');
+  controller.destroy();
+}
+
+{
+  const player = media(5);
+  const audioOnlyRequests = [];
+  const controller = createMsePlaybackResilienceController({
+    media: player,
+    initialMode: MsePlaybackMode.RESTORING_VIDEO,
+    initialRestoreTarget: 5,
+    seek() {},
+    onAudioOnlyRequested(event) { audioOnlyRequests.push(event); },
+  });
+  controller.notifyWaiting();
+  await Promise.resolve();
+  assert.equal(controller.mode, MsePlaybackMode.AUDIO_ONLY,
+    'a stalled rebuilt video candidate did not return to audio-only');
+  assert.equal(audioOnlyRequests.length, 1,
+    'a failed rebuilt video candidate did not request the audio fallback');
+  controller.destroy();
+}
+
 for (const setup of ['ordinary-waiting', 'inactive-track', 'switch', 'paused']) {
   const player = media(0.5);
   const seeks = [];

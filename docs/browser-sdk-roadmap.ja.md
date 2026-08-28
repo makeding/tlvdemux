@@ -57,7 +57,9 @@ data-broadcast DOM は consumer の責任です。
 提示 frame がない場合は required track set を audio にし、audio clock を進め、後続 RAP の実提示 frame
 だけで video を復帰できます。SourceBuffer の in-place 非 active 化は runtime probe 済み optimization、
 新しい audio-only／A/V MediaSource への置換を portable path とします。録画置換は 16 MiB seek budget を
-共有し、Live 置換は有界 input fan-out を使い、demo は structured mode／error event だけを表示します。
+共有し、Live 置換は input を再接続しない有界 demux-output fan-out を使い、demo は structured mode／error event だけを表示します。
+public `mse-live-transition` helper がこの有界 candidate fan-out と提示 frame commit 境界を所有し、
+consumer での再実装を禁止します。
 
 ## Release／migration 順序
 

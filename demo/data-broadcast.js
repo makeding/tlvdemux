@@ -34,6 +34,10 @@ export class WebKitCanvasMediaPlaneAdapter {
     this.objectOpacity = null;
   }
 
+  setVideoElement(video) {
+    this.video = video;
+  }
+
   mountMediaPlane(object, plane) {
     this.apply(object, plane);
   }
@@ -316,6 +320,15 @@ export class DataBroadcastController {
       () => this.setStatus('データ放送待機中', 'WASM 仮想ファイル未生成'),
       error => this.setStatus('VFS 初期化失敗', error.message),
     );
+  }
+
+  setVideoElement(video) {
+    this.video = video;
+    this.mediaPlaneAdapter.setVideoElement?.(video);
+    video.controls = !this.visible;
+    Object.assign(video.style, {
+      display: 'block', width: '100%', height: '100%', objectFit: 'contain', background: '#080b09',
+    });
   }
 
   setLogger(callback) {

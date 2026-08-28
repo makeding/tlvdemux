@@ -422,6 +422,7 @@ export class HlgSdrRenderer {
     this.webGpuCanvas = webGpuCanvas;
     this.webGlCanvas = webGlCanvas;
     this.onBackendChange = onBackendChange;
+    this.onError = onError;
     this.enabled = false;
     this.activeBackend = null;
     this.activeName = null;
@@ -442,6 +443,38 @@ export class HlgSdrRenderer {
     video.addEventListener('pause', this.handlePause);
     webGpuCanvas.hidden = true;
     webGlCanvas.hidden = true;
+  }
+
+  setVideoElement(video) {
+    if (video === this.video) return;
+    const enabled = this.enabled;
+    const lut = this.webGl.lut;
+    const comparison = this.webGl.comparison;
+    this.cancelFrame();
+    this.video.removeEventListener('play', this.handlePlay);
+    this.video.removeEventListener('pause', this.handlePause);
+    this.webGpu.destroy();
+    this.webGl.destroy();
+    this.video = video;
+    this.webGl = new WebGlBackend(video, this.webGlCanvas, this.onError);
+    this.webGpu = new WebGpuBackend(video, this.webGpuCanvas, this.onError, () => {
+      if (this.activeBackend === this.webGpu) {
+        this.activeBackend = null;
+        this.activeName = null;
+        if (this.enabled) void this.selectBackend(++this.generation);
+      }
+    });
+    if (lut) {
+      this.webGl.setColorLut(lut);
+      this.webGpu.setColorLut(lut);
+    }
+    this.webGl.setComparisonEnabled(comparison);
+    this.webGpu.setComparisonEnabled(comparison);
+    video.addEventListener('play', this.handlePlay);
+    video.addEventListener('pause', this.handlePause);
+    this.activeBackend = null;
+    this.activeName = null;
+    if (enabled) void this.selectBackend(++this.generation);
   }
 
   setColorLut(lut) {

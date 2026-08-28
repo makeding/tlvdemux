@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 
-const [html, css, demo, adapter] = await Promise.all([
+const [html, css, demo, adapter, liveTransition] = await Promise.all([
   readFile(new URL('../demo/index.html', import.meta.url), 'utf8'),
   readFile(new URL('../demo/demo.css', import.meta.url), 'utf8'),
   readFile(new URL('../demo/demo.js', import.meta.url), 'utf8'),
   readFile(new URL('../demo/playback-resilience.js', import.meta.url), 'utf8'),
+  readFile(new URL('../mse-live-transition.mjs', import.meta.url), 'utf8'),
 ]);
 
 assert.match(html, /id="videoRecoveryStatus" class="video-recovery-status" role="status"/,
@@ -18,5 +19,15 @@ assert.match(adapter, /createMsePlaybackResilienceController/,
   'demo copied resilience decisions instead of consuming the SDK controller');
 assert.doesNotMatch(demo, /maximumRecoveryAttempts|attemptedRaps/,
   'demo owns or exposes internal recovery retry policy');
+assert.match(demo, /createLiveMseTransitionManager/,
+  'Live fallback has no candidate MediaSource transition path');
+assert.match(liveTransition, /4 \* 1024 \* 1024/,
+  'Live candidate transition has no fixed byte limit');
+assert.match(liveTransition, /requestVideoFrameCallback/,
+  'Live A\/V candidate commits without actual presented-frame evidence');
+assert.match(demo, /candidate\.probeMedia/,
+  'demo does not promote the already-buffered Live candidate MediaElement');
+assert.match(liveTransition, /MSE detach algorithm/,
+  'Live transition can regress to detaching and emptying the proven candidate');
 
 console.log('demo audio-only contract tests passed');

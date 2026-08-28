@@ -14,6 +14,7 @@ export function createDemoPlaybackResilience({
   presentationStartUs,
   generation,
   initialMode,
+  initialRestoreTarget = null,
   liveMode,
   isActive,
   isCurrentLayer,
@@ -23,7 +24,7 @@ export function createDemoPlaybackResilience({
   playbackStateElement,
   appendLog,
   scheduleRecordedRebuild,
-  removeActiveVideoQueue,
+  requestLiveTransition,
 }) {
   const renderMode = event => {
     if (event.mode === MsePlaybackMode.AUDIO_ONLY) {
@@ -40,6 +41,8 @@ export function createDemoPlaybackResilience({
       appendLog(`映像復旧を開始しました RAP=${event.target.toFixed(6)}s`);
     } else {
       statusElement.textContent = '';
+      pipeline()?.setRequiredTracks(['video', 'audio']);
+      playbackFlow().setRequiredTracks(['video', 'audio'], media.currentTime);
       if (event.reason === 'video-restored') {
         playbackStateElement.textContent = liveMode ? 'Live 再生中' : '再生中';
         appendLog(`映像復旧完了 frame=${event.mediaTime.toFixed(6)}s`);
@@ -53,6 +56,7 @@ export function createDemoPlaybackResilience({
     presentationStartUs,
     generation,
     initialMode,
+    initialRestoreTarget,
     isActive,
     isCurrentLayer,
     switchInFlight,
@@ -60,51 +64,75 @@ export function createDemoPlaybackResilience({
     onModeChange: renderMode,
     async onAudioOnlyRequested() {
       pipeline()?.setRequiredTracks(['audio']);
-      playbackFlow.setRequiredTracks(['audio'], media.currentTime);
-      const videoQueue = queues.get('video');
+      playbackFlow().setRequiredTracks(['audio'], media.currentTime);
+      const currentQueues = queues();
+      const videoQueue = currentQueues.get('video');
       const result = await setMseVideoTrackActive({
-        mediaSource,
+        mediaSource: mediaSource(),
         active: false,
         videoSourceBuffer: videoQueue?.sourceBuffer ?? null,
       });
       if (!isActive()) return;
+      if (controller.mode !== MsePlaybackMode.AUDIO_ONLY) {
+        if (result.changed) {
+          await setMseVideoTrackActive({
+            mediaSource: mediaSource(),
+            active: true,
+            videoSourceBuffer: videoQueue?.sourceBuffer ?? null,
+          });
+        }
+        return;
+      }
       if (result.changed) {
         appendLog('video SourceBuffer が activeSourceBuffers から外れたことを確認しました');
       } else if (!liveMode) {
         scheduleRecordedRebuild(MsePlaybackMode.AUDIO_ONLY, media.currentTime);
-      } else if (videoQueue && mediaSource.readyState === 'open' &&
-                 Array.from(mediaSource.sourceBuffers).includes(videoQueue.sourceBuffer)) {
-        await videoQueue.quiesce();
-        mediaSource.removeSourceBuffer(videoQueue.sourceBuffer);
-        queues.delete('video');
-        removeActiveVideoQueue(videoQueue);
-        appendLog('Live 入力を中断せず video SourceBuffer を切り離し、音声を継続します');
+      } else if (currentQueues.has('audio') && !currentQueues.has('video')) {
+        appendLog('失敗した映像候補を破棄し、現在の Live 音声を継続します');
+      } else {
+        try {
+          await requestLiveTransition(MsePlaybackMode.AUDIO_ONLY, media.currentTime);
+        } catch (error) {
+          // A future RAP may supersede the audio-only candidate while it is
+          // opening. Never tear video out of the active restoring candidate.
+          if (controller.mode !== MsePlaybackMode.AUDIO_ONLY) return;
+          const activeSource = mediaSource();
+          if (videoQueue && activeSource.readyState === 'open' &&
+              Array.from(activeSource.sourceBuffers).includes(videoQueue.sourceBuffer)) {
+            await videoQueue.quiesce();
+            activeSource.removeSourceBuffer(videoQueue.sourceBuffer);
+            currentQueues.delete('video');
+            appendLog('Live 純音声候補の準備に失敗したため video SourceBuffer を切り離し、音声を継続します');
+          } else {
+            throw error;
+          }
+        }
       }
     },
     async onVideoRestoreRequested(event) {
       pipeline()?.setRequiredTracks(['video', 'audio']);
-      playbackFlow.setRequiredTracks(['video', 'audio'], media.currentTime);
-      const videoQueue = queues.get('video');
+      playbackFlow().setRequiredTracks(['video', 'audio'], media.currentTime);
+      const videoQueue = queues().get('video');
       const result = await setMseVideoTrackActive({
-        mediaSource,
+        mediaSource: mediaSource(),
         active: true,
         videoSourceBuffer: videoQueue?.sourceBuffer ?? null,
       });
-      if (!isActive()) return;
+      if (!isActive() || controller.mode !== MsePlaybackMode.RESTORING_VIDEO) return;
       if (result.changed) {
         appendLog('video SourceBuffer を再び active にし、実提示 frame を待ちます');
       } else if (!liveMode) {
-        scheduleRecordedRebuild(MsePlaybackMode.AUDIO_VIDEO, event.target);
+        scheduleRecordedRebuild(MsePlaybackMode.RESTORING_VIDEO, event.target);
       } else {
-        pipeline()?.setRequiredTracks(['audio']);
-        playbackFlow.setRequiredTracks(['audio'], media.currentTime);
-        controller.notifyVideoRestoreFailed(event.target, 'live-restore-requires-rebuild');
-        appendLog('Live 映像候補をこの MediaSource で復旧できないため、音声を継続します');
+        const restored = await requestLiveTransition(
+          MsePlaybackMode.RESTORING_VIDEO, event.target,
+        );
+        controller.observePresentedFrame(restored.presentedTime);
       }
     },
     onVideoRestored() {
       pipeline()?.setRequiredTracks(['video', 'audio']);
-      playbackFlow.setRequiredTracks(['video', 'audio'], media.currentTime);
+      playbackFlow().setRequiredTracks(['video', 'audio'], media.currentTime);
     },
   });
   renderMode({mode: initialMode, reason: 'initial'});

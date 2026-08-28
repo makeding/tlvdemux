@@ -294,6 +294,12 @@ rebuilds reuse the public index/seek session and its single 16 MiB read budget.
 Live integrations retain bounded current input while the replacement audio
 pipeline becomes playable; they must not reconnect or stop feeding the existing
 audio pipeline. The audio clock remains authoritative throughout the transition.
+`createLiveMseTransitionManager()` owns the 4 MiB candidate MediaSource queue,
+receives the same ongoing demux output as the active pipeline, and commits a
+restored A/V candidate only after its hidden probe MediaElement reports the
+target frame through `requestVideoFrameCallback()`. Commit promotes that still-attached
+candidate MediaElement; detaching and reattaching its object URL is forbidden because
+the MSE detach algorithm empties both SourceBuffer lists.
 
 While audio-only playback continues, each real RAP strictly after the audio
 clock is eligible for one restore attempt. Restoration stays in

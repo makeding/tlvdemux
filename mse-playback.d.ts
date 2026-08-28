@@ -92,6 +92,7 @@ export declare function createMsePlaybackDamageRecovery(options: {
   media: MseMediaClock & {
     seeking: boolean;
     paused: boolean;
+    readonly videoFrameCallbackSupported?: boolean;
     play(): Promise<void>;
     buffered?: {length: number; start(index: number): number; end(index: number): number};
     requestVideoFrameCallback?: (callback: (
@@ -171,6 +172,7 @@ export interface MsePlaybackResilienceController {
   }): {start: number; end: number} | MsePlaybackModeChange | null;
   observePresentedFrame(mediaTimeSeconds: number): number | null;
   notifyVideoRestoreFailed(target?: number | null, reason?: string): MsePlaybackModeChange | null;
+  notifyMediaElementChanged(): void;
   notifyExplicitSeek(nextGeneration?: unknown): MsePlaybackModeChange;
   notifyTrackSwitch(nextGeneration?: unknown): MsePlaybackModeChange;
   reset(nextGeneration?: unknown): MsePlaybackModeChange;
@@ -191,7 +193,8 @@ export declare function createMsePlaybackResilienceController(options: {
   };
   presentationStartUs?: bigint;
   generation?: unknown;
-  initialMode?: 'audio-video' | 'audio-only';
+  initialMode?: 'audio-video' | 'audio-only' | 'restoring-video';
+  initialRestoreTarget?: number | null;
   maximumRecoveryAttempts?: number;
   isActive?: () => boolean;
   isCurrentLayer?: (damage: Record<string, unknown>) => boolean;

@@ -241,6 +241,9 @@ transition cache を作りません。runtime の in-place 切替は video Sourc
 MediaSource を構築します。録画 rebuild は public index／seek session と一つの 16 MiB read budget を
 再利用します。Live は replacement audio pipeline が再生可能になるまで現在 input を有界に保持し、
 再接続や既存 audio pipeline の停止を行いません。transition 中の正準 clock は常に audio です。
+`createLiveMseTransitionManager()` は 4 MiB 上限の candidate MediaSource queue を所有し、active pipeline
+と同じ継続中 demux output を受け取ります。復旧 A/V candidate は probe MediaElement が target frame を
+`requestVideoFrameCallback()` で報告した場合だけ commit します。
 
 audio-only 再生中は audio clock より厳密に後の各実在 RAP を一度だけ restore 候補にできます。共通 A/V
 candidate が buffer 済みとなり、`requestVideoFrameCallback()` がその RAP 以後の frame の実提示を証明する
