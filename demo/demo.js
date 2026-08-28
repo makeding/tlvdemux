@@ -1310,17 +1310,20 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     if (!corresponding) {
       throw new Error('切替先の映像レイヤーに対応する音声がありません');
     }
-    const earliest = earliestUs ??
-      BigInt(Math.round((elements.video.currentTime + 0.1) * 1000000));
+    const earliest = earliestUs ?? BigInt(Math.round((playbackFlow.entryCovered()
+      ? elements.video.currentTime + 0.1
+      : playbackFlow.entryTimeSeconds) * 1000000));
     pendingLayerSwitch = {
       video: track,
       audio: corresponding.track,
       groupIdentification: corresponding.groupIdentification,
       reason: 'manual',
     };
-    const accepted = await demuxer.switchLayer(
-      track.trackId, corresponding.track.trackId, earliest,
-    );
+    const accepted = playbackFlow.entryCovered()
+      ? await demuxer.switchLayer(track.trackId, corresponding.track.trackId, earliest)
+      : await demuxer.switchLayerAtPlaybackEntry(
+        track.trackId, corresponding.track.trackId, earliest,
+      );
     if (!accepted) {
       pendingLayerSwitch = null;
       throw new Error('映像レイヤー切替を開始できませんでした');
@@ -1339,10 +1342,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         videoSelectionMode = 'fixed';
         elements.videoPacketId.value = selectedVideoPacketId === null
           ? '' : String(selectedVideoPacketId);
-        automaticLayerPairSignature = await configureSdkAutomaticLayerPair(
-          demuxer, null, automaticLayerPairSignature,
-          {manual: true, force: true},
-        );
+        await refreshAutomaticLayerPair();
         renderVideoTracks();
         throw error;
       }
@@ -1350,9 +1350,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     }
     elements.videoPacketId.value = String(packetId);
     videoSelectionMode = 'fixed';
-    automaticLayerPairSignature = await configureSdkAutomaticLayerPair(
-      demuxer, null, automaticLayerPairSignature, {manual: true, force: true},
-    );
+    await refreshAutomaticLayerPair();
     if (pendingLayerSwitch && selectedVideo !== null) {
       await demuxer.selectTrack('video', selectedVideo);
     }

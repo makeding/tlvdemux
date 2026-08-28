@@ -29,6 +29,18 @@ const queue = ranges => ({
 {
   const media = {currentTime: 0};
   const queues = new Map([
+    ['video', queue([{start: 0, end: 4}])],
+    ['audio', queue([{start: 0, end: 4}])],
+  ]);
+  const flow = createMsePlaybackFlowControl({media, queues});
+  const result = await flow.afterPush(2 * 1024 * 1024);
+  assert.equal(result.entryCovered, true,
+    'timestamp-mapped manual startup switch was classified as no-common-A/V');
+}
+
+{
+  const media = {currentTime: 0};
+  const queues = new Map([
     ['video', queue([])],
     ['audio', queue([])],
   ]);

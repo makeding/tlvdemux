@@ -745,6 +745,8 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("selectTrack", &WasmDemuxer::selectTrack)
         .function("switchAudioTrack", &WasmDemuxer::switchAudioTrack)
         .function("switchLayer", &WasmDemuxer::switchLayer)
+        .function("switchLayerAtPlaybackEntry",
+                  &WasmDemuxer::switchLayerAtPlaybackEntry)
         .function("configureAutomaticLayerSwitch",
                   &WasmDemuxer::configureAutomaticLayerSwitch)
         .function("suspendAutomaticLayerSwitch",

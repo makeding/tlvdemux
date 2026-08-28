@@ -206,6 +206,9 @@ and immediately stage a coordinated return to healthy preferred video and its
 corresponding audio at the next usable RAP. An unavailable or damaged preferred
 layer keeps the usable rainfall output instead of leaving a switch pending to
 EOF. Re-enabling automatic mode also supersedes an unfinished manual request.
+A manual layer selection made before the initial common A/V entry is established
+maps both replacement tracks to that playback entry; its normal preroll must not
+be misreported as `MSE_STARTUP_NO_COMMON_AV`.
 
 ## Library usage
 

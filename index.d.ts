@@ -842,7 +842,12 @@ declare namespace createTlvDemuxModule {
       fallbackVideoTrackId: bigint,
       fallbackAudioTrackId: bigint,
     ): void;
-    suspendAutomaticLayerSwitch(): void;
+    suspendAutomaticLayerSwitch(
+      preferredVideoTrackId: bigint,
+      preferredAudioTrackId: bigint,
+      fallbackVideoTrackId: bigint,
+      fallbackAudioTrackId: bigint,
+    ): void;
     clearAutomaticLayerSwitch(): void;
     /** Report the unchanged media clock for automatic layer recovery decisions. */
     setMsePlaybackPosition(presentationTimeUs: bigint): void;
@@ -851,6 +856,11 @@ declare namespace createTlvDemuxModule {
       videoTrackId: bigint,
       audioTrackId: bigint,
       earliestPresentationTimeUs: bigint,
+    ): boolean;
+    switchLayerAtPlaybackEntry(
+      videoTrackId: bigint,
+      audioTrackId: bigint,
+      playbackEntryTimeUs: bigint,
     ): boolean;
     setMseOutputEnabled(enabled: boolean): void;
     setSubtitlePassthroughEnabled(enabled: boolean): void;

@@ -225,6 +225,11 @@ class WorkerDemuxer extends WorkerObject {
       videoTrackId, audioTrackId, earliestPresentationTimeUs,
     ]);
   }
+  switchLayerAtPlaybackEntry(videoTrackId, audioTrackId, playbackEntryTimeUs) {
+    return this.call('switchLayerAtPlaybackEntry', [
+      videoTrackId, audioTrackId, playbackEntryTimeUs,
+    ]);
+  }
   configureAutomaticLayerSwitch(
     preferredVideoTrackId, preferredAudioTrackId,
     fallbackVideoTrackId, fallbackAudioTrackId,
@@ -234,7 +239,15 @@ class WorkerDemuxer extends WorkerObject {
       fallbackVideoTrackId, fallbackAudioTrackId,
     ]);
   }
-  suspendAutomaticLayerSwitch() { return this.call('suspendAutomaticLayerSwitch'); }
+  suspendAutomaticLayerSwitch(
+    preferredVideoTrackId, preferredAudioTrackId,
+    fallbackVideoTrackId, fallbackAudioTrackId,
+  ) {
+    return this.call('suspendAutomaticLayerSwitch', [
+      preferredVideoTrackId, preferredAudioTrackId,
+      fallbackVideoTrackId, fallbackAudioTrackId,
+    ]);
+  }
   clearAutomaticLayerSwitch() { return this.call('clearAutomaticLayerSwitch'); }
   setMsePlaybackPosition(presentationTimeUs) {
     return this.call('setMsePlaybackPosition', [presentationTimeUs]);

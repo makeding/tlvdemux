@@ -122,6 +122,22 @@ public:
         return true;
     }
 
+    bool switchLayerAtPlaybackEntry(
+        const std::uint64_t video_track_id,
+        const std::uint64_t audio_track_id,
+        const std::int64_t playback_entry_time_us) {
+        if (!mse_enabled_ || !mse_remuxer_.switchLayerAtPlaybackEntry(
+                video_track_id, audio_track_id,
+                playback_entry_time_us)) return false;
+        selected_audio_track_ = audio_track_id;
+        selected_video_track_ = video_track_id;
+        demuxer_.selectTrack(aribtlv::TrackKind::Video, std::nullopt);
+        if (index_active_ && recording_index_.state() == aribtlv::IndexState::Building) {
+            recording_index_.switchVideoTrack(video_track_id);
+        }
+        return true;
+    }
+
     void synchronizeAcceptedLayerSwitch(
         const tlvdemux::MseAutomaticLayerSwitchAccepted& accepted) {
         selected_audio_track_ = accepted.audio_track_id;
@@ -146,8 +162,17 @@ public:
         });
     }
 
-    void suspendAutomaticLayerSwitch() {
-        mse_remuxer_.suspendAutomaticLayerSwitch();
+    void suspendAutomaticLayerSwitch(
+        const std::uint64_t preferred_video_track_id,
+        const std::uint64_t preferred_audio_track_id,
+        const std::uint64_t fallback_video_track_id,
+        const std::uint64_t fallback_audio_track_id) {
+        mse_remuxer_.suspendAutomaticLayerSwitch(tlvdemux::MseAutomaticLayerPair{
+            preferred_video_track_id,
+            preferred_audio_track_id,
+            fallback_video_track_id,
+            fallback_audio_track_id,
+        });
     }
 
     void clearAutomaticLayerSwitch() {

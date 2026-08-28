@@ -108,7 +108,7 @@ assert.deepEqual(resolveLayerPair(
 const operations = [];
 const demuxer = {
   configureAutomaticLayerSwitch: (...ids) => operations.push(['configure', ...ids]),
-  suspendAutomaticLayerSwitch: () => operations.push(['suspend']),
+  suspendAutomaticLayerSwitch: (...ids) => operations.push(['suspend', ...ids]),
   clearAutomaticLayerSwitch: () => operations.push(['clear']),
 };
 const pair = resolveLayerPair(
@@ -125,10 +125,13 @@ assert.equal(operations.length, 1, 'unchanged automatic layer pair was reconfigu
 assert.equal(await configureAutomaticLayerPair(demuxer, null, signature), 'unavailable');
 assert.deepEqual(operations.at(-1), ['clear']);
 assert.equal(await configureAutomaticLayerPair(demuxer, pair, 'unavailable', {manual: true}),
-  'disabled:unavailable');
-assert.deepEqual(operations.at(-1), ['suspend']);
+  `disabled:1:${audioMainHigh.trackId}:2:${audioMainLow.trackId}`);
+assert.deepEqual(operations.at(-1), [
+  'suspend', videoHigh.trackId, audioMainHigh.trackId,
+  videoLow.trackId, audioMainLow.trackId,
+]);
 const restoredSignature = await configureAutomaticLayerPair(
-  demuxer, pair, 'disabled:unavailable');
+  demuxer, pair, `disabled:1:${audioMainHigh.trackId}:2:${audioMainLow.trackId}`);
 assert.equal(restoredSignature, `1:${audioMainHigh.trackId}:2:${audioMainLow.trackId}`);
 assert.deepEqual(operations.at(-1), [
   'configure', videoHigh.trackId, audioMainHigh.trackId,

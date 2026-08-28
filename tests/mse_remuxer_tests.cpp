@@ -1081,6 +1081,34 @@ void test_startup_fallback_stages_splice_init_media_without_preferred_video() {
     }
 }
 
+void test_manual_startup_layer_switch_maps_to_playback_entry() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+
+    constexpr std::int64_t frame = 1024;
+    for (std::int64_t index = 0; index < 120; ++index) {
+        remuxer.push(audio_unit(9, index * frame));
+    }
+    check(remuxer.switchLayerAtPlaybackEntry(3, 9, 0),
+          "manual startup rainfall switch was rejected");
+    remuxer.push(hevc_unit(3, 100000, 100000, true, true));
+    for (std::int64_t index = 1; index <= 20; ++index) {
+        const auto timestamp = 100000 + index * 33367;
+        remuxer.push(hevc_unit(3, timestamp, timestamp, false, false));
+    }
+
+    check(sink.layer_switches.size() == 1,
+          "manual startup rainfall switch did not complete");
+    check(sink.video_splices.size() == 1 && sink.splices.size() == 1 &&
+              sink.video_splices.front().presentation_time_us == 100000 &&
+              sink.splices.front().presentation_time_us == 100000 &&
+              sink.video_splices.front().timestamp_offset_us == -100000 &&
+              sink.splices.front().timestamp_offset_us == -100000,
+          "manual startup rainfall switch did not map common A/V to timestamp zero");
+}
+
 aribtlv::DamageSpan severe_source_damage(const std::uint64_t track_id) {
     aribtlv::DamageSpan damage;
     damage.track_id = track_id;
@@ -1246,7 +1274,9 @@ void test_layer_switch_coordinates_video_rap_and_prepared_audio() {
               completed.audio_presentation_time_us == expected_boundary,
           "layer switch did not map replacement A/V to the first target RAP");
     check(sink.video_splices.size() == 1 && sink.splices.size() == 1 &&
-              sink.splices.front().presentation_time_us == expected_boundary,
+              sink.splices.front().presentation_time_us == expected_boundary &&
+              sink.video_splices.front().timestamp_offset_us == 0 &&
+              sink.splices.front().timestamp_offset_us == 0,
           "layer switch did not splice both SourceBuffers");
     check(sink.audio_emitted_end_at_splice.has_value() &&
               *sink.audio_emitted_end_at_splice > expected_boundary + 1000000,
@@ -1872,6 +1902,7 @@ int main() {
     test_video_track_switch_preserves_prepared_alternate_audio();
     test_alternate_audio_keeps_warming_while_selected_video_has_no_timeline();
     test_startup_fallback_stages_splice_init_media_without_preferred_video();
+    test_manual_startup_layer_switch_maps_to_playback_entry();
     test_source_damage_prefers_accepted_automatic_layer_switch();
     test_source_damage_waits_then_seeks_at_real_recovery_rap();
     test_fixed_mode_keeps_immediate_source_damage_seek();

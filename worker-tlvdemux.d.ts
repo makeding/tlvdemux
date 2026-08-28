@@ -48,8 +48,9 @@ export interface WorkerDemuxer {
   selectTrack(kind: createTlvDemuxModule.TrackKind, trackId?: bigint | null): Promise<void>;
   switchAudioTrack(trackId: bigint, earliestPresentationTimeUs: bigint): Promise<bigint | null>;
   switchLayer(videoTrackId: bigint, audioTrackId: bigint, earliestPresentationTimeUs: bigint): Promise<boolean>;
+  switchLayerAtPlaybackEntry(videoTrackId: bigint, audioTrackId: bigint, playbackEntryTimeUs: bigint): Promise<boolean>;
   configureAutomaticLayerSwitch(preferredVideoTrackId: bigint, preferredAudioTrackId: bigint, fallbackVideoTrackId: bigint, fallbackAudioTrackId: bigint): Promise<void>;
-  suspendAutomaticLayerSwitch(): Promise<void>;
+  suspendAutomaticLayerSwitch(preferredVideoTrackId: bigint, preferredAudioTrackId: bigint, fallbackVideoTrackId: bigint, fallbackAudioTrackId: bigint): Promise<void>;
   clearAutomaticLayerSwitch(): Promise<void>;
   setMsePlaybackPosition(presentationTimeUs: bigint): Promise<void>;
   setMseSdrInHlg(videoTrackId: bigint, enabled: boolean): Promise<void>;

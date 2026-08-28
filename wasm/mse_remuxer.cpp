@@ -102,7 +102,8 @@ public:
                       const std::uint64_t target_audio_id,
                       const std::int64_t earliest_presentation_time_us,
                       const MseLayerSwitchReason reason,
-                      const bool user_initiated = false) {
+                      const bool user_initiated = false,
+                      const bool map_to_playback_entry = false) {
         if (target_video_id == 0 || target_audio_id == 0 ||
             video_id == target_video_id || pending_layer) return false;
         if (user_initiated) automatic_layers.clearUnrecoveredDamage();
@@ -110,8 +111,9 @@ public:
             target_video_id, target_audio_id,
             video_id.value_or(0), audio_id.value_or(0),
             earliest_presentation_time_us, std::nullopt, reason,
-            reason == MseLayerSwitchReason::HealthDegradation &&
-                !video.output_started()};
+            map_to_playback_entry ||
+                (reason == MseLayerSwitchReason::HealthDegradation &&
+                 !video.output_started())};
         video.stage_next_switch();
         video_id = target_video_id;
         sink.onMseLayerSwitchStarted(MseLayerSwitchStarted{
@@ -394,6 +396,13 @@ bool tlvdemux::MseRemuxer::switchLayer(
         earliest_presentation_time_us, MseLayerSwitchReason::Manual, true);
 }
 
+bool tlvdemux::MseRemuxer::switchLayerAtPlaybackEntry(
+    const std::uint64_t video_track_id, const std::uint64_t audio_track_id,
+    const std::int64_t playback_entry_time_us) {
+    return impl_->switch_layer(video_track_id, audio_track_id,
+        playback_entry_time_us, MseLayerSwitchReason::Manual, true, true);
+}
+
 void tlvdemux::MseRemuxer::configureAutomaticLayerSwitch(
     const MseAutomaticLayerPair pair) {
     // Re-enabling automatic selection supersedes an unfinished user-requested
@@ -418,7 +427,14 @@ void tlvdemux::MseRemuxer::configureAutomaticLayerSwitch(
             : MseLayerSwitchReason::HealthDegradation);
 }
 
-void tlvdemux::MseRemuxer::suspendAutomaticLayerSwitch() {
+void tlvdemux::MseRemuxer::suspendAutomaticLayerSwitch(
+    const MseAutomaticLayerPair pair) {
+    impl_->automatic_layers.configure(VideoLayerPair{
+        pair.preferred_video_track_id,
+        pair.preferred_audio_track_id,
+        pair.fallback_video_track_id,
+        pair.fallback_audio_track_id,
+    });
     impl_->automatic_layers.suspend();
 }
 

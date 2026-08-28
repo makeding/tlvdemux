@@ -282,13 +282,21 @@ bool WasmMseRemuxer::switchLayer(
         video_track_id, audio_track_id, earliest_presentation_time_us);
 }
 
+bool WasmMseRemuxer::switchLayerAtPlaybackEntry(
+    const std::uint64_t video_track_id, const std::uint64_t audio_track_id,
+    const std::int64_t playback_entry_time_us) {
+    return impl_->remuxer().switchLayerAtPlaybackEntry(
+        video_track_id, audio_track_id, playback_entry_time_us);
+}
+
 void WasmMseRemuxer::configureAutomaticLayerSwitch(
     const tlvdemux::MseAutomaticLayerPair pair) {
     impl_->remuxer().configureAutomaticLayerSwitch(pair);
 }
 
-void WasmMseRemuxer::suspendAutomaticLayerSwitch() {
-    impl_->remuxer().suspendAutomaticLayerSwitch();
+void WasmMseRemuxer::suspendAutomaticLayerSwitch(
+    const tlvdemux::MseAutomaticLayerPair pair) {
+    impl_->remuxer().suspendAutomaticLayerSwitch(pair);
 }
 
 void WasmMseRemuxer::clearAutomaticLayerSwitch() {

@@ -132,11 +132,24 @@ export async function configureAutomaticLayerPair(
   demuxer, pair, previousSignature, {manual = false, force = false} = {},
 ) {
   if (manual) {
-    if (force || !previousSignature?.startsWith('disabled:')) {
-      await demuxer.suspendAutomaticLayerSwitch();
+    if (!pair?.fallback) {
+      if (force || previousSignature !== 'disabled:unavailable') {
+        await demuxer.clearAutomaticLayerSwitch();
+      }
+      return 'disabled:unavailable';
     }
-    return previousSignature?.startsWith('disabled:')
-      ? previousSignature : `disabled:${previousSignature ?? 'unavailable'}`;
+    const signature = [
+      pair.preferred.video.trackId, pair.preferred.audio.trackId,
+      pair.fallback.video.trackId, pair.fallback.audio.trackId,
+    ].join(':');
+    const disabledSignature = `disabled:${signature}`;
+    if (force || previousSignature !== disabledSignature) {
+      await demuxer.suspendAutomaticLayerSwitch(
+        pair.preferred.video.trackId, pair.preferred.audio.trackId,
+        pair.fallback.video.trackId, pair.fallback.audio.trackId,
+      );
+    }
+    return disabledSignature;
   }
   if (!pair?.fallback) {
     if (force || previousSignature !== 'unavailable') await demuxer.clearAutomaticLayerSwitch();

@@ -29,8 +29,11 @@ public:
         std::uint64_t track_id, std::int64_t earliest_presentation_time_us);
     bool switchLayer(std::uint64_t video_track_id, std::uint64_t audio_track_id,
                      std::int64_t earliest_presentation_time_us);
+    bool switchLayerAtPlaybackEntry(std::uint64_t video_track_id,
+                                    std::uint64_t audio_track_id,
+                                    std::int64_t playback_entry_time_us);
     void configureAutomaticLayerSwitch(tlvdemux::MseAutomaticLayerPair pair);
-    void suspendAutomaticLayerSwitch();
+    void suspendAutomaticLayerSwitch(tlvdemux::MseAutomaticLayerPair pair);
     void clearAutomaticLayerSwitch();
     void setPlaybackPosition(std::int64_t presentation_time_us);
     void setSdrInHlg(std::uint64_t video_track_id, bool enabled);

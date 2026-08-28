@@ -176,7 +176,8 @@ layer を手動選択している場合、自動選択を有効にすると pref
 利用可能な RAP で、保持した health 観測により正常と判定された preferred video と対応 audio へ
 直ちに協調復帰しなければなりません。preferred layer が利用不能または破損中なら、EOF まで pending
 switch を残さず利用可能な降雨対応出力を維持します。自動 mode の再有効化は未完了の手動 request も
-置き換えます。
+置き換えます。最初の共通 A/V entry が成立する前の手動 layer 選択は replacement の映像と音声を
+その playback entry へ写像し、正常な preroll を `MSE_STARTUP_NO_COMMON_AV` として報告しません。
 
 ## ライブラリの使い方
 

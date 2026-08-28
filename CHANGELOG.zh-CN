@@ -12,8 +12,8 @@
   动作；在文档所列 DPlayer 常规 npm cutover 与 consumer 验收完成前，该批次不算完成。
 - Worker 边界现在保留调用方持有的 `Uint8Array`，避免录制 seek 在 probe/landing 间复用缓存时因
   `ArrayBuffer` 已 detached 而失败。
-- 从手动降雨层切回自动时，系统现在会在下一个可用 RAP 主动恢复首选 A/V 组合，并取代尚未完成的
-  手动切换。
+- 从手动降雨层切回自动时，系统现在会在下一个可用 RAP 主动恢复健康的首选 A/V 组合，取代尚未完成的
+  手动切换，并将首次播放入口建立前的手动切换映射到 startup playback entry。
 
 ## [0.2.4] - 2026-08-26
 
