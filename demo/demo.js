@@ -386,6 +386,10 @@ function formatBytes(value) {
 
 function durationSeconds(duration) { return Number(duration.value) / duration.timescale; }
 
+function timestampMicroseconds(timestamp) {
+  return BigInt(timestamp.value) * 1000000n / BigInt(timestamp.timescale);
+}
+
 function formatDuration(duration) {
   const seconds = durationSeconds(duration);
   const whole = Math.max(0, Math.floor(seconds));
@@ -580,7 +584,10 @@ async function probeDuration(source, generation) {
     if (generation !== runGeneration) return null;
     return {
       duration: probed.duration,
+      presentationStart: probed.presentationStart,
+      presentationEnd: probed.presentationEnd,
       videoPacketId: probed.selectedVideoPacketId,
+      presentationEndVideoPacketId: probed.presentationEndVideoPacketId,
       transferred: probed.transferredBytes,
     };
   } finally {
@@ -743,6 +750,10 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const reportedDamage = new Set();
   const externalDurationUs = liveMode ? null : BigInt(Math.round(
      durationSeconds(probeResult.duration) * 1000000));
+  const presentationStartUs = liveMode ? 0n : timestampMicroseconds(
+    probeResult.presentationStart);
+  const presentationEndUs = liveMode ? null : timestampMicroseconds(
+    probeResult.presentationEnd);
   const playbackFlow = createMsePlaybackFlowControl({
     media: elements.video,
     queues,
@@ -756,6 +767,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
 
   const gapRecovery = createMsePlaybackDamageRecovery({
     media: elements.video,
+    presentationStartUs,
     isActive: () => generation === runGeneration,
     isCurrentLayer: damage => damage.videoTrackId === selectedVideo,
     switchInFlight: () => switchInFlight,
@@ -819,6 +831,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     },
     forceReinitialize: () => pendingLayerSwitch !== null,
     freshRecordedEntryAlignment: !liveMode && startTimeSeconds === 0 && !reuseMedia,
+    recordedPresentationStartUs: liveMode ? null : presentationStartUs,
     onInitObserved: init => appendLog(`${init.type} 初期化 ${init.mime}`),
     onInitInstalled(init, _queue, reconfigured) {
       const details = init.type === 'video'
@@ -959,7 +972,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     } catch (error) { callbackError = error; }
   };
   const wantedVideoPacketId = parsePacketId();
-  const initialVideoPacketId = wantedVideoPacketId;
+  const initialVideoPacketId = wantedVideoPacketId ?? probeResult.videoPacketId ?? undefined;
   videoSelectionMode = automaticLayerSwitchEnabled(wantedVideoPacketId)
     ? 'auto' : 'fixed';
 
@@ -1295,6 +1308,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   });
   await demuxer.setMseToneMappingMode(effectiveToneMappingMode());
   await demuxer.setSubtitlePassthroughEnabled(true);
+  if (!liveMode) await demuxer.setMseTimestampOffset(-presentationStartUs);
   await demuxer.setMseOutputEnabled(!suppressOutput);
   activeDemuxer = demuxer;
   activeVideoSwitch = async (packetId, earliestUs = null) => {
@@ -1311,9 +1325,10 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     if (!corresponding) {
       throw new Error('切替先の映像レイヤーに対応する音声がありません');
     }
-    const earliest = earliestUs ?? BigInt(Math.round((playbackFlow.entryCovered()
+    const mediaEntryUs = BigInt(Math.round((playbackFlow.entryCovered()
       ? elements.video.currentTime + 0.1
       : playbackFlow.entryTimeSeconds) * 1000000));
+    const earliest = earliestUs ?? presentationStartUs + mediaEntryUs;
     pendingLayerSwitch = {
       video: track,
       audio: corresponding.track,
@@ -1323,7 +1338,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     const accepted = playbackFlow.entryCovered()
       ? await demuxer.switchLayer(track.trackId, corresponding.track.trackId, earliest)
       : await demuxer.switchLayerAtPlaybackEntry(
-        track.trackId, corresponding.track.trackId, earliest,
+        track.trackId, corresponding.track.trackId, mediaEntryUs,
       );
     if (!accepted) {
       pendingLayerSwitch = null;
@@ -1388,7 +1403,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     }
     if (generation !== runGeneration) return;
     const earliest = earliestUs ??
-      BigInt(Math.round((elements.video.currentTime + 0.1) * 1000000));
+      presentationStartUs + BigInt(Math.round((elements.video.currentTime + 0.1) * 1000000));
     const preparationDeadline = earliestUs === null ? 0 : performance.now() + 3000;
     let boundary = null;
     do {
@@ -1430,6 +1445,8 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       targetTimeSeconds: startTimeSeconds,
       source,
       durationUs: externalDurationUs,
+      presentationStartUs,
+      presentationEndUs,
       demuxer,
       media: elements.video,
       queues,

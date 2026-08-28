@@ -183,7 +183,10 @@ class WorkerDurationProbe extends WorkerObject {
   state() { return this.call('state'); }
   failure() { return this.call('failure'); }
   duration() { return this.call('duration'); }
+  presentationStart() { return this.call('presentationStart'); }
+  presentationEnd() { return this.call('presentationEnd'); }
   selectedVideoPacketId() { return this.call('selectedVideoPacketId'); }
+  presentationEndVideoPacketId() { return this.call('presentationEndVideoPacketId'); }
   transferredBytes() { return this.call('transferredBytes'); }
   pushRange(requestId, offset, bytes, endOfRange) {
     // Worker transfer lists detach their ArrayBuffer in the caller. Source
@@ -249,6 +252,9 @@ class WorkerDemuxer extends WorkerObject {
     ]);
   }
   clearAutomaticLayerSwitch() { return this.call('clearAutomaticLayerSwitch'); }
+  setMseTimestampOffset(timestampOffsetUs) {
+    return this.call('setMseTimestampOffset', [timestampOffsetUs]);
+  }
   setMsePlaybackPosition(presentationTimeUs) {
     return this.call('setMsePlaybackPosition', [presentationTimeUs]);
   }

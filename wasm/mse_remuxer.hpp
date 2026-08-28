@@ -35,6 +35,7 @@ public:
     void configureAutomaticLayerSwitch(tlvdemux::MseAutomaticLayerPair pair);
     void suspendAutomaticLayerSwitch(tlvdemux::MseAutomaticLayerPair pair);
     void clearAutomaticLayerSwitch();
+    void setTimestampOffset(std::int64_t timestamp_offset_us);
     void setPlaybackPosition(std::int64_t presentation_time_us);
     void setSdrInHlg(std::uint64_t video_track_id, bool enabled);
     void setHlgSdrPrototype(std::uint64_t video_track_id, bool enabled);

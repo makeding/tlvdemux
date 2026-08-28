@@ -69,7 +69,10 @@ const probe = {
     return true;
   },
   duration: () => ({value: 90000n, timescale: 90000}),
+  presentationStart: () => ({value: 9000n, timescale: 90000}),
+  presentationEnd: () => ({value: 99000n, timescale: 90000}),
   selectedVideoPacketId: () => 0x101,
+  presentationEndVideoPacketId: () => 0x102,
   transferredBytes: () => 3n,
   delete: () => { deleted = true; },
 };
@@ -82,7 +85,10 @@ const duration = await probeRecordedDuration({
 });
 assert.deepEqual(duration, {
   duration: {value: 90000n, timescale: 90000},
+  presentationStart: {value: 9000n, timescale: 90000},
+  presentationEnd: {value: 99000n, timescale: 90000},
   selectedVideoPacketId: 0x101,
+  presentationEndVideoPacketId: 0x102,
   transferredBytes: 3n,
   rangeCount: 1,
 });
@@ -98,6 +104,8 @@ const cancelledProbe = {
   nextRange: () => ({requestId: 1n, offset: 0n, length: 1n}),
   pushRange: () => true,
   duration: () => ({value: 0n, timescale: 1}),
+  presentationStart: () => ({value: 0n, timescale: 1}),
+  presentationEnd: () => ({value: 0n, timescale: 1}),
   cancel: () => { cancelled = true; },
   delete: () => { cancelledDeleted = true; },
 };

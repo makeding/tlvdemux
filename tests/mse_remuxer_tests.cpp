@@ -628,6 +628,45 @@ void test_audio_forward_gap_keeps_decoder_timeline_contiguous() {
           "audio forward-gap test lost a valid AAC packet while repairing timestamps");
 }
 
+void test_audio_source_damage_keeps_queued_media_and_decoder_timeline() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.push(hevc_unit(2, 0, 0, true, true));
+
+    for (const auto pts : {std::int64_t{0}, std::int64_t{1024},
+                           std::int64_t{4096}, std::int64_t{5120}}) {
+        auto unit = audio_unit(1, pts);
+        if (pts == 4096) {
+            unit.discontinuity = true;
+            unit.discontinuity_reasons =
+                aribtlv::DiscontinuityReason::SourceDamage;
+        }
+        remuxer.push(unit);
+    }
+    remuxer.flush();
+
+    const auto segments = segments_of(sink.segments, "audio");
+    check(!segments.empty(), "damaged audio emitted no media");
+    std::int64_t expected_dts = 0;
+    std::size_t total_samples = 0;
+    for (const auto& segment : segments) {
+        check(std::int64_t(segment.tfdt) == expected_dts,
+              "source-damage marker split the AAC decode timeline");
+        std::uint64_t segment_duration = 0;
+        for (const auto& sample : segment.samples) {
+            check(sample.duration == 1024,
+                  "source-damage marker stretched an AAC sample");
+            segment_duration += sample.duration;
+            ++total_samples;
+        }
+        expected_dts += std::int64_t(segment_duration);
+    }
+    check(total_samples == 4,
+          "source-damage marker discarded already queued or recovered AAC media");
+}
+
 void test_audio_configuration_change_emits_matching_init() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
@@ -1932,6 +1971,7 @@ int main() {
     test_hevc_hdr_static_metadata_reaches_mp4_and_properties();
     test_audio_drops_non_advancing_dts();
     test_audio_forward_gap_keeps_decoder_timeline_contiguous();
+    test_audio_source_damage_keeps_queued_media_and_decoder_timeline();
     test_audio_configuration_change_emits_matching_init();
     test_video_fragments_do_not_overlap_in_composition_time();
     test_video_fragments_do_not_overlap_with_broadcast_timescale();

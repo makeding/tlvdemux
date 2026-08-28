@@ -30,7 +30,10 @@ export interface WorkerDurationProbe {
   state(): Promise<createTlvDemuxModule.DurationProbeState>;
   failure(): Promise<createTlvDemuxModule.DurationProbeFailure>;
   duration(): Promise<createTlvDemuxModule.DurationInfo | null>;
+  presentationStart(): Promise<createTlvDemuxModule.PresentationTimestamp | null>;
+  presentationEnd(): Promise<createTlvDemuxModule.PresentationTimestamp | null>;
   selectedVideoPacketId(): Promise<number | null>;
+  presentationEndVideoPacketId(): Promise<number | null>;
   transferredBytes(): Promise<bigint>;
   pushRange(requestId: bigint, offset: bigint, bytes: Uint8Array, endOfRange: boolean): Promise<boolean>;
   isDeleted(): boolean;
@@ -52,6 +55,7 @@ export interface WorkerDemuxer {
   configureAutomaticLayerSwitch(preferredVideoTrackId: bigint, preferredAudioTrackId: bigint, fallbackVideoTrackId: bigint, fallbackAudioTrackId: bigint): Promise<void>;
   suspendAutomaticLayerSwitch(preferredVideoTrackId: bigint, preferredAudioTrackId: bigint, fallbackVideoTrackId: bigint, fallbackAudioTrackId: bigint): Promise<void>;
   clearAutomaticLayerSwitch(): Promise<void>;
+  setMseTimestampOffset(timestampOffsetUs: bigint): Promise<void>;
   setMsePlaybackPosition(presentationTimeUs: bigint): Promise<void>;
   setMseSdrInHlg(videoTrackId: bigint, enabled: boolean): Promise<void>;
   setMseToneMappingMode(mode: createTlvDemuxModule.MseToneMappingMode): Promise<void>;

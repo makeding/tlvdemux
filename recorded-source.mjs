@@ -144,10 +144,19 @@ export async function probeRecordedDuration({
     }
     const duration = await probe.duration();
     if (!duration) throw new Error('Duration probe completed without a duration.');
+    const presentationStart = await probe.presentationStart();
+    const presentationEnd = await probe.presentationEnd();
+    if (!presentationStart || !presentationEnd) {
+      throw new Error('Duration probe completed without a presentation range.');
+    }
     return {
       duration,
+      presentationStart,
+      presentationEnd,
       selectedVideoPacketId: typeof probe.selectedVideoPacketId === 'function'
         ? await probe.selectedVideoPacketId() : null,
+      presentationEndVideoPacketId: typeof probe.presentationEndVideoPacketId === 'function'
+        ? await probe.presentationEndVideoPacketId() : null,
       transferredBytes: typeof probe.transferredBytes === 'function'
         ? await probe.transferredBytes() : null,
       rangeCount: rangeNumber,

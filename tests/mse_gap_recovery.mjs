@@ -112,6 +112,7 @@ const media = currentTime => ({
   let switchInFlight = false;
   const recovery = createMsePlaybackDamageRecovery({
     media: player,
+    presentationStartUs: 2_000_000n,
     isCurrentLayer: damage => damage.videoTrackId === currentVideoTrackId,
     switchInFlight: () => switchInFlight,
     seek: (target, previous) => {
@@ -147,8 +148,23 @@ const media = currentTime => ({
     action: 'seek',
     recoveryTimeUs: 62_000_000,
   });
-  assert.deepEqual(jumps, [{target: 62, previous: 46}],
-    'current-layer recovery RAP did not authorize the exact seek');
+  assert.deepEqual(jumps, [{target: 60, previous: 46}],
+    'current-layer recovery RAP did not map through the union presentation start');
+  recovery.reportDamage({
+    videoTrackId: 3,
+    action: 'seek',
+    recoveryTimeUs: 62_000_000,
+  });
+  assert.equal(jumps.length, 1, 'the same playback damage repositioned media more than once');
+  recovery.reset();
+  player.currentTime = 46;
+  recovery.reportDamage({
+    videoTrackId: 3,
+    action: 'seek',
+    recoveryTimeUs: 62_000_000,
+  });
+  assert.deepEqual(jumps, [{target: 60, previous: 46}, {target: 60, previous: 46}],
+    'an explicit recovery reset did not allow a later playback session to recover');
 }
 
 console.log('MSE gap recovery tests passed');

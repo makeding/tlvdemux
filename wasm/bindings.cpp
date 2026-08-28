@@ -198,6 +198,14 @@ val duration_value(const aribtlv::DurationInfo duration) {
     return result;
 }
 
+val optional_timestamp_value(const std::optional<aribtlv::Timestamp> timestamp) {
+    if (!timestamp.has_value()) return val::null();
+    auto result = val::object();
+    result.set("value", timestamp->value);
+    result.set("timescale", timestamp->timescale);
+    return result;
+}
+
 val seek_point_value(const aribtlv::SeekPoint& point) {
     auto result = val::object();
     result.set("presentationTimeUs", point.presentation_time.value);
@@ -707,8 +715,21 @@ public:
         return duration_value(probe_.duration());
     }
 
+    val presentationStart() const {
+        return optional_timestamp_value(probe_.presentationStart());
+    }
+
+    val presentationEnd() const {
+        return optional_timestamp_value(probe_.presentationEnd());
+    }
+
     val selectedVideoPacketId() const {
         const auto packet_id = probe_.selectedVideoPacketId();
+        return packet_id.has_value() ? val(*packet_id) : val::null();
+    }
+
+    val presentationEndVideoPacketId() const {
+        const auto packet_id = probe_.presentationEndVideoPacketId();
         return packet_id.has_value() ? val(*packet_id) : val::null();
     }
 
@@ -753,6 +774,7 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
                   &WasmDemuxer::suspendAutomaticLayerSwitch)
         .function("clearAutomaticLayerSwitch",
                   &WasmDemuxer::clearAutomaticLayerSwitch)
+        .function("setMseTimestampOffset", &WasmDemuxer::setMseTimestampOffset)
         .function("setMsePlaybackPosition",
                   &WasmDemuxer::setMsePlaybackPosition)
         .function("setMseSdrInHlg", &WasmDemuxer::setMseSdrInHlg)
@@ -797,7 +819,11 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("state", &WasmDurationProbe::state)
         .function("failure", &WasmDurationProbe::failure)
         .function("duration", &WasmDurationProbe::duration)
+        .function("presentationStart", &WasmDurationProbe::presentationStart)
+        .function("presentationEnd", &WasmDurationProbe::presentationEnd)
         .function("selectedVideoPacketId", &WasmDurationProbe::selectedVideoPacketId)
+        .function("presentationEndVideoPacketId",
+                  &WasmDurationProbe::presentationEndVideoPacketId)
         .function("generation", &WasmDurationProbe::generation)
         .function("transferredBytes", &WasmDurationProbe::transferredBytes);
 }

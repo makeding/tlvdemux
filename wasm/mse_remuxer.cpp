@@ -305,7 +305,6 @@ public:
         for (auto& entry : audio) entry.second.discontinuity();
         output.discard_staged_video();
         automatic_layers.resetObservations();
-        mse_timestamp_offset_us = 0;
         return cancelled;
     }
 
@@ -440,6 +439,11 @@ void tlvdemux::MseRemuxer::suspendAutomaticLayerSwitch(
 
 void tlvdemux::MseRemuxer::clearAutomaticLayerSwitch() {
     impl_->automatic_layers.clearConfiguration();
+}
+
+void tlvdemux::MseRemuxer::setTimestampOffset(
+    const std::int64_t timestamp_offset_us) {
+    impl_->mse_timestamp_offset_us = timestamp_offset_us;
 }
 
 void tlvdemux::MseRemuxer::setPlaybackPosition(

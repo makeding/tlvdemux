@@ -78,19 +78,25 @@ export function startMsePlayback({
 
 export function createMsePlaybackDamageRecovery({
   media,
+  presentationStartUs = 0n,
   isActive = () => true,
   isCurrentLayer = () => true,
   switchInFlight = () => false,
   seek,
 }) {
+  const completedDamage = new Set();
   return {
     notifyWaiting() { return null; },
-    reset() {},
+    reset() { completedDamage.clear(); },
     reportDamage(damage) {
       if (damage.action !== 'seek' || damage.recoveryTimeUs === null ||
           !isActive() || !isCurrentLayer(damage) || switchInFlight() || media.seeking) return null;
-      const target = Number(damage.recoveryTimeUs) / 1000000;
+      const target = Number(BigInt(damage.recoveryTimeUs) - BigInt(presentationStartUs)) / 1000000;
       if (!Number.isFinite(target) || target < 0) return null;
+      const key = [damage.videoTrackId, damage.startInputOffset, damage.endInputOffset,
+        damage.recoveryTimeUs].map(value => String(value ?? '')).join(':');
+      if (completedDamage.has(key)) return null;
+      completedDamage.add(key);
       const previousTime = media.currentTime;
       seek(target, previousTime);
       if (!media.paused) media.play().catch(() => {});
@@ -214,8 +220,10 @@ function clampBigInt(value, minimum, maximum) {
 export function createMseRecordedSeekSession({
   targetTimeSeconds,
   targetUs = BigInt(Math.round(targetTimeSeconds * 1000000)),
-  source,
   durationUs,
+  presentationStartUs = 0n,
+  presentationEndUs = BigInt(presentationStartUs) + BigInt(durationUs),
+  source,
   demuxer,
   media,
   queues,
@@ -247,6 +255,8 @@ export function createMseRecordedSeekSession({
 
   const chunkSize = BigInt(chunkBytes);
   const budget = BigInt(readBudgetBytes);
+  const sourceTargetUs = BigInt(presentationStartUs) + BigInt(targetUs);
+  const sourceEndUs = BigInt(presentationEndUs);
   const toleranceUs = BigInt(Math.round(ENTRY_TOLERANCE_SECONDS * 1000000));
   const tracks = new Map();
   const cachedRanges = [];
@@ -277,7 +287,7 @@ export function createMseRecordedSeekSession({
     if (phase !== 'probe') return;
     const previousFrontier = probeFrontiers.get(unit.trackId);
     if (previousFrontier === undefined || pts > previousFrontier) probeFrontiers.set(unit.trackId, pts);
-    if (!unit.randomAccess || pts > targetUs + toleranceUs) return;
+    if (!unit.randomAccess || pts > sourceTargetUs + toleranceUs) return;
     const previous = probeRaps.get(unit.trackId);
     if (!previous || pts > previous.ptsUs) {
       probeRaps.set(unit.trackId, {
@@ -334,23 +344,24 @@ export function createMseRecordedSeekSession({
   const frontiersPastTarget = () => {
     const eligible = new Set(candidates().map(track => track.trackId));
     const observed = [...probeFrontiers].filter(([trackId]) => eligible.has(trackId));
-    return observed.length > 0 && observed.every(([, frontier]) => frontier > targetUs + toleranceUs);
+    return observed.length > 0 && observed.every(([, frontier]) =>
+      frontier > sourceTargetUs + toleranceUs);
   };
 
   const bestRap = () => [...probeRaps.values()]
-    .filter(rap => rap.ptsUs <= targetUs && tracks.has(rap.trackId))
+    .filter(rap => rap.ptsUs <= sourceTargetUs && tracks.has(rap.trackId))
     .sort((left, right) => {
       if (left.ptsUs !== right.ptsUs) return left.ptsUs > right.ptsUs ? -1 : 1;
       return videoTrackPriority(tracks.get(left.trackId)) - videoTrackPriority(tracks.get(right.trackId));
     })[0] ?? null;
 
   const interpolatedTargetOffset = () => {
-    const before = timelineSamples.filter(sample => sample.ptsUs <= targetUs)
+    const before = timelineSamples.filter(sample => sample.ptsUs <= sourceTargetUs)
       .sort((left, right) => left.ptsUs > right.ptsUs ? -1 : left.ptsUs < right.ptsUs ? 1 : 0)[0];
-    const after = timelineSamples.filter(sample => sample.ptsUs > targetUs)
+    const after = timelineSamples.filter(sample => sample.ptsUs > sourceTargetUs)
       .sort((left, right) => left.ptsUs < right.ptsUs ? -1 : left.ptsUs > right.ptsUs ? 1 : 0)[0];
     if (!before || !after || after.ptsUs === before.ptsUs || after.offset <= before.offset) return null;
-    return before.offset + (after.offset - before.offset) * (targetUs - before.ptsUs) /
+    return before.offset + (after.offset - before.offset) * (sourceTargetUs - before.ptsUs) /
       (after.ptsUs - before.ptsUs);
   };
 
@@ -358,6 +369,7 @@ export function createMseRecordedSeekSession({
     ensureActive();
     phase = 'head';
     await demuxer.setMseOutputEnabled(false);
+    await demuxer.setMseTimestampOffset?.(-BigInt(presentationStartUs));
     let headOffset = 0n;
     while (!headReady()) {
       if (headOffset >= source.size) throw new MseRecordedSeekError('source-ended');
@@ -367,10 +379,10 @@ export function createMseRecordedSeekSession({
     }
 
     ensureActive();
-    if (!await demuxer.setIndexDuration(durationUs)) {
+    if (!await demuxer.setIndexDuration(sourceEndUs)) {
       throw new MseRecordedSeekError('demux-failed', 'The demuxer rejected the recording duration.');
     }
-    const estimateValue = await demuxer.estimateOffset(targetUs, source.size);
+    const estimateValue = await demuxer.estimateOffset(sourceTargetUs, source.size);
     if (estimateValue === null || estimateValue === undefined) {
       throw new MseRecordedSeekError('demux-failed', 'The demuxer could not estimate the target byte position.');
     }
@@ -429,6 +441,7 @@ export function createMseRecordedSeekSession({
     phase = 'complete';
     return {
       targetUs,
+      sourceTargetUs,
       estimateOffset: estimate,
       restartOffset: chosen.restartOffset,
       rapPresentationTimeUs: chosen.ptsUs,

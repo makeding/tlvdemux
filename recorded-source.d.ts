@@ -16,6 +16,10 @@ export interface RecordedDuration {
   value: bigint | number;
   timescale: number;
 }
+export interface RecordedPresentationTimestamp {
+  value: bigint | number;
+  timescale: number;
+}
 export interface RecordedDurationProbe {
   begin(size: bigint, options?: Record<string, unknown>): boolean | Promise<boolean>;
   state(): string | Promise<string>;
@@ -30,7 +34,10 @@ export interface RecordedDurationProbe {
   failRange?(id: bigint): unknown | Promise<unknown>;
   cancel?(): unknown | Promise<unknown>;
   duration(): RecordedDuration | null | Promise<RecordedDuration | null>;
+  presentationStart(): RecordedPresentationTimestamp | null | Promise<RecordedPresentationTimestamp | null>;
+  presentationEnd(): RecordedPresentationTimestamp | null | Promise<RecordedPresentationTimestamp | null>;
   selectedVideoPacketId?(): number | null | Promise<number | null>;
+  presentationEndVideoPacketId?(): number | null | Promise<number | null>;
   transferredBytes?(): bigint | Promise<bigint>;
   isDeleted?(): boolean;
   delete?(): void;
@@ -58,7 +65,10 @@ export declare function probeRecordedDuration(options: {
   onProgress?: (progress: {number: number; transferredBytes: bigint | null}) => void;
 }): Promise<{
   duration: RecordedDuration;
+  presentationStart: RecordedPresentationTimestamp;
+  presentationEnd: RecordedPresentationTimestamp;
   selectedVideoPacketId: number | null;
+  presentationEndVideoPacketId: number | null;
   transferredBytes: bigint | null;
   rangeCount: number;
 }>;

@@ -71,6 +71,7 @@ export declare function startMsePlayback(options: {
 } | null;
 export declare function createMsePlaybackDamageRecovery(options: {
   media: MseMediaClock & {seeking: boolean; paused: boolean; play(): Promise<void>};
+  presentationStartUs?: bigint;
   isActive?: () => boolean;
   isCurrentLayer?: (damage: Record<string, unknown>) => boolean;
   switchInFlight?: () => boolean;
@@ -125,6 +126,7 @@ export interface MseRecordedSeekProgress {
 }
 export interface MseRecordedSeekResult {
   targetUs: bigint;
+  sourceTargetUs: bigint;
   estimateOffset: bigint;
   restartOffset: bigint;
   rapPresentationTimeUs: bigint;
@@ -135,6 +137,8 @@ export interface MseRecordedSeekResult {
 export interface MseRecordedSeekSessionOptions {
   targetTimeSeconds?: number;
   targetUs?: bigint;
+  presentationStartUs?: bigint;
+  presentationEndUs?: bigint;
   source: MseRecordedSource;
   durationUs: bigint;
   demuxer: MseSeekDemuxer;

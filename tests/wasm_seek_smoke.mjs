@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {open, stat} from 'node:fs/promises';
 import {createRequire} from 'node:module';
-import {resolve} from 'node:path';
+import {basename, resolve} from 'node:path';
 
 import {
   MSE_SEEK_READ_BUDGET_BYTES,
@@ -43,8 +43,18 @@ async function probeDuration() {
     }
     assert.equal(probe.state(), 'complete', `duration probe failed: ${probe.failure()}`);
     const duration = probe.duration();
-    assert.ok(duration);
-    return BigInt(duration.value) * 1000000n / BigInt(duration.timescale);
+    const presentationStart = probe.presentationStart();
+    const presentationEnd = probe.presentationEnd();
+    assert.ok(duration && presentationStart && presentationEnd);
+    const toMicroseconds = timestamp =>
+      BigInt(timestamp.value) * 1000000n / BigInt(timestamp.timescale);
+    return {
+      durationUs: toMicroseconds(duration),
+      presentationStartUs: toMicroseconds(presentationStart),
+      presentationEndUs: toMicroseconds(presentationEnd),
+      presentationStartVideoPacketId: probe.selectedVideoPacketId(),
+      presentationEndVideoPacketId: probe.presentationEndVideoPacketId(),
+    };
   } finally {
     probe.delete();
   }
@@ -91,13 +101,26 @@ function mergeRange(ranges, range, tolerance = 0.022) {
   }
 }
 
-const durationUs = await probeDuration();
+const recordingRange = await probeDuration();
+const {durationUs, presentationStartUs, presentationEndUs} = recordingRange;
+assert.equal(durationUs, presentationEndUs - presentationStartUs,
+  'duration probe did not return end - start for the video union');
+if (basename(mediaPath) === 'rain.tlv') {
+  assert.equal(presentationStartUs, 821_944n,
+    'rain.tlv media time zero did not come from its first rainfall frame');
+  assert.equal(presentationEndUs, 415_519_422n,
+    'rain.tlv union did not retain the later video-track end');
+  assert.equal(recordingRange.presentationStartVideoPacketId, 0xf301,
+    'rain.tlv union start was not owned by the rainfall video track');
+  assert.equal(recordingRange.presentationEndVideoPacketId, 0xf301,
+    'rain.tlv union end owner changed unexpectedly');
+}
 const results = [];
 try {
   for (const targetTimeSeconds of targets) {
     const tracks = new Map();
     const ranges = {video: [], audio: []};
-    const offsets = {video: 0n, audio: 0n};
+    const offsets = {video: -presentationStartUs, audio: -presentationStartUs};
     const queues = new Map([
       ['video', queue(ranges.video)],
       ['audio', queue(ranges.audio)],
@@ -162,6 +185,8 @@ try {
       targetTimeSeconds,
       source,
       durationUs,
+      presentationStartUs,
+      presentationEndUs,
       demuxer,
       media,
       queues,
@@ -197,7 +222,7 @@ try {
       assert.equal(requested, result.bytesRead);
       assert.ok(requested <= BigInt(MSE_SEEK_READ_BUDGET_BYTES),
         `seek ${targetTimeSeconds}s exceeded the 16 MiB budget`);
-      assert.ok(result.rapPresentationTimeUs <= result.targetUs,
+      assert.ok(result.rapPresentationTimeUs <= result.sourceTargetUs,
         `seek ${targetTimeSeconds}s selected a RAP after the target`);
       assert.equal(flowControl.entryCovered(), true,
         `seek ${targetTimeSeconds}s did not form common A/V at the target`);
@@ -212,7 +237,14 @@ try {
       demuxer.delete();
     }
   }
-  console.log(JSON.stringify({durationUs: durationUs.toString(), seeks: results}, null, 2));
+  console.log(JSON.stringify({
+    durationUs: durationUs.toString(),
+    presentationStartUs: presentationStartUs.toString(),
+    presentationEndUs: presentationEndUs.toString(),
+    presentationStartVideoPacketId: recordingRange.presentationStartVideoPacketId,
+    presentationEndVideoPacketId: recordingRange.presentationEndVideoPacketId,
+    seeks: results,
+  }, null, 2));
 } finally {
   await input.close();
 }

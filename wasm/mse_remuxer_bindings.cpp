@@ -303,6 +303,10 @@ void WasmMseRemuxer::clearAutomaticLayerSwitch() {
     impl_->remuxer().clearAutomaticLayerSwitch();
 }
 
+void WasmMseRemuxer::setTimestampOffset(const std::int64_t timestamp_offset_us) {
+    impl_->remuxer().setTimestampOffset(timestamp_offset_us);
+}
+
 void WasmMseRemuxer::setPlaybackPosition(
     const std::int64_t presentation_time_us) {
     impl_->remuxer().setPlaybackPosition(presentation_time_us);

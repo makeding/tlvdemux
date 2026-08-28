@@ -50,6 +50,7 @@ export interface MseOutputPipelineOptions {
   forceReinitialize?: (type: string, init: MseOutputInit) => boolean;
   queueOptions?: MseAppendQueueOptions;
   freshRecordedEntryAlignment?: boolean;
+  recordedPresentationStartUs?: bigint | null;
   pendingBytesLimit?: number;
 }
 export interface MseOutputPipeline {

@@ -77,6 +77,11 @@ declare namespace createTlvDemuxModule {
     status: "provisional" | "complete";
   }
 
+  interface PresentationTimestamp {
+    value: bigint;
+    timescale: number;
+  }
+
   interface SeekPoint {
     presentationTimeUs: bigint;
     signallingOffset: bigint;
@@ -849,6 +854,7 @@ declare namespace createTlvDemuxModule {
       fallbackAudioTrackId: bigint,
     ): void;
     clearAutomaticLayerSwitch(): void;
+    setMseTimestampOffset(timestampOffsetUs: bigint): void;
     /** Report the unchanged media clock for automatic layer recovery decisions. */
     setMsePlaybackPosition(presentationTimeUs: bigint): void;
     switchAudioTrack(trackId: bigint, earliestPresentationTimeUs: bigint): bigint | null;
@@ -936,7 +942,10 @@ declare namespace createTlvDemuxModule {
     state(): DurationProbeState;
     failure(): DurationProbeFailure;
     duration(): DurationInfo | null;
+    presentationStart(): PresentationTimestamp | null;
+    presentationEnd(): PresentationTimestamp | null;
     selectedVideoPacketId(): number | null;
+    presentationEndVideoPacketId(): number | null;
     generation(): bigint;
     transferredBytes(): bigint;
   }

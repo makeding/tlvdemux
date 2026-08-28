@@ -16,13 +16,14 @@ const samples = [
   {path: 'demo/20260731-101-180000_9220c865-bfab-4d4d-8651-824b8e91a9e1.mmts', size: 5462022193, duration: '1636.179255'},
   {path: 'demo/20260731-102-170000_272b7cdc-8d85-4f77-91df-b935f3ae0e96.mmts', size: 5206465015, duration: '465.949621'},
   {path: 'demo/20260815-141-020000_34968268-7eab-4ee5-ab93-d2097c3d839f.mmts', size: 6685541501, duration: '1815.036727'},
+  {path: 'demo/20260828-101-021500_8deb3dd2-39e9-471c-a9ba-a6dfe23feeb6.mmts', size: 1487535853, duration: '536.686256', audioDamage: true},
   {path: 'demo/8k.mmts', size: 4360105984, duration: '459.572727', randomSeeks: true},
   {path: 'demo/8k1.mmts', size: 364994560, duration: '31.915216'},
   {path: 'demo/audiotrack.tlv', size: 173162496, duration: '60.744010', layers: true},
   {path: 'demo/bsp4k-lag-1.mmts', size: 162234368, duration: '41.739360'},
   {path: 'demo/bsp4k.mmts', size: 1356746752, duration: '451.934827'},
   {path: 'demo/rain-2.tlv', size: 434642944, duration: '151.328227'},
-  {path: 'demo/rain.tlv', size: 745869312, duration: '415.519422', rain: true},
+  {path: 'demo/rain.tlv', size: 745869312, duration: '414.697478', rain: true},
   {path: 'demo/test.tlv', size: 67211264, duration: '18.968938', subtitles: true},
   {path: 'test.tlv', size: 66142023, duration: '19.090088', subtitles: true},
 ];
@@ -119,6 +120,10 @@ for (const sample of samples) {
   if (sample.subtitles) {
     run(`subtitle metadata ${sample.path}`, process.execPath,
       ['tests/wasm_subtitle_metadata_sample.mjs', wasm, sample.path]);
+  }
+  if (sample.audioDamage) {
+    run(`AAC damage flow ${sample.path}`, process.execPath,
+      ['tests/wasm_audio_damage_flow_sample.mjs', wasm, sample.path]);
   }
 }
 

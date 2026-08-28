@@ -128,12 +128,15 @@ public:
     void push(const aribtlv::AccessUnit& unit, const bool selected,
               const bool output_enabled,
               const std::optional<std::int64_t> timeline_offset_us) {
-        // An alternate layer is deliberately kept warm. Its AU-level
-        // discontinuity marks a new fragment, but samples already mapped onto
-        // the common output timeline remain valid switch history. Active-track
-        // and explicit reset/reposition discontinuities still clear history.
-        const bool preserve_history = unit.discontinuity;
-        if (unit.discontinuity) discontinuity(true);
+        // Source packet loss is repaired below by compacting the next valid
+        // AAC frame onto the contiguous decoder timeline. Resetting the sample
+        // queue here used to discard every short prefix before a damaged AU,
+        // leaving Chromium with ~0.1 s audio islands and DEMUXER_UNDERFLOW.
+        const bool source_damage = unit.discontinuity &&
+            aribtlv::hasDiscontinuityReason(
+                unit.discontinuity_reasons,
+                aribtlv::DiscontinuityReason::SourceDamage);
+        if (unit.discontinuity && !source_damage) discontinuity(true);
         auto frame = parser_.parse(unit.data);
         if (max_channels_ != 0 && frame.channels > max_channels_) return;
         if (!track_) {
@@ -182,18 +185,19 @@ public:
             replace_track(audio_track(frame), selected);
         }
         if (!history_.empty() && timestamp <= history_.back().pts) {
-            if (!preserve_history) return;
+            if (!unit.discontinuity) return;
             // A recoverable packet-loss marker keeps the current mapping when
             // PTS remains monotonic. A genuine backwards epoch starts a new
             // mapping from the selected video's current output timeline.
             if (!timeline_offset_us.has_value()) return;
+            discontinuity(true);
             history_.clear();
             timeline_offset_us_ = *timeline_offset_us;
             timestamp =
                 scaled(unit.pts.value, unit.pts.timescale, track_->timescale) +
                 scaled(*timeline_offset_us_, 1000000, track_->timescale);
         }
-        if (!preserve_history && !history_.empty()) {
+        if (!history_.empty()) {
             // A lost AAC access unit leaves a forward hole in the source PTS.
             // BaseMuxer uses the next DTS as the previous trun sample's
             // duration, so passing that hole through would turn one 1024-tick

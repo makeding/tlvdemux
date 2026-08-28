@@ -123,6 +123,22 @@ for (const firstType of ['video', 'audio']) {
 {
   const pipeline = createMseOutputPipeline({
     mediaSource: {}, media: {}, freshRecordedEntryAlignment: true,
+    recordedPresentationStartUs: 100000n,
+    queueFactory(type, trackInit) { return new FakeQueue(type, trackInit); },
+  });
+  pipeline.onMseInit(init('video', 1));
+  pipeline.onMseSegment(segment('video', 3, 200000n, 1200000n));
+  pipeline.onMseInit(init('audio', 2));
+  pipeline.onMseSegment(segment('audio', 4, 180000n, 1200000n));
+  assert.deepEqual(pipeline.queues.get('video').operations[0], ['offset', -0.1],
+    'fresh MSE video did not use the union presentation start');
+  assert.deepEqual(pipeline.queues.get('audio').operations[0], ['offset', -0.1],
+    'fresh MSE audio did not share the union presentation start');
+}
+
+{
+  const pipeline = createMseOutputPipeline({
+    mediaSource: {}, media: {}, freshRecordedEntryAlignment: true,
     queueFactory(type, trackInit) { return new FakeQueue(type, trackInit); },
   });
   pipeline.onMseVideoSplice({presentationTimeUs: 821944n, timestampOffsetUs: -821944n});

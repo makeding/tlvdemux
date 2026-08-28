@@ -36,13 +36,15 @@ function fixture({landingRanges, noRap = false, abortOnRead = false} = {}) {
   };
   let position = 0n;
   let landingPushes = 0;
+  const indexCalls = [];
   let session;
   const track = {kind: 'video', codec: 'hevc', trackId: 1, priority: 0};
   const audioTrack = {kind: 'audio', codec: 'aac-latm', trackId: 2};
   const demuxer = {
     async setMseOutputEnabled(enabled) { this.output = enabled; return true; },
-    async setIndexDuration() { return true; },
-    async estimateOffset() { return 16n * BigInt(MiB); },
+    async setIndexDuration(value) { indexCalls.push(['duration', value]); return true; },
+    async estimateOffset(value) { indexCalls.push(['target', value]); return 16n * BigInt(MiB); },
+    async setMseTimestampOffset(value) { indexCalls.push(['offset', value]); },
     async reposition(offset) { position = offset; return true; },
     async push(data) {
       if (session.phase === 'head') {
@@ -55,12 +57,12 @@ function fixture({landingRanges, noRap = false, abortOnRead = false} = {}) {
       } else if (session.phase === 'probe') {
         if (!noRap) {
           session.observeAccessUnit({
-            codec: 'hevc', trackId: 1, ptsValue: 49000000n, ptsTimescale: 1000000,
+            codec: 'hevc', trackId: 1, ptsValue: 51000000n, ptsTimescale: 1000000,
             randomAccess: true, restartOffset: position,
           });
         }
         session.observeAccessUnit({
-          codec: 'hevc', trackId: 1, ptsValue: noRap ? 0n : 51100000n, ptsTimescale: 1000000,
+          codec: 'hevc', trackId: 1, ptsValue: noRap ? 0n : 53100000n, ptsTimescale: 1000000,
           randomAccess: false, restartOffset: position,
         });
       } else if (session.phase === 'landing') {
@@ -82,6 +84,8 @@ function fixture({landingRanges, noRap = false, abortOnRead = false} = {}) {
     targetTimeSeconds: 50,
     source,
     durationUs: 100000000n,
+    presentationStartUs: 2000000n,
+    presentationEndUs: 102000000n,
     demuxer,
     media,
     queues,
@@ -90,19 +94,24 @@ function fixture({landingRanges, noRap = false, abortOnRead = false} = {}) {
     headReady: () => session?.phase === 'head' && requests.length > 0,
     chunkBytes: MiB,
   });
-  return {session, requests, controller, flowControl};
+  return {session, requests, controller, flowControl, indexCalls};
 }
 
 {
-  const {session, requests, flowControl} = fixture();
+  const {session, requests, flowControl, indexCalls} = fixture();
   const result = await session.run();
-  assert.equal(result.rapPresentationTimeUs, 49000000n,
+  assert.equal(result.rapPresentationTimeUs, 51000000n,
     'seek did not choose the closest RAP at or before the target');
   assert.equal(flowControl.entryCovered(), true,
     'seek did not wait for common A/V to cover the target');
   assert.ok(result.bytesRead <= BigInt(MSE_SEEK_READ_BUDGET_BYTES));
   assert.equal(requests.reduce((sum, request) => sum + request.length, 0n), result.bytesRead,
     'overlapping probe and landing data was fetched twice');
+  assert.equal(result.sourceTargetUs, 52000000n,
+    'public seek target was not mapped through the union presentation start');
+  assert.deepEqual(indexCalls.slice(0, 3), [
+    ['offset', -2000000n], ['duration', 102000000n], ['target', 52000000n],
+  ], 'seek estimate and MSE output did not share the union presentation range');
 }
 
 for (const landingRanges of [

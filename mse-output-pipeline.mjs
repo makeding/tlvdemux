@@ -19,6 +19,7 @@ export function createMseOutputPipeline({
   forceReinitialize = () => false,
   queueOptions = {},
   freshRecordedEntryAlignment = false,
+  recordedPresentationStartUs = null,
   pendingBytesLimit = null,
 }) {
   const pendingInits = new Map();
@@ -65,14 +66,17 @@ export function createMseOutputPipeline({
 
   const installPairedInits = () => {
     if (queues.size || !pendingInits.has('video') || !pendingInits.has('audio')) return false;
-    let entryTimestampOffsetSeconds = null;
+    let entryTimestampOffsetSeconds = recordedPresentationStartUs === null
+      ? null : -Number(BigInt(recordedPresentationStartUs)) / 1000000;
     if (freshRecordedEntryAlignment) {
       if (pendingSplices.size > 0) {
         if (!pendingSplices.has('video') || !pendingSplices.has('audio')) return false;
       } else {
         const entryUs = firstCommonEntryUs();
         if (entryUs === null) return false;
-        entryTimestampOffsetSeconds = -Number(entryUs) / 1000000;
+        if (entryTimestampOffsetSeconds === null) {
+          entryTimestampOffsetSeconds = -Number(entryUs) / 1000000;
+        }
       }
     }
     for (const type of ['video', 'audio']) {
