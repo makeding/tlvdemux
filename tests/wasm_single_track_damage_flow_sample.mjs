@@ -208,18 +208,18 @@ try {
   assert.equal(stalledMedia.playCount, 1,
     'the authoritative 6.580s recovery still required a manual play click');
 
-  const screenshotBoundary = damages.find(damage => {
+  const prefetchedScreenshotDamage = damages.find(damage => {
     if (damage.action !== 'seek-if-stalled' || damage.startTimeUs === null ||
         damage.recoveryTimeUs === null) return false;
     const sourceStart = Number(damage.startTimeUs) / 1_000_000;
     return Math.abs(sourceStart - 114.533) < 0.01;
   });
-  assert.ok(screenshotBoundary,
-    'sample exposed no damage authorization for the observed 1:39 boundary');
+  assert.ok(prefetchedScreenshotDamage,
+    'sample exposed no prefetched damage matching the screenshot log');
   const screenshotDamageStart = Number(
-    screenshotBoundary.startTimeUs - presentationStartUs) / 1_000_000;
+    prefetchedScreenshotDamage.startTimeUs - presentationStartUs) / 1_000_000;
   const screenshotRecovery = Number(
-    screenshotBoundary.recoveryTimeUs - presentationStartUs) / 1_000_000;
+    prefetchedScreenshotDamage.recoveryTimeUs - presentationStartUs) / 1_000_000;
   const screenshotRaps = videoRandomAccessUnits
     .map(unit => ({
       unit,
@@ -230,7 +230,12 @@ try {
       item.mediaTime + 0.0005 >= screenshotRecovery)
     .sort((left, right) => left.mediaTime - right.mediaTime);
   assert.ok(screenshotRaps.length >= 3,
-    'sample exposed fewer than three real RAPs after the observed 1:39 boundary');
+    'sample exposed fewer than three real RAPs after the prefetched damage');
+  const screenshotRecoverySegment = videoSegments.find(segment =>
+    segment.startTimeUs >= prefetchedScreenshotDamage.recoveryTimeUs - 2n &&
+    segment.startTimeUs <= prefetchedScreenshotDamage.recoveryTimeUs + 2n);
+  assert.ok(screenshotRecoverySegment,
+    'prefetched screenshot damage did not restart video at its real recovery RAP');
   const prefetchedJumps = [];
   const prefetchedMedia = {
     currentTime: 101.810,
@@ -244,7 +249,7 @@ try {
     isCurrentLayer: damage => damage.videoTrackId === selectedVideo,
     seek(target) { prefetchedJumps.push(target); },
   });
-  prefetchedController.reportDamage(screenshotBoundary);
+  prefetchedController.reportDamage(prefetchedScreenshotDamage);
   prefetchedController.notifyWaiting();
   assert.deepEqual(prefetchedJumps, [],
     'the 101.810s ordinary waiting consumed damage prefetched 12 seconds ahead');
@@ -273,15 +278,15 @@ try {
       screenshotMedia.currentTime = target;
     },
   });
-  screenshotController.reportDamage(screenshotBoundary);
+  screenshotController.reportDamage(prefetchedScreenshotDamage);
   screenshotController.notifyWaiting();
   assert.deepEqual(screenshotJumps, [],
-    'the 1:39 recovery ran before its real RAP was buffered');
+    'the future damage recovery ran before its real RAP was buffered');
   screenshotBufferedEnd = screenshotRecovery + 0.5;
   screenshotController.notifyBufferedChange();
   assert.deepEqual(screenshotJumps.map(value => value.toFixed(6)),
     [screenshotRecovery.toFixed(6)],
-    'the observed 1:39 waiting did not run when its recovery RAP became buffered');
+    'the future damage waiting did not run when its recovery RAP became buffered');
   screenshotController.destroy();
 
   const thirteenSecondRecovery = damages.find(damage =>
@@ -404,17 +409,16 @@ try {
       restartOffset: nextForwardRap.unit.restartOffset,
     },
     delayedJump: delayedJumps[0],
-    screenshotBoundary: {
-      sourceStart: Number(screenshotBoundary.startTimeUs) / 1_000_000,
-      sourceRecovery: Number(screenshotBoundary.recoveryTimeUs) / 1_000_000,
+    prefetchedScreenshotDamage: {
+      sourceStart: Number(prefetchedScreenshotDamage.startTimeUs) / 1_000_000,
+      sourceRecovery: Number(prefetchedScreenshotDamage.recoveryTimeUs) / 1_000_000,
       mediaStart: screenshotDamageStart,
       mediaRecovery: screenshotRecovery,
       nextRaps: screenshotRaps.slice(0, 4).map(item => item.mediaTime),
       segmentBeforeDamage: videoSegments
-        .filter(segment => segment.endTimeUs <= screenshotBoundary.startTimeUs)
+        .filter(segment => segment.endTimeUs <= prefetchedScreenshotDamage.startTimeUs)
         .sort((left, right) => Number(right.endTimeUs - left.endTimeUs))[0],
-      segmentAtRecovery: videoSegments.find(segment =>
-        segment.startTimeUs === screenshotBoundary.recoveryTimeUs),
+      segmentAtRecovery: screenshotRecoverySegment,
     },
     damagesNearScreenshotClock: damages.filter(damage =>
       damage.startTimeUs !== null && damage.startTimeUs >= 100_000_000n &&
