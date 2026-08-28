@@ -5,7 +5,7 @@
 > labelled **legacy `tlvdemux` implementation**; this is a historical name,
 > not a separate product line.
 
-## [Unreleased]
+## [0.3.0] - 2026-08-28
 
 - Add public browser SDK modules for bounded recorded seek, MSE output queues,
   track/layer selection, strict recorded Range sources, duration probing, live
