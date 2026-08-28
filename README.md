@@ -183,6 +183,15 @@ resume below 8 seconds. Before any common interval covers the playback entry,
 at most 16 MiB of playback input may be read without progress; exhaustion fails
 with `MSE_STARTUP_NO_COMMON_AV` instead of fetching the recording to EOF.
 
+Live playback has no timestamp-zero entry. Its startup entry is the first common
+A/V buffered interval produced by the current stream, and the media clock is
+aligned to that interval only after the configured live startup buffer is ready.
+Flow control must accept and measure that later interval before the alignment
+write occurs; it must never classify valid live A/V merely because the interval
+does not cover timestamp zero. If live A/V cannot form any common interval, the
+same 16 MiB no-progress limit still stops input with
+`MSE_STARTUP_NO_COMMON_AV`.
+
 An explicit recorded seek is a separate public playback-entry contract. From
 head discovery through every RAP probe and the final A/V preroll,
 `createMseRecordedSeekSession()` shares one hard 16 MiB source-read budget.

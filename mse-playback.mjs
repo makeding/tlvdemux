@@ -112,7 +112,7 @@ export function createMsePlaybackFlowControl({
   backBufferSeconds = 8,
   wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
 }) {
-  if (entryKind !== 'startup' && entryKind !== 'seek') {
+  if (entryKind !== 'startup' && entryKind !== 'live' && entryKind !== 'seek') {
     throw new TypeError(`Unknown MSE playback entry kind: ${entryKind}`);
   }
   let startupBytes = 0;
@@ -125,6 +125,8 @@ export function createMsePlaybackFlowControl({
     for (const queue of queues.values()) queue.trimBefore(media.currentTime - backBufferSeconds);
   };
   const perTrackRanges = () => [...queues.values()].map(queue => queue.bufferedRanges());
+  const liveEntryRange = () => commonBufferedRanges(queues).find(range =>
+    range.end > media.currentTime + 0.001) ?? null;
 
   const classifyUncoveredEntry = () => {
     if (queues.size < 2) return null;
@@ -134,6 +136,7 @@ export function createMsePlaybackFlowControl({
       return new MseStartupBufferError(
         'Audio and video were appended, but their common range does not cover timestamp 0.');
     }
+    if (entryKind === 'live') return null;
     const hasNewSeekMedia = [...queues].every(([type, queue]) =>
       JSON.stringify(queue.bufferedRanges()) !== initialRanges.get(type));
     if (!hasNewSeekMedia) return null;
@@ -149,12 +152,17 @@ export function createMsePlaybackFlowControl({
     entryKind,
     entryTimeSeconds,
     entryRange() {
+      if (entryKind === 'live') return liveEntryRange();
       return coveringRange(queues, entryTimeSeconds, entryToleranceSeconds);
     },
     entryCovered() {
       return entryCovered || api.entryRange() !== null;
     },
     commonAhead() {
+      if (entryKind === 'live') {
+        const range = liveEntryRange();
+        return range ? Math.max(0, range.end - Math.max(media.currentTime, range.start)) : 0;
+      }
       return commonBufferedAhead(media, queues, entryToleranceSeconds);
     },
     async afterPush(byteLength, isActive = () => true) {
@@ -166,12 +174,15 @@ export function createMsePlaybackFlowControl({
       if (range) {
         entryCovered = true;
       } else if (!entryCovered) {
-        if (entryKind === 'startup') startupBytes += byteLength;
+        if (entryKind === 'startup' || entryKind === 'live') startupBytes += byteLength;
         const error = classifyUncoveredEntry();
         if (error) throw error;
-        if (entryKind === 'startup' && startupBytes >= startupNoProgressBytes) {
+        if ((entryKind === 'startup' || entryKind === 'live') &&
+            startupBytes >= startupNoProgressBytes) {
           throw new MseStartupBufferError(
-            `${startupNoProgressBytes} bytes were read without forming a common A/V range at timestamp 0.`);
+            entryKind === 'live'
+              ? `${startupNoProgressBytes} bytes were read without forming a common live A/V range.`
+              : `${startupNoProgressBytes} bytes were read without forming a common A/V range at timestamp 0.`);
         }
       }
 

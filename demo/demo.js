@@ -17,11 +17,11 @@ import {
   commonBufferedRanges,
   createMsePlaybackDamageRecovery,
   startMsePlayback,
-} from '../mse-playback.mjs?v=recorded-seek-v1';
+} from '../mse-playback.mjs?v=live-entry-v1';
 import {
   createMsePlaybackFlowControl,
   createMseRecordedSeekSession,
-} from '../mse-playback.mjs?v=recorded-seek-v1';
+} from '../mse-playback.mjs?v=live-entry-v1';
 import { createWorkerTlvDemuxModule } from '../worker-tlvdemux.mjs';
 import {
   MseAppendQueue,
@@ -746,7 +746,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const playbackFlow = createMsePlaybackFlowControl({
     media: elements.video,
     queues,
-    entryKind: startTimeSeconds > 0 ? 'seek' : 'startup',
+    entryKind: liveMode ? 'live' : startTimeSeconds > 0 ? 'seek' : 'startup',
     entryTimeSeconds: startTimeSeconds,
     highSeconds: FORWARD_BUFFER_HIGH_SECONDS,
     lowSeconds: FORWARD_BUFFER_LOW_SECONDS,

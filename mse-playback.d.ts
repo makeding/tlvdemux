@@ -27,7 +27,7 @@ export type MsePlaybackQueues = Map<string, Pick<
 export interface MsePlaybackFlowControlOptions {
   media: MseMediaClock;
   queues: MsePlaybackQueues;
-  entryKind?: 'startup' | 'seek';
+  entryKind?: 'startup' | 'live' | 'seek';
   entryTimeSeconds?: number;
   entryToleranceSeconds?: number;
   highSeconds?: number;
@@ -39,7 +39,7 @@ export interface MsePlaybackFlowControlOptions {
 }
 
 export interface MsePlaybackFlowControl {
-  readonly entryKind: 'startup' | 'seek';
+  readonly entryKind: 'startup' | 'live' | 'seek';
   readonly entryTimeSeconds: number;
   entryRange(): MseBufferedRange | null;
   entryCovered(): boolean;

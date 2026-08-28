@@ -161,6 +161,13 @@ backpressure は parser の進捗ではなく共通 A/V buffered 区間を使用
 8 秒未満で再開します。再生入口を覆う共通区間がない間は、進捗なしに読み込める playback input を
 16 MiB に制限し、使い切った場合は録画を EOF まで取得せず `MSE_STARTUP_NO_COMMON_AV` で失敗します。
 
+Live 再生には timestamp 0 の入口はありません。起動入口は現在の stream が生成した最初の共通
+A/V buffered 区間であり、設定した live 起動 buffer が成立した後だけ media clock をその区間へ
+合わせます。flow control は、この位置合わせが書き込まれる前から後方の共通区間を正常な入口として
+受け入れ、その長さを測定しなければなりません。正常な live A/V が timestamp 0 を覆わないことを
+理由に失敗させてはいけません。live A/V が共通区間を一つも形成できない場合は、同じ 16 MiB の
+進捗なし上限で入力を停止し、`MSE_STARTUP_NO_COMMON_AV` を返します。
+
 録画の明示 seek は別の public playback-entry contract です。head discovery、すべての RAP probe、
 正式な A/V preroll は `createMseRecordedSeekSession()` の単一 16 MiB source-read budget を共有します。
 probe と landing が重なる範囲は再利用し、budget 消費後は source request を発行しません。要求時刻より
