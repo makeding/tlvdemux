@@ -5,6 +5,15 @@
 > labelled **legacy `tlvdemux` implementation**; this is a historical name,
 > not a separate product line.
 
+## [0.3.1] - 2026-08-28
+
+- Give live playback its own flow-control entry so a valid first common A/V
+  interval can start later than timestamp zero, then align the media clock only
+  after the configured live startup buffer is ready.
+- Keep the 16 MiB no-progress limit when a live stream cannot form any common
+  A/V interval, and add direct regression coverage for both successful live
+  alignment and bounded failure.
+
 ## [0.3.0] - 2026-08-28
 
 - Add public browser SDK modules for bounded recorded seek, MSE output queues,
