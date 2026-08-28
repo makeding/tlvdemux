@@ -961,6 +961,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       async commit(candidate) {
         if (generation !== runGeneration) return;
         const previousMedia = elements.video;
+        const restoreMediaFocus = document.activeElement === previousMedia;
         const previousUrl = activeObjectUrl;
         const resume = !previousMedia.paused;
         const target = previousMedia.currentTime;
@@ -979,6 +980,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         promotedMedia.id = 'video';
         previousMedia.replaceWith(promotedMedia);
         elements.video = promotedMedia;
+        if (restoreMediaFocus) promotedMedia.focus({preventScroll: true});
         bindPlaybackMediaEvents(promotedMedia);
         dataBroadcast.setVideoElement(promotedMedia);
         hlgSdrRenderer.setVideoElement(promotedMedia);
@@ -1117,9 +1119,11 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     try {
       gapRecovery.reportDamage(damage);
       if (damage.severity !== 'severe' && damage.action !== 'seek-if-stalled') return;
-      const start = Number(damage.startTimeUs ?? damage.endTimeUs) / 1000000;
+      const start = Number(
+        BigInt(damage.startTimeUs ?? damage.endTimeUs) - presentationStartUs,
+      ) / 1000000;
       const recovery = damage.recoveryTimeUs === null
-        ? null : Number(damage.recoveryTimeUs) / 1000000;
+        ? null : Number(BigInt(damage.recoveryTimeUs) - presentationStartUs) / 1000000;
       const key = `${damage.videoTrackId}:${damage.startInputOffset}:${damage.endInputOffset}`;
       if (reportedDamage.has(key)) return;
       reportedDamage.add(key);
@@ -1128,7 +1132,9 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
           `録画データの一部が破損しているため、再生が止まった場合は ` +
           `次の利用可能な復旧点へ自動的に移動します。` +
           ` [${damage.code}]`;
-        appendLog(`映像損傷 ${start.toFixed(3)}s -> ${recovery.toFixed(3)}s、` +
+        const prefetched = start > elements.video.currentTime + 0.5 ? '（先読み）' : '';
+        appendLog(`映像損傷${prefetched} 再生時間 ${start.toFixed(3)}s -> ` +
+          `${recovery.toFixed(3)}s、` +
           `停止時に復旧点へスキップします [${damage.code}]`);
       } else {
         elements.playbackNotice.textContent = liveMode

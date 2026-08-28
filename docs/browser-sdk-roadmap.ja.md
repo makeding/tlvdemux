@@ -59,7 +59,8 @@ data-broadcast DOM は consumer の責任です。
 新しい audio-only／A/V MediaSource への置換を portable path とします。録画置換は 16 MiB seek budget を
 共有し、Live 置換は input を再接続しない有界 demux-output fan-out を使い、demo は structured mode／error event だけを表示します。
 public `mse-live-transition` helper がこの有界 candidate fan-out と提示 frame commit 境界を所有し、
-consumer での再実装を禁止します。
+consumer での再実装を禁止します。consumer は attachment を維持した candidate MediaElement を
+昇格し、buffer 済み candidate の SourceBuffer list を空にする detach／reattach は行いません。
 
 ## Release／migration 順序
 

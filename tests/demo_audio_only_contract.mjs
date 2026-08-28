@@ -19,6 +19,10 @@ assert.match(adapter, /createMsePlaybackResilienceController/,
   'demo copied resilience decisions instead of consuming the SDK controller');
 assert.doesNotMatch(demo, /maximumRecoveryAttempts|attemptedRaps/,
   'demo owns or exposes internal recovery retry policy');
+assert.match(demo, /BigInt\(damage\.startTimeUs \?\? damage\.endTimeUs\) - presentationStartUs/,
+  'demo damage diagnostics no longer use the canonical playback-time mapping');
+assert.match(demo, /映像損傷\$\{prefetched\} 再生時間/,
+  'demo does not distinguish future prefetched damage from the current media clock');
 assert.match(demo, /createLiveMseTransitionManager/,
   'Live fallback has no candidate MediaSource transition path');
 assert.match(liveTransition, /4 \* 1024 \* 1024/,
@@ -27,6 +31,8 @@ assert.match(liveTransition, /requestVideoFrameCallback/,
   'Live A\/V candidate commits without actual presented-frame evidence');
 assert.match(demo, /candidate\.probeMedia/,
   'demo does not promote the already-buffered Live candidate MediaElement');
+assert.match(demo, /restoreMediaFocus[\s\S]*focus\(\{preventScroll: true\}\)/,
+  'Live candidate promotion loses MediaElement keyboard focus');
 assert.match(liveTransition, /MSE detach algorithm/,
   'Live transition can regress to detaching and emptying the proven candidate');
 

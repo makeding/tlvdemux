@@ -369,6 +369,14 @@ presented video frame remains `7.291s`. That second event must retain the same
 damage authorization and advance to the next real RAP at `14.280934s`, never
 repeat `13.747079s`. Only an actually presented recovery frame completes the
 authorization and prevents later unrelated `waiting` events from seeking.
+The same sample's observed `waiting` at media time `101.810s` is deliberately
+ordinary waiting: there is no selected-video damage at that clock. Damage
+already discovered by parser prefetch starts at mapped media time `114.097s`
+and recovers at the real RAP `115.315189s`; it remains retained for that future
+boundary and must not authorize a seek or audio-only transition at `101.810s`.
+Demo diagnostics label these mapped values as playback time and explicitly mark
+future damage as prefetched instead of printing source PTS beside the current
+MediaElement clock.
 The same rule applies while the MediaElement still reports `seeking` for the
 SDK-owned recovery target: the observed `6.589s -> 6.806806s -> 7.340679s`
 attempts can produce another causal `waiting` at `7.341s` before `seeked`.

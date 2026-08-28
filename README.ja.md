@@ -243,7 +243,9 @@ MediaSource を構築します。録画 rebuild は public index／seek session 
 再接続や既存 audio pipeline の停止を行いません。transition 中の正準 clock は常に audio です。
 `createLiveMseTransitionManager()` は 4 MiB 上限の candidate MediaSource queue を所有し、active pipeline
 と同じ継続中 demux output を受け取ります。復旧 A/V candidate は probe MediaElement が target frame を
-`requestVideoFrameCallback()` で報告した場合だけ commit します。
+`requestVideoFrameCallback()` で報告した場合だけ commit します。commit は attachment を維持した candidate
+MediaElement 自体を昇格します。object URL を detach／reattach すると MSE detach algorithm が両
+SourceBuffer list を空にするため禁止します。
 
 audio-only 再生中は audio clock より厳密に後の各実在 RAP を一度だけ restore 候補にできます。共通 A/V
 candidate が buffer 済みとなり、`requestVideoFrameCallback()` がその RAP 以後の frame の実提示を証明する
@@ -299,6 +301,12 @@ compositor が最初の復旧 RAP 以上の frame を実際に提示するまで
 同じ損傷許可を保持し、`13.747079s` を繰り返さず、次の実在 RAP `14.280934s` へ進まなければ
 なりません。実際に復旧 frame が提示された場合だけ許可を完了し、以後の無関係な `waiting` による
 seek を禁止します。
+
+同じ sample で観測された media time `101.810s` の `waiting` は通常 waiting です。その clock に
+selected-video damage はなく、parser が先読み済みの future damage は mapped media time
+`114.097s` に始まり、実在 RAP `115.315189s` で復旧します。この damage は future boundary まで
+保持し、`101.810s` で seek や audio-only を許可してはいけません。demo diagnostics は source PTS を
+現在の MediaElement clock と並べず、mapped playback time と先読みであることを表示します。
 
 MediaElement が SDK 所有の復旧 target に対してまだ `seeking` を返している場合も同じ規則です。
 観測済みの `6.589s -> 6.806806s -> 7.340679s` の試行では、`seeked` より先に因果関係のある

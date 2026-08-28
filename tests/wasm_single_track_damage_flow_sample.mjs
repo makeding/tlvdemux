@@ -208,6 +208,82 @@ try {
   assert.equal(stalledMedia.playCount, 1,
     'the authoritative 6.580s recovery still required a manual play click');
 
+  const screenshotBoundary = damages.find(damage => {
+    if (damage.action !== 'seek-if-stalled' || damage.startTimeUs === null ||
+        damage.recoveryTimeUs === null) return false;
+    const sourceStart = Number(damage.startTimeUs) / 1_000_000;
+    return Math.abs(sourceStart - 114.533) < 0.01;
+  });
+  assert.ok(screenshotBoundary,
+    'sample exposed no damage authorization for the observed 1:39 boundary');
+  const screenshotDamageStart = Number(
+    screenshotBoundary.startTimeUs - presentationStartUs) / 1_000_000;
+  const screenshotRecovery = Number(
+    screenshotBoundary.recoveryTimeUs - presentationStartUs) / 1_000_000;
+  const screenshotRaps = videoRandomAccessUnits
+    .map(unit => ({
+      unit,
+      mediaTime: Number(unit.ptsValue) / unit.ptsTimescale -
+        Number(presentationStartUs) / 1_000_000,
+    }))
+    .filter(item => item.unit.trackId === selectedVideo &&
+      item.mediaTime + 0.0005 >= screenshotRecovery)
+    .sort((left, right) => left.mediaTime - right.mediaTime);
+  assert.ok(screenshotRaps.length >= 3,
+    'sample exposed fewer than three real RAPs after the observed 1:39 boundary');
+  const prefetchedJumps = [];
+  const prefetchedMedia = {
+    currentTime: 101.810,
+    paused: false,
+    seeking: false,
+    play() { return Promise.resolve(); },
+  };
+  const prefetchedController = createMsePlaybackResilienceController({
+    media: prefetchedMedia,
+    presentationStartUs,
+    isCurrentLayer: damage => damage.videoTrackId === selectedVideo,
+    seek(target) { prefetchedJumps.push(target); },
+  });
+  prefetchedController.reportDamage(screenshotBoundary);
+  prefetchedController.notifyWaiting();
+  assert.deepEqual(prefetchedJumps, [],
+    'the 101.810s ordinary waiting consumed damage prefetched 12 seconds ahead');
+  assert.equal(prefetchedController.mode, MsePlaybackMode.AUDIO_VIDEO,
+    'the 101.810s ordinary waiting entered video recovery without current damage');
+  prefetchedController.destroy();
+  const screenshotJumps = [];
+  let screenshotBufferedEnd = screenshotRecovery - 0.01;
+  const screenshotMedia = {
+    currentTime: screenshotDamageStart,
+    paused: false,
+    seeking: false,
+    play() { return Promise.resolve(); },
+    buffered: {
+      get length() { return 1; },
+      start() { return 0; },
+      end() { return screenshotBufferedEnd; },
+    },
+  };
+  const screenshotController = createMsePlaybackResilienceController({
+    media: screenshotMedia,
+    presentationStartUs,
+    isCurrentLayer: damage => damage.videoTrackId === selectedVideo,
+    seek(target) {
+      screenshotJumps.push(target);
+      screenshotMedia.currentTime = target;
+    },
+  });
+  screenshotController.reportDamage(screenshotBoundary);
+  screenshotController.notifyWaiting();
+  assert.deepEqual(screenshotJumps, [],
+    'the 1:39 recovery ran before its real RAP was buffered');
+  screenshotBufferedEnd = screenshotRecovery + 0.5;
+  screenshotController.notifyBufferedChange();
+  assert.deepEqual(screenshotJumps.map(value => value.toFixed(6)),
+    [screenshotRecovery.toFixed(6)],
+    'the observed 1:39 waiting did not run when its recovery RAP became buffered');
+  screenshotController.destroy();
+
   const thirteenSecondRecovery = damages.find(damage =>
     damage.action === 'seek-if-stalled' && damage.recoveryTimeUs !== null &&
     ((damage.recoveryTimeUs - presentationStartUs) / 1_000n) === 11_611n);
@@ -328,6 +404,27 @@ try {
       restartOffset: nextForwardRap.unit.restartOffset,
     },
     delayedJump: delayedJumps[0],
+    screenshotBoundary: {
+      sourceStart: Number(screenshotBoundary.startTimeUs) / 1_000_000,
+      sourceRecovery: Number(screenshotBoundary.recoveryTimeUs) / 1_000_000,
+      mediaStart: screenshotDamageStart,
+      mediaRecovery: screenshotRecovery,
+      nextRaps: screenshotRaps.slice(0, 4).map(item => item.mediaTime),
+      segmentBeforeDamage: videoSegments
+        .filter(segment => segment.endTimeUs <= screenshotBoundary.startTimeUs)
+        .sort((left, right) => Number(right.endTimeUs - left.endTimeUs))[0],
+      segmentAtRecovery: videoSegments.find(segment =>
+        segment.startTimeUs === screenshotBoundary.recoveryTimeUs),
+    },
+    damagesNearScreenshotClock: damages.filter(damage =>
+      damage.startTimeUs !== null && damage.startTimeUs >= 100_000_000n &&
+      damage.startTimeUs <= 104_000_000n).map(damage => ({
+      sourceStart: Number(damage.startTimeUs) / 1_000_000,
+      mediaStart: Number(damage.startTimeUs - presentationStartUs) / 1_000_000,
+      sourceRecovery: damage.recoveryTimeUs === null ? null :
+        Number(damage.recoveryTimeUs) / 1_000_000,
+      action: damage.action,
+    })),
     repeatedStallJumps,
     resilienceJumps,
     resilienceModes,

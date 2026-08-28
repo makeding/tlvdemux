@@ -106,7 +106,9 @@ portable path. Recorded replacement shares the 16 MiB seek budget, live
 replacement uses bounded demux-output fan-out without reconnecting input, and the demo only renders structured
 mode/error events.
 The public `mse-live-transition` helper owns that bounded candidate fan-out and
-presented-frame commit boundary so consumers do not reproduce it.
+presented-frame commit boundary so consumers do not reproduce it. The consumer
+promotes the still-attached candidate MediaElement; it never detaches and
+reattaches a buffered candidate whose SourceBuffer lists would be emptied.
 
 ## Release and migration order
 
