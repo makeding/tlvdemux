@@ -1241,6 +1241,17 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     onMseVideoStart(detail) {
       appendLog(`映像開始 HEVC NAL=${detail.nalType} シグナルRAP=${detail.signalledRandomAccess}`);
     },
+    onMseVideoRecovery(event) {
+      gapRecovery.observeVideoRecoveryEvent(event);
+      const label = {
+        'observation-started': '映像復旧観察開始',
+        'candidate-rejected': '後続損傷で映像復旧候補を否決',
+        'stable-rap-committed': '安定RAPを映像出力へコミット',
+      }[event.phase];
+      if (label) {
+        appendLog(`${label} PTS=${(Number(event.presentationTimeUs) / 1000000).toFixed(6)}s`);
+      }
+    },
     onMseVideoProperties(properties) {
       currentVideoProperties = properties;
       updateVideoColorStatus();

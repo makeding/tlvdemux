@@ -687,6 +687,12 @@ declare namespace createTlvDemuxModule {
     signalledRandomAccess: boolean;
   }
 
+  interface MseVideoRecoveryEvent {
+    videoTrackId: bigint;
+    presentationTimeUs: bigint;
+    phase: "observation-started" | "candidate-rejected" | "stable-rap-committed";
+  }
+
   interface MseVideoColor {
     primaries: number;
     transfer: number;
@@ -820,6 +826,7 @@ declare namespace createTlvDemuxModule {
     onMseLayerSwitch?: (layer: MseLayerSwitch) => void;
     onMseLayerSwitchCancelled?: (cancelled: MseLayerSwitchCancelled) => void;
     onMseVideoStart?: (start: MseVideoStart) => void;
+    onMseVideoRecovery?: (event: MseVideoRecoveryEvent) => void;
     /** HEVC VUI/output colour state, pushed at each parameter-set/RAP boundary. */
     onMseVideoProperties?: (properties: MseVideoProperties) => void;
     /** Output capability and connection state after EDID/mode changes. */

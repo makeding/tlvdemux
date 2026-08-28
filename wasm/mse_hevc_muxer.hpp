@@ -4,7 +4,13 @@ public:
 
     bool started() const noexcept { return started_; }
     bool output_started() const noexcept { return output_started_; }
-    void mark_output_not_started() noexcept { output_started_ = false; }
+    bool audio_output_ready() const noexcept {
+        return started_ || recovery_observation_eligible_;
+    }
+    void mark_output_not_started() noexcept {
+        output_started_ = false;
+        recovery_observation_eligible_ = false;
+    }
     void set_sdr_in_hlg(const std::uint64_t track_id, const bool enabled) {
         const auto previous = color_policy(track_id);
         if (enabled) sdr_in_hlg_tracks_.insert(track_id);
@@ -39,15 +45,21 @@ public:
     std::optional<std::int64_t> take_splice_boundary_us() noexcept {
         return std::exchange(splice_boundary_us_, std::nullopt);
     }
-    void stage_next_switch() noexcept { stage_next_switch_ = true; }
+    void stage_next_switch() noexcept {
+        source_damage_observation_ = SourceDamageObservation::None;
+        recovery_observation_eligible_ = false;
+        stage_next_switch_ = true;
+    }
     void cancel_staged_switch() noexcept { stage_next_switch_ = false; }
     void retry_staged_switch() noexcept {
         reset_samples();
         started_ = false;
         output_started_ = false;
+        recovery_observation_eligible_ = false;
         no_rasl_output_ = false;
         sequence_start_ = true;
         splice_boundary_us_.reset();
+        source_damage_observation_ = SourceDamageObservation::None;
         stage_next_switch_ = true;
     }
     // AacMuxer has its own (sample-rate) track timescale, so it needs this
@@ -63,12 +75,15 @@ public:
         active_hdr_static_metadata_.reset();
         track_.reset();
         started_ = false;
+        output_started_ = false;
+        recovery_observation_eligible_ = false;
         no_rasl_output_ = false;
         sequence_start_ = true;
         timeline_offset_ticks_.reset();
         input_track_id_.reset();
         splice_boundary_us_.reset();
         stage_next_switch_ = false;
+        source_damage_observation_ = SourceDamageObservation::None;
         configuration_policy_dirty_ = false;
         current_video_properties_.reset();
         if (clear_policy) {
@@ -107,10 +122,65 @@ public:
                 has_eos = true;
             }
         }
+        const bool source_damage = unit.discontinuity &&
+            aribtlv::hasDiscontinuityReason(
+                unit.discontinuity_reasons,
+                aribtlv::DiscontinuityReason::SourceDamage);
         const bool track_switch_boundary = input_track_id_.has_value() &&
             *input_track_id_ != unit.track_id && irap >= 0;
         const bool requested_switch_boundary =
             stage_next_switch_ && irap >= 0;
+        const bool observe_source_damage = source_damage &&
+            recovery_observation_eligible_ &&
+            !track_switch_boundary && !requested_switch_boundary;
+        if (track_switch_boundary || requested_switch_boundary) {
+            source_damage_observation_ = SourceDamageObservation::None;
+        } else if (unit.discontinuity && !source_damage) {
+            // Reposition and genuine epoch changes keep their existing
+            // first-RAP startup contract; they are not source recovery.
+            source_damage_observation_ = SourceDamageObservation::None;
+        } else if (observe_source_damage) {
+            const auto previous_observation = source_damage_observation_;
+            if (source_damage_observation_ == SourceDamageObservation::None) {
+                // Preserve every complete picture before the loss. Candidate
+                // GOPs are never enqueued, so observation cannot enlarge the
+                // fragment queue or the browser transition budget.
+                flush();
+            }
+            output_.video_recovery(tlvdemux::MseVideoRecoveryEvent{
+                unit.track_id,
+                scaled(unit.pts.value, unit.pts.timescale, 1000000),
+                previous_observation == SourceDamageObservation::CandidateGop
+                    ? tlvdemux::MseVideoRecoveryPhase::CandidateRejected
+                    : tlvdemux::MseVideoRecoveryPhase::ObservationStarted,
+            });
+            started_ = false;
+            no_rasl_output_ = false;
+            sequence_start_ = true;
+            configuration_policy_dirty_ = true;
+            source_damage_observation_ = irap >= 0 && has_vcl
+                ? SourceDamageObservation::CandidateGop
+                : SourceDamageObservation::WaitingForRap;
+            return;
+        } else if (source_damage_observation_ ==
+                   SourceDamageObservation::WaitingForRap) {
+            if (irap >= 0 && has_vcl) {
+                source_damage_observation_ = SourceDamageObservation::CandidateGop;
+            }
+            return;
+        } else if (source_damage_observation_ ==
+                   SourceDamageObservation::CandidateGop) {
+            if (irap < 0 || !has_vcl) return;
+            // A complete candidate GOP reached its next real RAP without a
+            // new source-damage marker. Restart at this boundary; the observed
+            // GOP itself was intentionally discarded rather than cached.
+            source_damage_observation_ = SourceDamageObservation::None;
+            output_.video_recovery(tlvdemux::MseVideoRecoveryEvent{
+                unit.track_id,
+                scaled(unit.pts.value, unit.pts.timescale, 1000000),
+                tlvdemux::MseVideoRecoveryPhase::StableRapCommitted,
+            });
+        }
         if (requested_switch_boundary && !track_) {
             // Startup switching can reach the fallback configuration before a
             // preferred video SourceBuffer exists. Begin staging before the
@@ -207,21 +277,19 @@ public:
             configuration_boundary = true;
         }
         if (unit.discontinuity && !configuration_boundary) {
-            const bool source_damage = aribtlv::hasDiscontinuityReason(
-                unit.discontinuity_reasons,
-                aribtlv::DiscontinuityReason::SourceDamage);
             // A source-loss marker belongs to the following input AU, not to
             // complete samples queued before it. Seal that valid prefix before
             // waiting for a recovery IRAP. Clearing every short prefix here
             // leaves SourceBuffer with audio but no decodable video.
-            if (source_damage) flush();
-            else {
-                // A genuine epoch change invalidates both the queued
-                // generation and its old source-to-output mapping.
-                reset_samples();
-                timeline_offset_ticks_.reset();
-            }
+            // A genuine epoch change invalidates both the queued generation
+            // and its old source-to-output mapping. Mid-stream source damage
+            // returned through the bounded observation path above. At fresh
+            // startup, however, SourceDamage keeps the ordinary first-RAP
+            // contract and reaches this path before observation is eligible.
+            reset_samples();
+            timeline_offset_ticks_.reset();
             started_ = false;
+            recovery_observation_eligible_ = false;
             no_rasl_output_ = false;
             sequence_start_ = true;
         }
@@ -276,10 +344,18 @@ public:
         const auto dts = scaled(unit.dts.value, unit.dts.timescale, track_->timescale) + offset;
         const auto pts = scaled(unit.pts.value, unit.pts.timescale, track_->timescale) + offset;
         if (dts < 0) return;
-        enqueue({std::move(data), dts, pts, 0, irap >= 0});
+        if (enqueue({std::move(data), dts, pts, 0, irap >= 0})) {
+            recovery_observation_eligible_ = true;
+        }
     }
 
 private:
+    enum class SourceDamageObservation {
+        None,
+        WaitingForRap,
+        CandidateGop,
+    };
+
     void on_segment_emitted(const std::vector<Sample>& samples) override {
         if (!samples.empty()) output_started_ = true;
     }
@@ -429,11 +505,14 @@ private:
     std::optional<tlvdemux::MseVideoProperties> current_video_properties_;
     bool started_ = false;
     bool output_started_ = false;
+    bool recovery_observation_eligible_ = false;
     bool no_rasl_output_ = false;
     bool sequence_start_ = true;
     std::optional<std::int64_t> timeline_offset_ticks_;
     std::optional<std::uint64_t> input_track_id_;
     std::optional<std::int64_t> splice_boundary_us_;
     bool stage_next_switch_ = false;
+    SourceDamageObservation source_damage_observation_ =
+        SourceDamageObservation::None;
     bool configuration_policy_dirty_ = false;
 };

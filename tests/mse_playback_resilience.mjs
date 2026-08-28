@@ -91,6 +91,63 @@ const damage = {
 }
 
 {
+  const player = media(99.2);
+  const seeks = [];
+  let stableBuffered = false;
+  const controller = createMsePlaybackResilienceController({
+    media: player,
+    isCurrentLayer: item => item.videoTrackId === 2,
+    isTargetBuffered: target => stableBuffered && target >= 100.269228,
+    seek(target) { seeks.push(target); player.currentTime = target; },
+  });
+  const recoveryEvent = (phase, presentationTimeUs) => ({
+    videoTrackId: 2,
+    presentationTimeUs,
+    phase,
+  });
+  controller.observeVideoRecoveryEvent(
+    recoveryEvent('observation-started', 98_380_000n));
+  controller.reportDamage({...damage,
+    startTimeUs: 98_380_000n,
+    recoveryTimeUs: 99_201_500n,
+  });
+  controller.observeAccessUnit(rap(99.2015));
+  controller.observePresentedFrame(99.21);
+  controller.notifyWaiting();
+  assert.deepEqual(seeks, [],
+    'the first provisional recovery island became a seek/success point');
+
+  controller.observeVideoRecoveryEvent(
+    recoveryEvent('candidate-rejected', 99_468_433n));
+  controller.reportDamage({...damage,
+    startTimeUs: 99_351_650n,
+    recoveryTimeUs: 99_468_433n,
+    startInputOffset: 400n,
+    endInputOffset: 500n,
+  });
+  controller.observeAccessUnit(rap(99.468433));
+  controller.observePresentedFrame(99.48);
+  controller.notifyWaiting();
+  assert.deepEqual(seeks, [],
+    'the second provisional recovery island ended the merged damage episode');
+
+  controller.observeVideoRecoveryEvent(
+    recoveryEvent('stable-rap-committed', 100_269_228n));
+  assert.deepEqual(seeks, [], 'an unbuffered stable RAP triggered recovery');
+  stableBuffered = true;
+  controller.notifyBufferedChange();
+  assert.deepEqual(seeks, [100.269228],
+    'the merged episode did not recover at the first buffered stable RAP');
+  controller.observePresentedFrame(100.2);
+  assert.equal(controller.mode, MsePlaybackMode.RECOVERING_VIDEO,
+    'a frame before the stable RAP completed recovery');
+  controller.observePresentedFrame(100.269228);
+  assert.equal(controller.mode, MsePlaybackMode.AUDIO_VIDEO,
+    'the buffered stable RAP was not completed by actual frame presentation');
+  controller.destroy();
+}
+
+{
   const player = media(5);
   const controller = createMsePlaybackResilienceController({
     media: player,

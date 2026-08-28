@@ -391,12 +391,19 @@ matching selected-video damage authorization, must never start playback.
 
 Recovery also requires decodable MSE media after the damage boundary. A
 selected-video source-damage marker seals and emits every complete valid video
-sample before the loss, retains the existing source timeline mapping, drops
-non-RAP damaged pictures, and starts the next fragment at the real recovery RAP.
-It must not clear the whole sub-second video fragment: repeated short markers in
-this sample otherwise leave audio buffered while video remains frozen at
-`0.617s` and the common A/V buffer falls to `0.0s`; no sequence of media-clock
-seeks can repair media discarded before SourceBuffer append.
+sample before the loss and retains the existing source timeline mapping. The
+first real RAP then opens a bounded observation period: its GOP is discarded,
+another source-damage marker vetoes it, and video output resumes only at the
+next real RAP after one complete damage-free GOP. No candidate GOP is cached.
+In the authoritative sample, the `99.201500–99.351650s` and
+`99.468433–99.485117s` islands must not be emitted; stable output resumes at
+source PTS `100.269228s` while AAC remains continuous. Startup, explicit seek,
+track/layer switching, and undamaged input still start at their first RAP.
+The observation period is armed only after the selected-video generation has
+already accepted media. A source-damage marker at fresh startup, including one
+carried by the first RAP, must therefore start at that first real RAP without
+waiting for another clean GOP; it must form the initial common A/V entry within
+the same 16 MiB no-progress budget.
 
 Manual-to-automatic layer selection is an active transition, not only a policy
 flag. If the user has manually selected the rainfall layer, enabling automatic

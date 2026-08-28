@@ -1,111 +1,34 @@
-import {intersectBufferedRanges} from './mse-append-queue.mjs';
-
-export const MSE_STARTUP_NO_COMMON_AV = 'MSE_STARTUP_NO_COMMON_AV';
-export const MSE_SEEK_NO_COMMON_AV = 'MSE_SEEK_NO_COMMON_AV';
-export const TLV_VIDEO_UNAVAILABLE = 'TLV_VIDEO_UNAVAILABLE';
-export const MSE_SEEK_READ_BUDGET_BYTES = 16 * 1024 * 1024;
-export const MsePlaybackMode = Object.freeze({
-  AUDIO_VIDEO: 'audio-video',
-  RECOVERING_VIDEO: 'recovering-video',
-  AUDIO_ONLY: 'audio-only',
-  RESTORING_VIDEO: 'restoring-video',
-});
+import {
+  ENTRY_TOLERANCE_SECONDS,
+  commonBufferedAhead,
+  commonBufferedRanges,
+  coveringRange,
+  normalizeRequiredTracks,
+  selectRequiredQueues,
+} from './mse-playback-buffer.mjs';
+export {
+  commonBufferedAhead,
+  commonBufferedRanges,
+  startMsePlayback,
+} from './mse-playback-buffer.mjs';
+import {
+  MSE_SEEK_READ_BUDGET_BYTES,
+  MsePlaybackMode,
+  MseRecordedSeekError,
+  MseStartupBufferError,
+  TLV_VIDEO_UNAVAILABLE,
+} from './mse-playback-contract.mjs';
+export {
+  MSE_SEEK_NO_COMMON_AV,
+  MSE_SEEK_READ_BUDGET_BYTES,
+  MSE_STARTUP_NO_COMMON_AV,
+  MsePlaybackMode,
+  MseRecordedSeekError,
+  MseStartupBufferError,
+  TLV_VIDEO_UNAVAILABLE,
+} from './mse-playback-contract.mjs';
 
 const DEFAULT_CHUNK_BYTES = 2 * 1024 * 1024;
-const ENTRY_TOLERANCE_SECONDS = 0.05;
-
-export class MseStartupBufferError extends Error {
-  constructor(message =
-    'Audio and video could not be aligned with timestamp 0. Check the input and retry playback.') {
-    super(`${MSE_STARTUP_NO_COMMON_AV}: ${message}`);
-    this.name = 'MseStartupBufferError';
-    this.code = MSE_STARTUP_NO_COMMON_AV;
-  }
-}
-
-export class MseRecordedSeekError extends Error {
-  constructor(reason = 'no-common-av', message = null) {
-    const detail = message ?? ({
-      'budget-exhausted':
-        'The requested time did not form a common audio/video buffer within the 16 MiB seek budget.',
-      'no-rap': 'No random access point at or before the requested time was found within the seek budget.',
-      'no-common-av': 'Audio and video could not form a common buffer at the requested time.',
-      'source-ended': 'The input ended before audio and video covered the requested time.',
-      'demux-failed': 'The demuxer could not prepare the requested time.',
-    }[reason] ?? 'The requested time could not be prepared.');
-    super(`${MSE_SEEK_NO_COMMON_AV}: ${detail} Input reads have stopped; retry the seek or choose a nearby time.`);
-    this.name = 'MseRecordedSeekError';
-    this.code = MSE_SEEK_NO_COMMON_AV;
-    this.reason = reason;
-  }
-}
-
-function normalizeRequiredTracks(requiredTracks = ['video', 'audio']) {
-  const tracks = [...new Set(requiredTracks)];
-  if (!tracks.length || tracks.some(type => type !== 'video' && type !== 'audio')) {
-    throw new TypeError('requiredTracks must contain audio and/or video.');
-  }
-  return tracks;
-}
-
-function selectRequiredQueues(queues, requiredTracks) {
-  const selected = new Map();
-  for (const type of normalizeRequiredTracks(requiredTracks)) {
-    const queue = queues.get(type);
-    if (queue) selected.set(type, queue);
-  }
-  return selected;
-}
-
-export function commonBufferedRanges(queues, requiredTracks = ['video', 'audio']) {
-  const tracks = normalizeRequiredTracks(requiredTracks);
-  const selected = selectRequiredQueues(queues, tracks);
-  if (selected.size !== tracks.length) return [];
-  let common = null;
-  for (const queue of selected.values()) {
-    const ranges = queue.bufferedRanges();
-    common = common === null ? ranges : intersectBufferedRanges(common, ranges);
-    if (!common.length) break;
-  }
-  return common ?? [];
-}
-
-function coveringRange(queues, timeSeconds, toleranceSeconds, requiredTracks) {
-  return commonBufferedRanges(queues, requiredTracks).find(range =>
-    range.start <= timeSeconds + toleranceSeconds && range.end >= timeSeconds) ?? null;
-}
-
-export function commonBufferedAhead(
-  media, queues, toleranceSeconds = ENTRY_TOLERANCE_SECONDS,
-  requiredTracks = ['video', 'audio'],
-) {
-  const range = coveringRange(queues, media.currentTime, toleranceSeconds, requiredTracks);
-  return range ? Math.max(0, range.end - media.currentTime) : 0;
-}
-
-export function startMsePlayback({
-  media,
-  queues,
-  liveMode = false,
-  minimumLiveBufferSeconds = 0,
-  requiredTracks = ['video', 'audio'],
-  play = () => media.play(),
-}) {
-  const ranges = commonBufferedRanges(queues, requiredTracks);
-  if (!ranges.length) return null;
-  const currentTime = media.currentTime;
-  const range = liveMode
-    ? ranges.find(item => item.end > currentTime + 0.001)
-    : ranges.find(item => item.start <= currentTime + ENTRY_TOLERANCE_SECONDS &&
-        item.end > currentTime + 0.001);
-  if (!range) return null;
-  const commonAhead = range.end - Math.max(currentTime, range.start);
-  if (liveMode && commonAhead < minimumLiveBufferSeconds) return null;
-  const aligned = liveMode && currentTime < range.start - 0.001;
-  if (aligned) media.currentTime = range.start;
-  return {range, commonAhead, aligned, playResult: play()};
-}
-
 export function createMsePlaybackDamageRecovery({
   media,
   presentationStartUs = 0n,
@@ -127,6 +50,8 @@ export function createMsePlaybackDamageRecovery({
   const completedDamage = new Set();
   const pendingDamage = new Map();
   const randomAccessPoints = new Map();
+  const observingTracks = new Set();
+  const observedRecoveryTracks = new Set();
   const frameObservationSupported = media.videoFrameCallbackSupported ??
     typeof media.requestVideoFrameCallback === 'function';
   let waitingTime = null;
@@ -139,6 +64,9 @@ export function createMsePlaybackDamageRecovery({
     damage.recoveryTimeUs, damage.recoveryInputOffset, damage.recoveryRestartOffset,
   ].map(value => String(value ?? '')).join(':');
   const trackKey = trackId => String(trackId);
+  const eventTarget = event => Number(
+    BigInt(event.presentationTimeUs) - BigInt(presentationStartUs),
+  ) / 1000000;
 
   const rememberRandomAccessPoint = (trackId, target) => {
     if (!Number.isFinite(target) || target < 0) return;
@@ -170,6 +98,8 @@ export function createMsePlaybackDamageRecovery({
       target,
       start,
       action: damage.action,
+      stableTargetRequired: observingTracks.has(trackKey(damage.videoTrackId)),
+      stableTarget: null,
       lastAttemptedTarget: null,
       lastAttemptWaitingGeneration: null,
     };
@@ -181,7 +111,9 @@ export function createMsePlaybackDamageRecovery({
       Math.abs(media.currentTime - candidate.lastAttemptedTarget) <= 0.1;
     if (!candidate || completedDamage.has(candidate.key) ||
         !isActive() || !isCurrentLayer(candidate.damage) ||
-        switchInFlight() || (media.seeking && !ownsInFlightSeek) || !Number.isFinite(target) ||
+        switchInFlight() || observingTracks.has(trackKey(candidate.damage.videoTrackId)) ||
+        (candidate.stableTargetRequired && candidate.stableTarget === null) ||
+        (media.seeking && !ownsInFlightSeek) || !Number.isFinite(target) ||
         target + 0.0005 < media.currentTime || !isTargetBuffered(target)) return null;
     const previousTime = media.currentTime;
     const resumeAfterSeek = !media.paused;
@@ -217,6 +149,8 @@ export function createMsePlaybackDamageRecovery({
     if (lastPresentedTime === null) return;
     for (const [key, candidate] of pendingDamage) {
       if (candidate.action === 'seek-if-stalled' &&
+          !observingTracks.has(trackKey(candidate.damage.videoTrackId)) &&
+          (!candidate.stableTargetRequired || candidate.stableTarget !== null) &&
           lastPresentedTime + 0.001 >= candidate.target) {
         completedDamage.add(key);
         pendingDamage.delete(key);
@@ -271,6 +205,34 @@ export function createMsePlaybackDamageRecovery({
   };
   if (observeFramesAutomatically) scheduleFrameObservation();
 
+  const observeVideoRecoveryEvent = event => {
+    if (destroyed || !event || !isCurrentLayer({videoTrackId: event.videoTrackId})) return null;
+    const key = trackKey(event.videoTrackId);
+    observedRecoveryTracks.add(key);
+    if (event.phase === 'observation-started' || event.phase === 'candidate-rejected') {
+      observingTracks.add(key);
+      for (const candidate of pendingDamage.values()) {
+        if (trackKey(candidate.damage.videoTrackId) !== key) continue;
+        candidate.stableTargetRequired = true;
+        candidate.stableTarget = null;
+      }
+      return null;
+    }
+    if (event.phase !== 'stable-rap-committed') return null;
+    const target = eventTarget(event);
+    if (!Number.isFinite(target) || target < 0) return null;
+    observingTracks.delete(key);
+    rememberRandomAccessPoint(event.videoTrackId, target);
+    for (const candidate of pendingDamage.values()) {
+      if (trackKey(candidate.damage.videoTrackId) !== key) continue;
+      candidate.stableTargetRequired = true;
+      candidate.stableTarget = target;
+      candidate.target = target;
+    }
+    retirePresentedDamage();
+    return recoverWaiting();
+  };
+
   return {
     notifyWaiting() {
       const currentTime = media.currentTime;
@@ -302,9 +264,11 @@ export function createMsePlaybackDamageRecovery({
           !Number.isFinite(Number(unit.ptsTimescale)) || Number(unit.ptsTimescale) <= 0) return null;
       const sourceSeconds = Number(unit.ptsValue) / Number(unit.ptsTimescale);
       const target = sourceSeconds - Number(BigInt(presentationStartUs)) / 1000000;
+      if (observingTracks.has(trackKey(unit.trackId))) return null;
       rememberRandomAccessPoint(unit.trackId, target);
       return recoverWaiting();
     },
+    observeVideoRecoveryEvent,
     observePresentedFrame,
     destroy() {
       destroyed = true;
@@ -315,6 +279,8 @@ export function createMsePlaybackDamageRecovery({
       completedDamage.clear();
       pendingDamage.clear();
       randomAccessPoints.clear();
+      observingTracks.clear();
+      observedRecoveryTracks.clear();
       waitingTime = null;
       waitingGeneration = 0;
       lastPresentedTime = null;
@@ -322,6 +288,8 @@ export function createMsePlaybackDamageRecovery({
     reset() {
       completedDamage.clear();
       pendingDamage.clear();
+      observingTracks.clear();
+      observedRecoveryTracks.clear();
       waitingTime = null;
       waitingGeneration = 0;
       lastPresentedTime = null;
@@ -332,8 +300,19 @@ export function createMsePlaybackDamageRecovery({
       const existing = pendingDamage.get(candidate.key);
       if (existing) return existing.action === 'seek-if-stalled'
         ? recoverWaiting() : null;
+      const track = trackKey(damage.videoTrackId);
+      const episode = [...pendingDamage.values()].find(item =>
+        trackKey(item.damage.videoTrackId) === track &&
+        (observingTracks.has(track) || item.stableTargetRequired));
+      if (episode) {
+        episode.stableTargetRequired = true;
+        episode.stableTarget = null;
+        return episode.action === 'seek-if-stalled' ? recoverWaiting() : null;
+      }
       pendingDamage.set(candidate.key, candidate);
-      rememberRandomAccessPoint(damage.videoTrackId, candidate.target);
+      if (!candidate.stableTargetRequired) {
+        rememberRandomAccessPoint(damage.videoTrackId, candidate.target);
+      }
       if (candidate.action === 'seek-if-stalled') {
         retirePresentedDamage();
         return recoverWaiting();
@@ -388,6 +367,8 @@ export function createMsePlaybackResilienceController({
   let restoreTarget = initialMode === MsePlaybackMode.RESTORING_VIDEO
     ? initialRestoreTarget : null;
   let lastRestoreTarget = restoreTarget;
+  let recoveryObservationSeen = false;
+  let stableRecoveryTarget = null;
   let frameCallbackId = null;
 
   const modeDetail = detail => ({
@@ -421,6 +402,8 @@ export function createMsePlaybackResilienceController({
     restoreTarget = null;
     lastRestoreTarget = null;
     lastPresentedTime = null;
+    recoveryObservationSeen = false;
+    stableRecoveryTarget = null;
     damageRecovery.reset();
     return setMode(MsePlaybackMode.AUDIO_VIDEO, {reason});
   };
@@ -463,9 +446,14 @@ export function createMsePlaybackResilienceController({
       ? mediaTime : Math.max(lastPresentedTime, mediaTime);
     damageRecovery.observePresentedFrame(mediaTime);
     const currentAttempt = attempts.at(-1);
+    const recoveryCompletionTarget = recoveryObservationSeen
+      ? stableRecoveryTarget : currentAttempt?.target ?? null;
     if (mode === MsePlaybackMode.RECOVERING_VIDEO && currentAttempt &&
-        lastPresentedTime + 0.001 >= currentAttempt.target) {
+        recoveryCompletionTarget !== null &&
+        lastPresentedTime + 0.001 >= recoveryCompletionTarget) {
       attempts = [];
+      recoveryObservationSeen = false;
+      stableRecoveryTarget = null;
       setMode(MsePlaybackMode.AUDIO_VIDEO, {
         reason: 'video-presented', mediaTime: lastPresentedTime,
       });
@@ -545,6 +533,7 @@ export function createMsePlaybackResilienceController({
         if (mode === MsePlaybackMode.RESTORING_VIDEO) return null;
         return damageRecovery.observeAccessUnit(unit);
       }
+      if (recoveryObservationSeen && stableRecoveryTarget === null) return null;
       if (media.paused || switchInFlight() || target <= media.currentTime + 0.0005 ||
           (lastRestoreTarget !== null && target <= lastRestoreTarget + 0.0005)) return null;
       restoreTarget = target;
@@ -558,6 +547,19 @@ export function createMsePlaybackResilienceController({
         }
       });
       return event;
+    },
+    observeVideoRecoveryEvent(event) {
+      if (!usable() || !isCurrentLayer({videoTrackId: event?.videoTrackId})) return null;
+      if (event.phase === 'observation-started' || event.phase === 'candidate-rejected') {
+        recoveryObservationSeen = true;
+        stableRecoveryTarget = null;
+      } else if (event.phase === 'stable-rap-committed') {
+        recoveryObservationSeen = true;
+        stableRecoveryTarget = Number(
+          BigInt(event.presentationTimeUs) - BigInt(presentationStartUs),
+        ) / 1000000;
+      }
+      return damageRecovery.observeVideoRecoveryEvent(event);
     },
     observePresentedFrame,
     notifyVideoRestoreFailed,
@@ -582,6 +584,8 @@ export function createMsePlaybackResilienceController({
       sourceEnded = true;
       attempts = [];
       restoreTarget = null;
+      recoveryObservationSeen = false;
+      stableRecoveryTarget = null;
       damageRecovery.reset();
       return setMode(MsePlaybackMode.AUDIO_VIDEO, {reason: 'source-ended'});
     },

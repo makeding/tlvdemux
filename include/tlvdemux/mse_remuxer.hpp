@@ -98,6 +98,18 @@ struct MseVideoStart {
     bool signalled_random_access = false;
 };
 
+enum class MseVideoRecoveryPhase {
+    ObservationStarted,
+    CandidateRejected,
+    StableRapCommitted,
+};
+
+struct MseVideoRecoveryEvent {
+    std::uint64_t video_track_id = 0;
+    std::int64_t presentation_time_us = 0;
+    MseVideoRecoveryPhase phase = MseVideoRecoveryPhase::ObservationStarted;
+};
+
 struct MseVideoColor {
     std::uint16_t primaries = 0;
     std::uint16_t transfer = 0;
@@ -168,6 +180,7 @@ public:
     virtual void onMseLayerSwitch(const MseLayerSwitch&) {}
     virtual void onMseLayerSwitchCancelled(const MseLayerSwitchCancelled&) {}
     virtual void onMseVideoStart(const MseVideoStart&) {}
+    virtual void onMseVideoRecovery(const MseVideoRecoveryEvent&) {}
     virtual void onMseVideoProperties(const MseVideoProperties&) {}
     virtual void onPlaybackDamage(const PlaybackDamage&) {}
 };

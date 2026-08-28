@@ -1,6 +1,7 @@
 #include <tlvdemux/mse_remuxer.hpp>
 #include <tlvdemux/hevc_metadata.hpp>
 #include "../src/mse/hevc_parser.hpp"
+#include "mse_remuxer_test_media.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -49,6 +50,10 @@ public:
         const tlvdemux::MseVideoProperties& properties) override {
         video_properties.push_back(properties);
     }
+    void onMseVideoRecovery(
+        const tlvdemux::MseVideoRecoveryEvent& recovery) override {
+        video_recovery.push_back(recovery);
+    }
     void onMseLayerSwitch(const tlvdemux::MseLayerSwitch& layer) override {
         events.push_back("layer-switch");
         layer_switches.push_back(layer);
@@ -74,30 +79,12 @@ public:
     std::optional<std::int64_t> audio_emitted_end_at_splice;
     std::vector<tlvdemux::MseVideoSplice> video_splices;
     std::vector<tlvdemux::MseVideoProperties> video_properties;
+    std::vector<tlvdemux::MseVideoRecoveryEvent> video_recovery;
     std::vector<tlvdemux::MseLayerSwitch> layer_switches;
     std::vector<tlvdemux::MseLayerSwitchStarted> layer_switch_starts;
     std::vector<tlvdemux::MseLayerSwitchCancelled> layer_switch_cancellations;
     std::vector<tlvdemux::PlaybackDamage> playback_damage;
     std::vector<std::string> events;
-};
-
-class BitWriter {
-public:
-    void bits(const std::uint32_t value, const unsigned count) {
-        for (unsigned index = 0; index < count; ++index) {
-            if ((offset_ & 7U) == 0) data_.push_back(0);
-            const auto shift = count - index - 1;
-            data_.back() |= static_cast<std::uint8_t>(
-                ((value >> shift) & 1U) << (7U - (offset_ & 7U)));
-            ++offset_;
-        }
-    }
-
-    std::vector<std::uint8_t> take() { return std::move(data_); }
-
-private:
-    std::vector<std::uint8_t> data_;
-    unsigned offset_ = 0;
 };
 
 std::vector<std::uint8_t> loas_frame(const std::uint32_t channel_configuration) {
@@ -323,15 +310,6 @@ bool video_entry_has_child(const std::vector<std::uint8_t>& init_segment,
                             hvc1->payload_end, type).has_value();
 }
 
-tlvdemux::AccessUnit hevc_unit_with_transfer(
-    std::uint64_t track_id, std::int64_t dts_value, std::int64_t pts_value,
-    bool keyframe, bool include_parameter_sets, std::uint8_t transfer,
-    std::uint32_t timescale = 1000000);
-std::vector<std::uint8_t> make_simple_nal(
-    unsigned type, const std::vector<std::uint8_t>& payload);
-std::vector<std::uint8_t> annex_b_wrap(const std::vector<std::uint8_t>& nalu);
-std::vector<std::uint8_t> escape_rbsp(const std::vector<std::uint8_t>& raw);
-
 tlvdemux::AccessUnit hevc_unit_with_hdr_static_metadata() {
     auto unit = hevc_unit_with_transfer(2, 0, 0, true, true, 16);
     const std::vector<std::uint8_t> sei_payload{
@@ -367,179 +345,6 @@ std::vector<std::int64_t> composition_timestamps(const std::vector<ParsedSegment
         }
     }
     return out;
-}
-
-// ---- HEVC Annex B synthesis: only what parse_sps() in mse_remuxer.cpp
-// actually reads, plus the NAL headers/types the muxer inspects. ----
-
-void write_ue(BitWriter& writer, const std::uint32_t value) {
-    const auto code_num = value + 1;
-    unsigned leading_zeros = 0;
-    while ((code_num >> leading_zeros) > 1) ++leading_zeros;
-    for (unsigned i = 0; i < leading_zeros; ++i) writer.bits(0, 1);
-    writer.bits(code_num, leading_zeros + 1);
-}
-
-std::uint16_t nal_header(const unsigned type) {
-    return static_cast<std::uint16_t>((type & 0x3fU) << 9 | 1U);  // layer_id 0, temporal_id_plus1 1
-}
-std::vector<std::uint8_t> nal_header_bytes(const unsigned type) {
-    const auto value = nal_header(type);
-    return {static_cast<std::uint8_t>(value >> 8), static_cast<std::uint8_t>(value)};
-}
-std::vector<std::uint8_t> make_simple_nal(const unsigned type, const std::vector<std::uint8_t>& payload) {
-    auto out = nal_header_bytes(type);
-    out.insert(out.end(), payload.begin(), payload.end());
-    return out;
-}
-
-// Inverse of mse_remuxer.cpp's rbsp() de-escaper: inserts emulation_prevention_three_byte
-// so the raw bit content survives the muxer's Annex B parsing unchanged.
-std::vector<std::uint8_t> escape_rbsp(const std::vector<std::uint8_t>& raw) {
-    std::vector<std::uint8_t> out;
-    unsigned zero_run = 0;
-    for (const auto byte : raw) {
-        if (zero_run >= 2 && byte <= 3) { out.push_back(3); zero_run = 0; }
-        out.push_back(byte);
-        zero_run = byte == 0 ? zero_run + 1 : 0;
-    }
-    return out;
-}
-
-// Matches the fields parse_sps() reads, with
-// sps_max_sub_layers_minus1 = 0 so its sub-layer loops are skipped.
-std::vector<std::uint8_t> build_sps_nalu(const std::uint32_t width, const std::uint32_t height,
-                                         const std::uint8_t transfer = 18) {
-    BitWriter writer;
-    writer.bits(nal_header(33), 16);
-    writer.bits(0, 4);  // sps_video_parameter_set_id
-    writer.bits(0, 3);  // sps_max_sub_layers_minus1
-    writer.bits(1, 1);  // sps_temporal_id_nesting_flag
-    writer.bits(0, 2);  // profile_space
-    writer.bits(0, 1);  // tier
-    writer.bits(1, 5);  // profile_idc
-    for (int i = 0; i < 4; ++i) writer.bits(0, 8);  // general_profile_compatibility_flag[32]
-    for (int i = 0; i < 6; ++i) writer.bits(0, 8);  // general_constraint flags[48]
-    writer.bits(93, 8);  // level_idc
-    write_ue(writer, 0);       // sps_seq_parameter_set_id
-    write_ue(writer, 1);       // chroma_format_idc (4:2:0)
-    write_ue(writer, width);   // pic_width_in_luma_samples
-    write_ue(writer, height);  // pic_height_in_luma_samples
-    writer.bits(0, 1);  // conformance_window_flag
-    write_ue(writer, 0);  // bit_depth_luma_minus8
-    write_ue(writer, 0);  // bit_depth_chroma_minus8
-    write_ue(writer, 4);  // log2_max_pic_order_cnt_lsb_minus4
-    writer.bits(0, 1);    // sps_sub_layer_ordering_info_present_flag
-    write_ue(writer, 0);  // sps_max_dec_pic_buffering_minus1[0]
-    write_ue(writer, 0);  // sps_max_num_reorder_pics[0]
-    write_ue(writer, 0);  // sps_max_latency_increase_plus1[0]
-    for (int i = 0; i < 6; ++i) write_ue(writer, 0);  // coding/transform block sizes
-    writer.bits(0, 1);  // scaling_list_enabled_flag
-    writer.bits(0, 1);  // amp_enabled_flag
-    writer.bits(0, 1);  // sample_adaptive_offset_enabled_flag
-    writer.bits(0, 1);  // pcm_enabled_flag
-    write_ue(writer, 0);  // num_short_term_ref_pic_sets
-    writer.bits(0, 1);  // long_term_ref_pics_present_flag
-    writer.bits(0, 1);  // sps_temporal_mvp_enabled_flag
-    writer.bits(0, 1);  // strong_intra_smoothing_enabled_flag
-    writer.bits(1, 1);  // vui_parameters_present_flag
-    writer.bits(1, 1);  // aspect_ratio_info_present_flag
-    writer.bits(1, 8);  // square pixels
-    writer.bits(0, 1);  // overscan_info_present_flag
-    writer.bits(1, 1);  // video_signal_type_present_flag
-    writer.bits(0, 3);  // component video
-    writer.bits(0, 1);  // video_full_range_flag: limited range
-    writer.bits(1, 1);  // colour_description_present_flag
-    writer.bits(9, 8);  // BT.2020 primaries
-    writer.bits(transfer, 8);
-    writer.bits(9, 8);  // BT.2020 non-constant matrix
-    return escape_rbsp(writer.take());
-}
-
-std::vector<std::uint8_t> annex_b_wrap(const std::vector<std::uint8_t>& nalu) {
-    std::vector<std::uint8_t> out{0, 0, 0, 1};
-    out.insert(out.end(), nalu.begin(), nalu.end());
-    return out;
-}
-
-// vcl_types gives one VCL NAL per entry (so a test can drive RASL/RADL/BLA/CRA
-// mixes directly); trailing_nal optionally appends a non-VCL NAL such as
-// EOS_NUT after them, and an empty vcl_types with a trailing_nal builds an
-// access unit that carries only that marker NAL.
-std::vector<std::uint8_t> video_access_unit_data(const bool include_parameter_sets,
-                                                  const std::vector<unsigned>& vcl_types,
-                                                  const std::optional<unsigned> trailing_nal = std::nullopt,
-                                                  const std::uint8_t transfer = 18) {
-    std::vector<std::uint8_t> out;
-    if (include_parameter_sets) {
-        for (const auto& nalu : {annex_b_wrap(make_simple_nal(32, {0xab, 0xcd})),   // VPS
-                                 annex_b_wrap(make_simple_nal(34, {0xab, 0xcd})),   // PPS
-                                 annex_b_wrap(build_sps_nalu(1920, 1080, transfer))}) { // SPS
-            out.insert(out.end(), nalu.begin(), nalu.end());
-        }
-    }
-    for (const auto type : vcl_types) {
-        const auto vcl = annex_b_wrap(make_simple_nal(type, {0x80}));
-        out.insert(out.end(), vcl.begin(), vcl.end());
-    }
-    if (trailing_nal) {
-        const auto nalu = annex_b_wrap(make_simple_nal(*trailing_nal, {}));
-        out.insert(out.end(), nalu.begin(), nalu.end());
-    }
-    return out;
-}
-
-std::vector<std::uint8_t> video_access_unit_data(const bool include_parameter_sets, const bool keyframe) {
-    return video_access_unit_data(include_parameter_sets, std::vector<unsigned>{keyframe ? 19u : 1u});  // IDR_W_RADL / TRAIL_R
-}
-
-tlvdemux::AccessUnit hevc_unit(const std::uint64_t track_id, const std::int64_t dts_value,
-                               const std::int64_t pts_value, const bool keyframe,
-                               const bool include_parameter_sets,
-                               const std::uint32_t timescale = 1000000) {
-    tlvdemux::AccessUnit unit;
-    unit.track_id = track_id;
-    unit.codec = tlvdemux::Codec::Hevc;
-    unit.data = video_access_unit_data(include_parameter_sets, keyframe);
-    unit.dts = {dts_value, timescale};
-    unit.pts = {pts_value, timescale};
-    unit.random_access = keyframe;
-    return unit;
-}
-
-tlvdemux::AccessUnit hevc_unit_with_transfer(const std::uint64_t track_id,
-                                             const std::int64_t dts_value,
-                                             const std::int64_t pts_value,
-                                             const bool keyframe,
-                                             const bool include_parameter_sets,
-                                             const std::uint8_t transfer,
-                                             const std::uint32_t timescale) {
-    tlvdemux::AccessUnit unit;
-    unit.track_id = track_id;
-    unit.codec = tlvdemux::Codec::Hevc;
-    unit.data = video_access_unit_data(include_parameter_sets,
-                                       std::vector<unsigned>{keyframe ? 19u : 1u},
-                                       std::nullopt, transfer);
-    unit.dts = {dts_value, timescale};
-    unit.pts = {pts_value, timescale};
-    unit.random_access = keyframe;
-    return unit;
-}
-
-tlvdemux::AccessUnit hevc_unit(const std::uint64_t track_id, const std::int64_t dts_value,
-                               const std::int64_t pts_value, const std::vector<unsigned>& vcl_types,
-                               const bool include_parameter_sets,
-                               const std::optional<unsigned> trailing_nal = std::nullopt,
-                               const std::uint32_t timescale = 1000000) {
-    tlvdemux::AccessUnit unit;
-    unit.track_id = track_id;
-    unit.codec = tlvdemux::Codec::Hevc;
-    unit.data = video_access_unit_data(include_parameter_sets, vcl_types, trailing_nal);
-    unit.dts = {dts_value, timescale};
-    unit.pts = {pts_value, timescale};
-    unit.random_access = std::any_of(vcl_types.begin(), vcl_types.end(),
-                                      [](const unsigned type) { return type >= 16 && type <= 21; });
-    return unit;
 }
 
 void test_audio_drops_non_advancing_dts() {
@@ -700,35 +505,65 @@ void test_video_source_damage_does_not_discard_independent_audio() {
           "video source damage discarded queued independent AAC media");
 }
 
-void test_video_source_damage_seals_valid_prefix_and_restarts_at_rap() {
+void test_startup_source_damage_starts_at_first_rap_without_observation() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
     remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
 
-    remuxer.push(hevc_unit(2, 0, 0, true, true));
-    remuxer.push(hevc_unit(2, 33'333, 33'333, false, false));
-
-    auto damaged = hevc_unit(2, 400'000, 400'000, false, false);
-    damaged.discontinuity = true;
-    damaged.discontinuity_reasons =
+    auto first_rap = hevc_unit(2, 436'189, 436'189, true, true);
+    first_rap.discontinuity = true;
+    first_rap.discontinuity_reasons =
         aribtlv::DiscontinuityReason::SourceDamage;
-    remuxer.push(damaged);
+    remuxer.push(first_rap);
+    remuxer.push(hevc_unit(2, 469'556, 469'556, false, false));
+    remuxer.flush();
 
-    auto recovery = hevc_unit(2, 500'000, 500'000, true, false);
-    recovery.discontinuity = true;
-    recovery.discontinuity_reasons =
-        aribtlv::DiscontinuityReason::SourceDamage;
-    remuxer.push(recovery);
-    remuxer.push(hevc_unit(2, 533'333, 533'333, false, false));
+    const auto segments = segments_of(sink.segments, "video");
+    check(segments.size() == 1 && segments[0].tfdt == 436'189 &&
+              segments[0].samples.size() == 2,
+          "startup SourceDamage waited past the first real RAP");
+    check(sink.video_recovery.empty(),
+          "startup SourceDamage incorrectly opened a recovery observation");
+}
+
+void test_video_source_damage_waits_for_a_clean_gop_before_restart() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+
+    remuxer.push(hevc_unit(2, 98'000'000, 98'000'000, true, true));
+    remuxer.push(hevc_unit(2, 98'033'367, 98'033'367, false, false));
+
+    const auto damage = [](tlvdemux::AccessUnit unit) {
+        unit.discontinuity = true;
+        unit.discontinuity_reasons = aribtlv::DiscontinuityReason::SourceDamage;
+        return unit;
+    };
+    remuxer.push(damage(hevc_unit(2, 98'380'000, 98'380'000, false, false)));
+    remuxer.push(hevc_unit(2, 99'201'500, 99'201'500, true, false));
+    remuxer.push(hevc_unit(2, 99'351'650, 99'351'650, false, false));
+    remuxer.push(damage(hevc_unit(2, 99'468'433, 99'468'433, true, false)));
+    remuxer.push(hevc_unit(2, 99'485'117, 99'485'117, false, false));
+    remuxer.push(hevc_unit(2, 100'269'228, 100'269'228, true, false));
+    remuxer.push(hevc_unit(2, 100'302'595, 100'302'595, false, false));
     remuxer.flush();
 
     const auto segments = segments_of(sink.segments, "video");
     check(segments.size() == 2,
-          "source damage did not split valid prefix and recovery generation");
-    check(segments[0].tfdt == 0 && segments[0].samples.size() == 2,
+          "source damage did not split the valid prefix and stable generation");
+    check(segments[0].tfdt == 98'000'000 && segments[0].samples.size() == 2,
           "source damage discarded the complete video prefix before the loss");
-    check(segments[1].tfdt == 500'000 && segments[1].samples.size() == 2,
-          "video did not restart at the real recovery RAP on the source timeline");
+    check(segments[1].tfdt == 100'269'228 && segments[1].samples.size() == 2,
+          "candidate recovery islands escaped before the clean-GOP boundary");
+    check(sink.video_recovery.size() == 3 &&
+              sink.video_recovery[0].phase ==
+                  tlvdemux::MseVideoRecoveryPhase::ObservationStarted &&
+              sink.video_recovery[1].phase ==
+                  tlvdemux::MseVideoRecoveryPhase::CandidateRejected &&
+              sink.video_recovery[2].phase ==
+                  tlvdemux::MseVideoRecoveryPhase::StableRapCommitted &&
+              sink.video_recovery[2].presentation_time_us == 100'269'228,
+          "source-damage recovery diagnostics lost the stable three-event contract");
 }
 
 void test_audio_configuration_change_emits_matching_init() {
@@ -2048,7 +1883,8 @@ int main() {
     test_audio_forward_gap_keeps_decoder_timeline_contiguous();
     test_audio_source_damage_keeps_queued_media_and_decoder_timeline();
     test_video_source_damage_does_not_discard_independent_audio();
-    test_video_source_damage_seals_valid_prefix_and_restarts_at_rap();
+    test_startup_source_damage_starts_at_first_rap_without_observation();
+    test_video_source_damage_waits_for_a_clean_gop_before_restart();
     test_audio_configuration_change_emits_matching_init();
     test_video_fragments_do_not_overlap_in_composition_time();
     test_video_fragments_do_not_overlap_with_broadcast_timescale();

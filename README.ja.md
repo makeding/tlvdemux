@@ -320,11 +320,15 @@ MediaElement が SDK 所有の復旧 target に対してまだ `seeking` を返�
 選択映像の損傷許可がない通常の `waiting` は再生を開始してはいけません。
 
 復旧には、損傷境界の後にも decode 可能な MSE media が必要です。選択映像の source-damage marker
-では、欠落前の完全で正常な映像 sample をすべて確定して出力し、既存の source timeline mapping を
-保持し、非 RAP の損傷 picture を捨てて、次の実在 recovery RAP から新しい fragment を開始します。
-sub-second の映像 fragment 全体を消去してはいけません。この sample の短い marker が繰り返すたびに
-消去すると、音声だけが buffer 済みのまま映像は `0.617s` で停止し、共通 A/V buffer は `0.0s` に
-落ちます。SourceBuffer append 前に捨てた media は、media clock を何度 seek しても復旧できません。
+では、欠落前の完全で正常な映像 sample を確定して出力し、既存の source timeline mapping を保持します。
+最初の実在 RAP から有界の観察期を開始してその GOP を捨て、次の source-damage marker が候補を否決し、
+損傷のない GOP 一つを通過した次の実在 RAP からだけ映像出力を再開します。候補 GOP は cache しません。
+権威 sample の `99.201500–99.351650s` と `99.468433–99.485117s` の孤島を出力してはならず、AAC を
+連続させたまま source PTS `100.269228s` から安定出力を再開します。startup、明示 seek、track／layer
+切替、および無損傷入力は従来どおり最初の RAP から開始します。
+観察期を有効にするのは、選択映像の現在 generation がすでに media を受理した後だけです。fresh
+startup の source-damage marker は最初の RAP 自身に付いている場合も、別の無損傷 GOP を待たずその
+最初の実在 RAP から開始し、同じ 16 MiB の進捗なし budget 内で初回共通 A/V entry を形成します。
 
 手動から自動への layer 選択変更は policy flag だけではなく、能動的な遷移です。user が降雨対応
 layer を手動選択している場合、自動選択を有効にすると preferred／fallback A/V pair を設定し、次の

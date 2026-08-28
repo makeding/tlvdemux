@@ -176,6 +176,11 @@ public:
         sink_.onMseVideoStart(event);
     }
 
+    void video_recovery(const tlvdemux::MseVideoRecoveryEvent& event) {
+        if (!enabled_) return;
+        sink_.onMseVideoRecovery(event);
+    }
+
     void video_properties(const tlvdemux::MseVideoProperties& properties) {
         if (stage_video_) {
             staged_video_events_.push_back(properties);

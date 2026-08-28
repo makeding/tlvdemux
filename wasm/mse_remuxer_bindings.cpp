@@ -193,6 +193,23 @@ public:
         emit("onMseVideoStart", event);
     }
 
+    void onMseVideoRecovery(
+        const tlvdemux::MseVideoRecoveryEvent& recovery) override {
+        if (!has("onMseVideoRecovery")) return;
+        auto event = val::object();
+        event.set("videoTrackId", recovery.video_track_id);
+        event.set("presentationTimeUs", recovery.presentation_time_us);
+        const char* phase = "observation-started";
+        if (recovery.phase == tlvdemux::MseVideoRecoveryPhase::CandidateRejected) {
+            phase = "candidate-rejected";
+        } else if (recovery.phase ==
+                   tlvdemux::MseVideoRecoveryPhase::StableRapCommitted) {
+            phase = "stable-rap-committed";
+        }
+        event.set("phase", std::string(phase));
+        emit("onMseVideoRecovery", event);
+    }
+
     void onMseVideoProperties(
         const tlvdemux::MseVideoProperties& properties) override {
         if (!has("onMseVideoProperties")) return;

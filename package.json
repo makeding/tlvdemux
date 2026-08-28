@@ -98,6 +98,8 @@
     "mse-append-queue.mjs",
     "mse-playback.d.ts",
     "mse-playback.mjs",
+    "mse-playback-contract.mjs",
+    "mse-playback-buffer.mjs",
     "mse-output-pipeline.d.ts",
     "mse-output-pipeline.mjs",
     "mse-live-transition.d.ts",

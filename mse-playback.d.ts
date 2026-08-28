@@ -124,6 +124,11 @@ export declare function createMsePlaybackDamageRecovery(options: {
     ptsTimescale: number;
     [name: string]: unknown;
   }): {start: number; end: number} | null;
+  observeVideoRecoveryEvent(event: {
+    videoTrackId: bigint | number;
+    presentationTimeUs: bigint | number;
+    phase: 'observation-started' | 'candidate-rejected' | 'stable-rap-committed';
+  }): {start: number; end: number} | null;
   /** Test/integration seam; normal browser use is observed automatically. */
   observePresentedFrame(mediaTimeSeconds: number): number | null;
   destroy(): void;
@@ -170,6 +175,11 @@ export interface MsePlaybackResilienceController {
     ptsTimescale: number;
     [name: string]: unknown;
   }): {start: number; end: number} | MsePlaybackModeChange | null;
+  observeVideoRecoveryEvent(event: {
+    videoTrackId: bigint | number;
+    presentationTimeUs: bigint | number;
+    phase: 'observation-started' | 'candidate-rejected' | 'stable-rap-committed';
+  }): {start: number; end: number} | null;
   observePresentedFrame(mediaTimeSeconds: number): number | null;
   notifyVideoRestoreFailed(target?: number | null, reason?: string): MsePlaybackModeChange | null;
   notifyMediaElementChanged(): void;

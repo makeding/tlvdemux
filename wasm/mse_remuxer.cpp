@@ -235,7 +235,7 @@ public:
             const bool active = audio_id && unit.track_id == *audio_id &&
                 active_audio == &iterator->second;
             iterator->second.push(unit, active,
-                                  active && enabled && video.started(),
+                                  active && enabled && video.audio_output_ready(),
                                   video.timeline_offset_us());
             const auto automatic = automatic_layers.observe(unit);
             if (!pending_layer && automatic.playback_damage) {
