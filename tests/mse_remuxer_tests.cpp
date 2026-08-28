@@ -667,6 +667,39 @@ void test_audio_source_damage_keeps_queued_media_and_decoder_timeline() {
           "source-damage marker discarded already queued or recovered AAC media");
 }
 
+void test_video_source_damage_does_not_discard_independent_audio() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.push(hevc_unit(2, 0, 0, true, true));
+    remuxer.push(audio_unit(1, 0));
+    remuxer.push(audio_unit(1, 1024));
+
+    auto damaged_video = hevc_unit(2, 1'000'000, 1'000'000, true, false);
+    damaged_video.discontinuity = true;
+    damaged_video.discontinuity_reasons =
+        aribtlv::DiscontinuityReason::SourceDamage;
+    remuxer.push(damaged_video);
+    remuxer.push(audio_unit(1, 2048));
+    remuxer.push(audio_unit(1, 3072));
+    remuxer.flush();
+
+    const auto segments = segments_of(sink.segments, "audio");
+    std::int64_t expected_dts = 0;
+    std::size_t total_samples = 0;
+    for (const auto& segment : segments) {
+        check(std::int64_t(segment.tfdt) == expected_dts,
+              "video source damage split the independent AAC timeline");
+        for (const auto& sample : segment.samples) {
+            expected_dts += sample.duration;
+            ++total_samples;
+        }
+    }
+    check(total_samples == 4,
+          "video source damage discarded queued independent AAC media");
+}
+
 void test_audio_configuration_change_emits_matching_init() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
@@ -1972,6 +2005,7 @@ int main() {
     test_audio_drops_non_advancing_dts();
     test_audio_forward_gap_keeps_decoder_timeline_contiguous();
     test_audio_source_damage_keeps_queued_media_and_decoder_timeline();
+    test_video_source_damage_does_not_discard_independent_audio();
     test_audio_configuration_change_emits_matching_init();
     test_video_fragments_do_not_overlap_in_composition_time();
     test_video_fragments_do_not_overlap_with_broadcast_timescale();

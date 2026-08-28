@@ -24,7 +24,7 @@ ctest --test-dir build --output-on-failure
 
 `libaribtlv` owns the protocol and Zlib dependency. By default CMake fetches its
 HTTPS repository at the pinned revision
-`7662d16536175aea85bfffe093d958279fbd6efa`. Point
+`6ecf9e3b1a8fd95563bc5071213b67b936ea01b3`. Point
 `TLVDEMUX_LIBARIBTLV_SOURCE_DIR` at a local checkout for offline development, or
 set `TLVDEMUX_USE_SYSTEM_LIBARIBTLV=ON` and add an installed package prefix to
 `CMAKE_PREFIX_PATH`. The local source directory takes precedence over both.

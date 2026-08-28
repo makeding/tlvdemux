@@ -15,6 +15,8 @@ const fatalErrors = [];
 let selectedVideo = null;
 let selectedAudio = null;
 let audioDiscontinuities = 0;
+const audioDiscontinuityReasons = new Map();
+const playbackDamage = [];
 let demuxer;
 
 function merged(input, toleranceUs = 22_000n) {
@@ -53,7 +55,12 @@ demuxer = new module.TlvDemuxer({
     }
   },
   onPlaybackAccessUnitView(unit) {
-    if (unit.codec === 'aac-latm' && unit.discontinuity) audioDiscontinuities += 1;
+    if (unit.codec === 'aac-latm' && unit.discontinuity) {
+      audioDiscontinuities += 1;
+      const reasons = Number(unit.discontinuityReasons ?? 0);
+      audioDiscontinuityReasons.set(reasons,
+        (audioDiscontinuityReasons.get(reasons) ?? 0) + 1);
+    }
   },
   onMseSegment(segment) {
     if (!(segment.type in ranges)) return;
@@ -62,6 +69,7 @@ demuxer = new module.TlvDemuxer({
       endUs: BigInt(segment.endTimeUs),
     });
   },
+  onPlaybackDamage(damage) { playbackDamage.push(damage); },
   onError(error) { if (!error.recoverable) fatalErrors.push(error); },
 });
 
@@ -80,10 +88,22 @@ try {
   const commonUs = longestCommonUs();
   const videoRanges = merged(ranges.video);
   const audioRanges = merged(ranges.audio);
+  const longestAudioUs = audioRanges.reduce((longest, range) => {
+    const duration = range.endUs - range.startUs;
+    return duration > longest ? duration : longest;
+  }, 0n);
   const summary = {
     bytesRead: position,
     audioDiscontinuities,
+    audioDiscontinuityReasons: Object.fromEntries(audioDiscontinuityReasons),
     commonUs: commonUs.toString(),
+    longestAudioUs: longestAudioUs.toString(),
+    playbackDamage: playbackDamage.map(damage => ({
+      action: damage.action,
+      recoveryTimeUs: damage.recoveryTimeUs === null
+        ? null : String(damage.recoveryTimeUs),
+      videoTrackId: String(damage.videoTrackId),
+    })),
     videoRanges: videoRanges.map(range => ({
       startUs: range.startUs.toString(), endUs: range.endUs.toString(),
     })),
@@ -94,8 +114,8 @@ try {
   assert.deepEqual(fatalErrors, []);
   assert.ok(audioDiscontinuities >= 20,
     `sample did not exercise repeated AAC discontinuities: ${audioDiscontinuities}`);
-  assert.ok(commonUs >= 10_000_000n,
-    `AAC damage flow failed: ${JSON.stringify(summary)}`);
+  assert.ok(longestAudioUs >= 10_000_000n,
+    `AAC damage still fragmented the selected audio timeline: ${JSON.stringify(summary)}`);
   console.log(JSON.stringify(summary, null, 2));
 } finally {
   await input.close();

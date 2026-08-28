@@ -321,11 +321,13 @@ public:
 
     void push_selected_video(const aribtlv::AccessUnit& unit) {
         if (unit.discontinuity && !video.is_input_track_switch(unit) &&
-            !(pending_layer && unit.track_id == pending_layer->video_track_id)) {
-            // A damaged selected video layer does not invalidate audio already
-            // prepared for another asset layer. Reset only the audio currently
-            // being emitted; otherwise the fallback history disappears at the
-            // exact moment it is needed.
+            !(pending_layer && unit.track_id == pending_layer->video_track_id) &&
+            !aribtlv::hasDiscontinuityReason(
+                unit.discontinuity_reasons,
+                aribtlv::DiscontinuityReason::SourceDamage)) {
+            // A damaged selected video layer is independent from AAC packet
+            // continuity. Keep active and alternate audio intact so a missing
+            // video interval cannot manufacture Chromium audio underflow.
             if (active_audio) active_audio->discontinuity();
         }
         video.push(unit, enabled);

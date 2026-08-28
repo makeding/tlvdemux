@@ -23,7 +23,7 @@ ctest --test-dir build --output-on-failure
 ```
 
 プロトコル実装と Zlib 依存は `libaribtlv` が所有します。デフォルトでは HTTPS
-リポジトリの固定 revision `7662d16536175aea85bfffe093d958279fbd6efa` を CMake が
+リポジトリの固定 revision `6ecf9e3b1a8fd95563bc5071213b67b936ea01b3` を CMake が
 取得します。オフライン開発では `TLVDEMUX_LIBARIBTLV_SOURCE_DIR` にローカル
 checkout を指定します。インストール済み package を使う場合は
 `TLVDEMUX_USE_SYSTEM_LIBARIBTLV=ON` と `CMAKE_PREFIX_PATH` を指定してください。
