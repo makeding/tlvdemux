@@ -32,6 +32,24 @@ source dependency を使う場合、`BUILD_TESTING=ON` は tlvdemux の統合テ
 ビルドしますが、libaribtlv リポジトリ内部のテスト実行ファイルは取り込みません。
 それらは libaribtlv 自身の CI で実行します。
 
+release 前には unit suite に加えて、local に保存した全 sample の inventory gate を
+実行します。
+
+```sh
+npm run test:inventory-samples
+npm run test:inventory-samples:hardware  # macOS VideoToolbox
+```
+
+software gate は repository root と `demo/` にあるすべての `.tlv`／`.mmts`／`.mmt`
+file に明示的な manifest entry を要求します。登録済みの各 sample について source の
+同一性、16 MiB 上限の duration probe、上限付き WASM／MSE playback entry、全 file の
+WASM／index scan を検証します。また、subtitle、layer selection、manual から automatic
+への復帰、降雨起動／全 sample、および 60／200／380 秒 seek の各 contract を、それを
+所有する sample で実行します。macOS gate は全 sample を native MSE／VideoToolbox で
+hardware decode し、降雨 fallback 全体と `8k.mmts` の決定的な 16 landing seek probe も
+実行します。回帰を割り当てずに保存 sample を追加または置換した場合は release gate を
+失敗させます。これらの大容量 local capture は通常の package `npm test` には含めません。
+
 共有ライブラリはデフォルトで有効です。Linux では `libtlvdemux.so.0`
 （およびバージョン付きの実体ファイル）、macOS では対応する
 `libtlvdemux.0.dylib` が生成されます。静的な `libtlvdemux.a` が必要な場合は

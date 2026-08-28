@@ -18,6 +18,7 @@ let playbackAccessUnits = 0;
 const fatalErrors = [];
 let demuxer;
 demuxer = new module.TlvDemuxer({
+  mseMaxAudioChannels: 6,
   onMseInit(init) { initSegments.set(init.type, init); },
   onMseSegment(segment) { mediaSegments.get(segment.type).push(segment.data); },
   onPlaybackAccessUnitView(unit) {
@@ -28,7 +29,8 @@ demuxer = new module.TlvDemuxer({
     if (track.kind === 'video' && videoTrack === null) {
       videoTrack = track.trackId;
       demuxer.selectTrack('video', videoTrack);
-    } else if (track.kind === 'audio' && audioTrack === null) {
+    } else if (track.kind === 'audio' && audioTrack === null &&
+               (track.audio?.channels === 0 || track.audio?.channels <= 6)) {
       audioTrack = track.trackId;
       demuxer.selectTrack('audio', audioTrack);
     }

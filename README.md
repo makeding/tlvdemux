@@ -32,6 +32,26 @@ With a source dependency, `BUILD_TESTING=ON` builds tlvdemux's integration tests
 without importing libaribtlv's repository-internal test executables; those run
 in libaribtlv's own CI.
 
+Before a release, run the local captured-sample inventory gates in addition to
+the unit suites:
+
+```sh
+npm run test:inventory-samples
+npm run test:inventory-samples:hardware  # macOS VideoToolbox
+```
+
+The software gate requires every `.tlv`/`.mmts`/`.mmt` file in the repository
+root and `demo/` to have an explicit manifest entry. For every registered sample
+it verifies exact source identity, a duration probe capped at 16 MiB, a bounded
+WASM/MSE playback entry, and a complete WASM/index scan. It also runs the
+subtitle, layer-selection, manual-to-automatic, rainfall startup/full-sample,
+and 60/200/380-second seek contracts on their owning samples. The macOS gate
+hardware-decodes every sample through the native MSE/VideoToolbox probe, runs
+the complete rainfall fallback, and repeats the deterministic sixteen-landings
+`8k.mmts` seek probe. Adding or replacing a captured sample without assigning
+these regressions is a release-gate failure; these large local captures remain
+outside the ordinary package `npm test`.
+
 Shared-library builds are enabled by default. Linux produces
 `libtlvdemux.so.0` (with the versioned implementation file), while macOS
 produces the corresponding `libtlvdemux.0.dylib`. Use
