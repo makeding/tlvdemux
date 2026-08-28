@@ -159,7 +159,15 @@ then media. Every configuration splice on an existing SourceBuffer records the
 affected audio or video track independently, and the next corresponding init
 must call `changeType()` even when the MIME string is unchanged. Layer switches
 therefore reconfigure both tracks, while in-content AAC channel-layout and HEVC
-SPS/color-configuration changes reconfigure only the affected track. A bare
+SPS/color-configuration changes reconfigure only the affected track.
+The 82,837,220-byte `demo/mpegts` regression is an in-content SDR-to-HDR
+transition on video packet `0xf300`, not evidence that the selected layer is
+damaged. Playback must remain on `0xf300`; it must never select the rainfall
+packet `0xf301` while installing the new `0xf300` decoder/color configuration.
+The same boundary also changes the selected `0xf310` AAC layout from 6 channels
+to 2 channels. Both changes must continue through the existing SourceBuffers
+without a rainfall-layer switch or a persistent `waiting` at `16.168s`.
+A bare
 MediaElement `waiting` event or a later buffered range never authorizes a seek.
 Only `PlaybackDamage.action === "seek"` for the currently playing layer may
 reposition directly; `seek-if-stalled` is retained as authorization and may be
@@ -245,8 +253,8 @@ Selected-layer automatic recovery remains distinct from an explicit recorded
 seek. A current-layer severe `PlaybackDamage.action === "seek"` with a concrete
 recovery timestamp may move the media clock exactly once using the same
 union-origin mapping. A short recovered `warning` uses `seek-if-stalled`: it is
-registered without moving the clock and may execute exactly once only after a
-`waiting` whose media clock has reached that damage. `MediaElement.currentTime`
+registered without moving the clock and may execute at most once per causal
+`waiting` after the media clock has reached that damage. `MediaElement.currentTime`
 and `playing` are not proof that damaged video decoded: audio may advance the
 media clock beyond the first recovery RAP while the visible frame remains
 stalled. The SDK therefore tracks compositor-presented video PTS through
@@ -309,6 +317,38 @@ or unrelated `waiting` must not seek forward or backward. Real-browser
 acceptance must also exercise the current demo with this sample and show that
 natural late stall recovery, continuing without a rainfall switch, MediaSource
 rebuild, recorded-seek session, or whole-source reread.
+
+Assigning `MediaElement.currentTime` to a recovery RAP does not complete a short
+damage recovery. The authorization remains armed until the compositor presents
+a frame at or beyond its first recovery RAP. Each subsequent causally matching
+`waiting` may consume at most one strictly later parser-observed, buffered RAP;
+parser or SourceBuffer progress alone must not ladder through recovery points.
+The observed second boundary in this sample is `waiting` at `13.245s`, a first
+attempt at `13.747079s`, and another `waiting` at `13.747s` while the last
+presented video frame remains `7.291s`. That second event must retain the same
+damage authorization and advance to the next real RAP at `14.280934s`, never
+repeat `13.747079s`. Only an actually presented recovery frame completes the
+authorization and prevents later unrelated `waiting` events from seeking.
+The same rule applies while the MediaElement still reports `seeking` for the
+SDK-owned recovery target: the observed `6.589s -> 6.806806s -> 7.340679s`
+attempts can produce another causal `waiting` at `7.341s` before `seeked`.
+Because that clock still matches the last SDK attempt and presented video is
+still behind the first recovery RAP, the event must advance to the next real
+RAP at `7.874540s`. A `seeking` state at any unrelated target remains blocked.
+Each authorized recovery seek captures the MediaElement play intent before
+writing `currentTime` and, when it was playing, resumes it even if the browser
+then reports `paused`. Requiring a manual play click is a failed automatic
+recovery. A genuinely user-paused element, or ordinary `waiting` without a
+matching selected-video damage authorization, must never start playback.
+
+Recovery also requires decodable MSE media after the damage boundary. A
+selected-video source-damage marker seals and emits every complete valid video
+sample before the loss, retains the existing source timeline mapping, drops
+non-RAP damaged pictures, and starts the next fragment at the real recovery RAP.
+It must not clear the whole sub-second video fragment: repeated short markers in
+this sample otherwise leave audio buffered while video remains frozen at
+`0.617s` and the common A/V buffer falls to `0.0s`; no sequence of media-clock
+seeks can repair media discarded before SourceBuffer append.
 
 Manual-to-automatic layer selection is an active transition, not only a policy
 flag. If the user has manually selected the rainfall layer, enabling automatic

@@ -10,12 +10,14 @@ public:
         if (!preserve_history) {
             history_.clear();
             timeline_offset_us_.reset();
+            source_buffer_timestamp_offset_us_ = 0;
         }
     }
 
     void activate() {
         clear_resume();
         contiguous_emitted_end_.reset();
+        source_buffer_timestamp_offset_us_ = 0;
         BaseMuxer::activate();
     }
 
@@ -68,6 +70,7 @@ public:
         const auto output_boundary = scaled(boundary_us, 1000000, track_->timescale);
         const auto timestamp_shift = source_boundary - output_boundary;
         output_.audio_splice(boundary_us, timestamp_offset_us);
+        source_buffer_timestamp_offset_us_ = timestamp_offset_us;
         BaseMuxer::activate();
         for (auto iterator = first; iterator != history_.end(); ++iterator) {
             auto sample = *iterator;
@@ -176,13 +179,26 @@ public:
             // fMP4 init segment cannot describe the new raw AAC channel
             // elements, so close the old media timeline and emit a matching
             // init segment before accepting the new frame.
-            const auto boundary_us = scaled(
-                timestamp, track_->timescale, 1000000);
+            const auto old_timescale = track_->timescale;
+            const auto boundary_us = scaled(timestamp, old_timescale, 1000000);
             flush();
+            const auto contiguous_output_end_us = contiguous_emitted_end_.has_value()
+                ? std::optional<std::int64_t>{scaled(
+                    *contiguous_emitted_end_, old_timescale, 1000000)}
+                : std::nullopt;
+            const auto timestamp_offset_us = contiguous_output_end_us.has_value()
+                ? *contiguous_output_end_us - boundary_us
+                : source_buffer_timestamp_offset_us_;
             history_.clear();
             timestamp_correction_ticks_ = 0;
-            if (selected) output_.audio_splice(boundary_us);
+            if (selected) output_.audio_splice(boundary_us, timestamp_offset_us);
+            source_buffer_timestamp_offset_us_ = timestamp_offset_us;
             replace_track(audio_track(frame), selected);
+            timestamp = scaled(boundary_us, 1000000, track_->timescale);
+            if (contiguous_output_end_us.has_value()) {
+                contiguous_emitted_end_ = scaled(
+                    *contiguous_output_end_us, 1000000, track_->timescale);
+            }
         }
         if (!history_.empty() && timestamp <= history_.back().pts) {
             if (!unit.discontinuity) return;
@@ -255,11 +271,14 @@ private:
 
     void on_segment_emitted(const std::vector<Sample>& samples) override {
         if (samples.empty()) return;
-        const auto start = samples.front().pts;
+        const auto timestamp_offset = scaled(
+            source_buffer_timestamp_offset_us_, 1000000, track_->timescale);
+        const auto start = samples.front().pts + timestamp_offset;
         auto end = start + static_cast<std::int64_t>(samples.front().duration);
         for (const auto& sample : samples) {
             end = std::max(
-                end, sample.pts + static_cast<std::int64_t>(sample.duration));
+                end, sample.pts + timestamp_offset +
+                    static_cast<std::int64_t>(sample.duration));
         }
         if (!contiguous_emitted_end_.has_value()) {
             contiguous_emitted_end_ = end;
@@ -291,6 +310,7 @@ private:
     std::optional<std::int64_t> resume_origin_ticks_;
     bool first_after_resume_ = false;
     std::optional<std::int64_t> contiguous_emitted_end_;
+    std::int64_t source_buffer_timestamp_offset_us_ = 0;
     std::int64_t timestamp_correction_ticks_ = 0;
     std::optional<std::int64_t> timeline_offset_us_;
     std::deque<Sample> history_;

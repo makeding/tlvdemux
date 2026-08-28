@@ -14,13 +14,32 @@ const createTlvDemuxModule = require(modulePath);
 const module = await createTlvDemuxModule();
 const descriptors = new Map();
 const audioInits = [];
+const audioSegments = [];
 const events = [];
 const segmentCounts = { audio: 0, video: 0 };
+const tracksByPacketId = new Map();
+const layerSwitches = [];
+const audioSplices = [];
 let audioGeneration = 0;
 let videoGeneration = 0;
 let videoTrack = null;
 let audioTrack = null;
+let automaticPairConfigured = false;
 let demuxer;
+
+const configureAutomaticPair = () => {
+  if (automaticPairConfigured) return;
+  const preferredVideo = tracksByPacketId.get(0xf300);
+  const preferredAudio = tracksByPacketId.get(0xf310);
+  const fallbackVideo = tracksByPacketId.get(0xf301);
+  const fallbackAudio = tracksByPacketId.get(0xf314);
+  if (!preferredVideo || !preferredAudio || !fallbackVideo || !fallbackAudio) return;
+  automaticPairConfigured = true;
+  demuxer.configureAutomaticLayerSwitch(
+    preferredVideo.trackId, preferredAudio.trackId,
+    fallbackVideo.trackId, fallbackAudio.trackId,
+  );
+};
 
 const openGeneration = (type, generation) => {
   const descriptor = openSync(`${outputDirectory}/${type}-${generation}.mp4`, 'w');
@@ -36,6 +55,7 @@ const write = (type, data) => {
 
 demuxer = new module.TlvDemuxer({
   onTrack(track) {
+    tracksByPacketId.set(track.packetId, track);
     if (track.kind === 'video' && videoTrack === null) {
       videoTrack = track.trackId;
       demuxer.selectTrack('video', videoTrack);
@@ -43,6 +63,7 @@ demuxer = new module.TlvDemuxer({
       audioTrack = track.trackId;
       demuxer.selectTrack('audio', audioTrack);
     }
+    configureAutomaticPair();
   },
   onMseInit(init) {
     events.push(`init:${init.type}`);
@@ -62,9 +83,23 @@ demuxer = new module.TlvDemuxer({
     events.push(`segment:${segment.type}`);
     write(segment.type, segment.data);
     segmentCounts[segment.type] += 1;
+    if (segment.type === 'audio') {
+      audioSegments.push({
+        generation: audioGeneration,
+        startTimeUs: segment.startTimeUs,
+        endTimeUs: segment.endTimeUs,
+      });
+    }
   },
-  onMseAudioSplice() {
+  onMseAudioSplice(value) {
     events.push('splice');
+    audioSplices.push(value);
+  },
+  onMseLayerSwitchStarted(value) {
+    layerSwitches.push({event: 'started', value});
+  },
+  onMseLayerSwitch(value) {
+    layerSwitches.push({event: 'completed', value});
   },
   onError(error) {
     if (!error.recoverable) throw new Error(JSON.stringify(error));
@@ -91,6 +126,25 @@ try {
 
 assert.ok(audioInits.length >= 2, `expected an audio init after LATM config change: ${JSON.stringify(audioInits)}`);
 assert.deepEqual(audioInits.slice(0, 2).map((init) => init.channels), [6, 2]);
+assert.equal(videoGeneration, 1,
+  `in-content SDR/HDR transition emitted ${videoGeneration} video init segments`);
+assert.equal(automaticPairConfigured, true, 'sample rainfall candidate pair was not discovered');
+assert.deepEqual(layerSwitches, [],
+  'in-content SDR/HDR or AAC configuration change selected rainfall packet 0xf301');
+assert.equal(audioSplices.length, 1, 'sample did not emit exactly one AAC configuration splice');
+assert.equal(audioSplices[0].presentationTimeUs, 16_938_688n,
+  'AAC configuration splice source boundary changed');
+assert.equal(audioSplices[0].timestampOffsetUs, -64_000n,
+  'AAC configuration splice did not close the 64 ms SourceBuffer gap');
+const oldAudioSegments = audioSegments.filter((segment) => segment.generation === 1);
+const replacementAudioSegments = audioSegments.filter((segment) => segment.generation === 2);
+assert.ok(oldAudioSegments.length > 0 && replacementAudioSegments.length > 0,
+  'AAC configuration splice did not emit media on both sides');
+assert.equal(
+  replacementAudioSegments[0].startTimeUs + audioSplices[0].timestampOffsetUs,
+  oldAudioSegments.at(-1).endTimeUs,
+  'AAC replacement media did not map exactly to the previous SourceBuffer end',
+);
 const spliceIndex = events.indexOf('splice');
 assert.ok(spliceIndex >= 0 && events[spliceIndex + 1] === 'init:audio',
   `audio splice was not immediately followed by the replacement init: ${events.slice(spliceIndex - 2, spliceIndex + 3)}`);

@@ -207,15 +207,23 @@ public:
             configuration_boundary = true;
         }
         if (unit.discontinuity && !configuration_boundary) {
-            // A timeline discontinuity normally discards incomplete old media.
-            // When this AU also carries a new RAP configuration, the branch
-            // above has already sealed and emitted the old configuration at
-            // this RAP boundary instead.
-            reset_samples();
+            const bool source_damage = aribtlv::hasDiscontinuityReason(
+                unit.discontinuity_reasons,
+                aribtlv::DiscontinuityReason::SourceDamage);
+            // A source-loss marker belongs to the following input AU, not to
+            // complete samples queued before it. Seal that valid prefix before
+            // waiting for a recovery IRAP. Clearing every short prefix here
+            // leaves SourceBuffer with audio but no decodable video.
+            if (source_damage) flush();
+            else {
+                // A genuine epoch change invalidates both the queued
+                // generation and its old source-to-output mapping.
+                reset_samples();
+                timeline_offset_ticks_.reset();
+            }
             started_ = false;
             no_rasl_output_ = false;
             sequence_start_ = true;
-            timeline_offset_ticks_.reset();
         }
         if (!track_) return;
         if (!has_vcl) {

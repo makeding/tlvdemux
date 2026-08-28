@@ -99,6 +99,7 @@ export function createMsePlaybackDamageRecovery({
   const frameObservationSupported =
     typeof media.requestVideoFrameCallback === 'function';
   let waitingTime = null;
+  let waitingGeneration = 0;
   let lastPresentedTime = null;
   let frameCallbackId = null;
   let destroyed = false;
@@ -132,17 +133,36 @@ export function createMsePlaybackDamageRecovery({
     if (start !== null && (!Number.isFinite(start) || start < 0)) return null;
     if (damage.action === 'seek-if-stalled' &&
         (start === null || start > target)) return null;
-    return {damage, key: damageKey(damage), target, start, action: damage.action};
+    return {
+      damage,
+      key: damageKey(damage),
+      target,
+      start,
+      action: damage.action,
+      lastAttemptedTarget: null,
+      lastAttemptWaitingGeneration: null,
+    };
   };
 
   const recover = (candidate, target = candidate?.target) => {
+    const ownsInFlightSeek = candidate?.action === 'seek-if-stalled' &&
+      candidate.lastAttemptedTarget !== null &&
+      Math.abs(media.currentTime - candidate.lastAttemptedTarget) <= 0.1;
     if (!candidate || completedDamage.has(candidate.key) ||
         !isActive() || !isCurrentLayer(candidate.damage) ||
-        switchInFlight() || media.seeking || !Number.isFinite(target) ||
+        switchInFlight() || (media.seeking && !ownsInFlightSeek) || !Number.isFinite(target) ||
         target + 0.0005 < media.currentTime || !isTargetBuffered(target)) return null;
     const previousTime = media.currentTime;
-    completedDamage.add(candidate.key);
-    pendingDamage.delete(candidate.key);
+    const resumeAfterSeek = !media.paused;
+    const requiresPresentedFrame = candidate.action === 'seek-if-stalled' &&
+      (frameObservationSupported || lastPresentedTime !== null);
+    if (requiresPresentedFrame) {
+      candidate.lastAttemptedTarget = target;
+      candidate.lastAttemptWaitingGeneration = waitingGeneration;
+    } else {
+      completedDamage.add(candidate.key);
+      pendingDamage.delete(candidate.key);
+    }
     waitingTime = null;
     seek(target, previousTime, {
       action: candidate.action,
@@ -151,7 +171,14 @@ export function createMsePlaybackDamageRecovery({
       lastPresentedTime,
       waitingTime: previousTime,
     });
-    if (!media.paused) media.play().catch(() => {});
+    // Preserve the play intent captured before the SDK-owned currentTime
+    // update. Some browsers expose `paused=true` immediately after that write,
+    // which must not turn an automatic recovery into a manual play operation.
+    if (resumeAfterSeek) {
+      try {
+        Promise.resolve(media.play()).catch(() => {});
+      } catch (_) { /* A rejected resume remains observable on the MediaElement. */ }
+    }
     return {start: target, end: target};
   };
 
@@ -160,6 +187,7 @@ export function createMsePlaybackDamageRecovery({
     for (const [key, candidate] of pendingDamage) {
       if (candidate.action === 'seek-if-stalled' &&
           lastPresentedTime + 0.001 >= candidate.target) {
+        completedDamage.add(key);
         pendingDamage.delete(key);
       }
     }
@@ -167,12 +195,13 @@ export function createMsePlaybackDamageRecovery({
 
   const recoverWaiting = () => {
     if (waitingTime === null || destroyed || !isActive() ||
-        switchInFlight() || media.seeking) return null;
+        switchInFlight()) return null;
     const currentTime = media.currentTime;
     const candidates = [...pendingDamage.values()]
       .filter(candidate => candidate.action === 'seek-if-stalled' &&
         !completedDamage.has(candidate.key) && isCurrentLayer(candidate.damage) &&
         candidate.start !== null && candidate.start <= currentTime + 0.1 &&
+        candidate.lastAttemptWaitingGeneration !== waitingGeneration &&
         (lastPresentedTime === null || lastPresentedTime + 0.001 < candidate.target))
       .sort((left, right) => right.target - left.target);
     for (const candidate of candidates) {
@@ -183,7 +212,10 @@ export function createMsePlaybackDamageRecovery({
       }
       const minimumTarget = Math.max(currentTime, candidate.target);
       const target = (randomAccessPoints.get(trackKey(candidate.damage.videoTrackId)) ?? [])
-        .find(point => point + 0.0005 >= minimumTarget && isTargetBuffered(point));
+        .find(point => point + 0.0005 >= minimumTarget &&
+          (candidate.lastAttemptedTarget === null ||
+            point > candidate.lastAttemptedTarget + 0.0005) &&
+          isTargetBuffered(point));
       if (target !== undefined) return recover(candidate, target);
     }
     return null;
@@ -211,11 +243,12 @@ export function createMsePlaybackDamageRecovery({
   return {
     notifyWaiting() {
       const currentTime = media.currentTime;
-      if (!isActive() || switchInFlight() || media.seeking) {
+      if (!isActive() || switchInFlight()) {
         waitingTime = null;
         return null;
       }
       waitingTime = currentTime;
+      waitingGeneration += 1;
       for (const [key, item] of pendingDamage) {
         if (completedDamage.has(key) || !isCurrentLayer(item.damage)) {
           pendingDamage.delete(key);
@@ -252,17 +285,22 @@ export function createMsePlaybackDamageRecovery({
       pendingDamage.clear();
       randomAccessPoints.clear();
       waitingTime = null;
+      waitingGeneration = 0;
       lastPresentedTime = null;
     },
     reset() {
       completedDamage.clear();
       pendingDamage.clear();
       waitingTime = null;
+      waitingGeneration = 0;
       lastPresentedTime = null;
     },
     reportDamage(damage) {
       const candidate = prepare(damage);
       if (!candidate || completedDamage.has(candidate.key)) return null;
+      const existing = pendingDamage.get(candidate.key);
+      if (existing) return existing.action === 'seek-if-stalled'
+        ? recoverWaiting() : null;
       pendingDamage.set(candidate.key, candidate);
       rememberRandomAccessPoint(damage.videoTrackId, candidate.target);
       if (candidate.action === 'seek-if-stalled') {

@@ -103,6 +103,8 @@ const media = currentTime => ({
     'waiting inferred that the unobserved interval was damaged');
   assert.deepEqual(jumps, [],
     'a later buffered range authorized an unsupported seek');
+  assert.equal(player.playCount, 0,
+    'ordinary waiting without selected-video damage started playback');
 }
 
 {
@@ -274,6 +276,33 @@ const media = currentTime => ({
 }
 
 {
+  const player = media(10.75);
+  player.paused = true;
+  const jumps = [];
+  const recovery = createMsePlaybackDamageRecovery({
+    media: player,
+    seek: target => {
+      jumps.push(target);
+      player.currentTime = target;
+    },
+  });
+  recovery.reportDamage({
+    videoTrackId: 2,
+    action: 'seek-if-stalled',
+    startTimeUs: 10_000_000,
+    recoveryTimeUs: 11_500_000,
+    startInputOffset: 100n,
+    endInputOffset: 200n,
+    recoveryInputOffset: 300n,
+    recoveryRestartOffset: 250n,
+  });
+  recovery.notifyWaiting();
+  assert.deepEqual(jumps, [11.5], 'authorized paused recovery did not retain its target');
+  assert.equal(player.playCount, 0,
+    'SDK recovery overrode a genuine user-paused MediaElement');
+}
+
+{
   const player = media(6.58);
   const jumps = [];
   const recovery = createMsePlaybackDamageRecovery({
@@ -306,6 +335,142 @@ const media = currentTime => ({
   });
   assert.deepEqual(jumps, [{target: 6.806806, previous: 6.58}],
     'late waiting did not recover at the next parser-observed forward RAP');
+}
+
+{
+  let frameCallbackId = 0;
+  const player = {
+    ...media(13.245),
+    requestVideoFrameCallback() { frameCallbackId += 1; return frameCallbackId; },
+    cancelVideoFrameCallback() {},
+  };
+  const jumps = [];
+  const recovery = createMsePlaybackDamageRecovery({
+    media: player,
+    seek: (target, previous) => {
+      jumps.push({target, previous});
+      player.currentTime = target;
+    },
+  });
+  const damage = {
+    videoTrackId: 2,
+    action: 'seek-if-stalled',
+    startTimeUs: 11_200_000,
+    recoveryTimeUs: 11_611_606,
+    startInputOffset: 400n,
+    endInputOffset: 500n,
+    recoveryInputOffset: 600n,
+    recoveryRestartOffset: 550n,
+  };
+  recovery.reportDamage(damage);
+  recovery.observePresentedFrame(7.291);
+  for (const target of [13.747079, 14.280934]) {
+    recovery.observeAccessUnit({
+      codec: 'hevc',
+      trackId: 2,
+      randomAccess: true,
+      ptsValue: Math.round(target * 1_000_000),
+      ptsTimescale: 1_000_000,
+    });
+  }
+  recovery.notifyWaiting();
+  assert.deepEqual(jumps, [{target: 13.747079, previous: 13.245}],
+    'the observed 13.245s stall did not select its first forward parser RAP');
+
+  recovery.reportDamage(damage);
+  recovery.notifyBufferedChange();
+  assert.equal(jumps.length, 1,
+    'a currentTime assignment, duplicate damage, or buffer progress completed/repeated recovery');
+  recovery.observePresentedFrame(7.291);
+  player.seeking = true;
+  recovery.notifyWaiting();
+  assert.deepEqual(jumps, [
+    {target: 13.747079, previous: 13.245},
+    {target: 14.280934, previous: 13.747079},
+  ], 'a causal waiting during the SDK-owned recovery seek did not advance');
+  player.seeking = false;
+  recovery.notifyBufferedChange();
+  assert.deepEqual(jumps, [
+    {target: 13.747079, previous: 13.245},
+    {target: 14.280934, previous: 13.747079},
+  ], 'seeked/buffer progress did not consume the retained repeated waiting exactly once');
+
+  recovery.observePresentedFrame(11.7);
+  recovery.notifyWaiting();
+  recovery.observeAccessUnit({
+    codec: 'hevc',
+    trackId: 2,
+    randomAccess: true,
+    ptsValue: 14_814_806,
+    ptsTimescale: 1_000_000,
+  });
+  assert.equal(jumps.length, 2,
+    'a compositor-presented recovery frame did not complete the retained authorization');
+  recovery.destroy();
+}
+
+{
+  let frameCallbackId = 0;
+  const player = {
+    ...media(6.589),
+    play() { this.playCount += 1; this.paused = false; return Promise.resolve(); },
+    requestVideoFrameCallback() { frameCallbackId += 1; return frameCallbackId; },
+    cancelVideoFrameCallback() {},
+  };
+  const jumps = [];
+  const recovery = createMsePlaybackDamageRecovery({
+    media: player,
+    seek: (target, previous) => {
+      jumps.push({target, previous});
+      player.currentTime = target;
+      player.paused = true;
+      player.seeking = true;
+    },
+  });
+  recovery.reportDamage({
+    videoTrackId: 2,
+    action: 'seek-if-stalled',
+    startTimeUs: 5_873_000,
+    recoveryTimeUs: 6_272_934,
+    startInputOffset: 700n,
+    endInputOffset: 800n,
+    recoveryInputOffset: 900n,
+    recoveryRestartOffset: 850n,
+  });
+  recovery.observePresentedFrame(0.617);
+  for (const target of [6.806806, 7.340679, 7.874540]) {
+    recovery.observeAccessUnit({
+      codec: 'hevc',
+      trackId: 2,
+      randomAccess: true,
+      ptsValue: Math.round(target * 1_000_000),
+      ptsTimescale: 1_000_000,
+    });
+  }
+  player.seeking = false;
+  recovery.notifyWaiting();
+  recovery.notifyWaiting();
+  recovery.notifyWaiting();
+  assert.deepEqual(jumps, [
+    {target: 6.806806, previous: 6.589},
+    {target: 7.340679, previous: 6.806806},
+    {target: 7.87454, previous: 7.340679},
+  ], 'the observed 7.341s waiting was blocked by the SDK-owned seeking state');
+  assert.equal(player.playCount, 3,
+    'SDK-owned recovery seeks left playback paused until a manual play click');
+
+  player.currentTime = 30;
+  recovery.observeAccessUnit({
+    codec: 'hevc',
+    trackId: 2,
+    randomAccess: true,
+    ptsValue: 30_500_000,
+    ptsTimescale: 1_000_000,
+  });
+  recovery.notifyWaiting();
+  assert.equal(jumps.length, 3,
+    'an unrelated MediaElement seeking target reused the damage authorization');
+  recovery.destroy();
 }
 
 {

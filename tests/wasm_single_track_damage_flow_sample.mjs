@@ -46,6 +46,7 @@ const damages = [];
 const sourceDamages = [];
 const layerSwitches = [];
 const videoRandomAccessUnits = [];
+const videoSegments = [];
 let selectedVideo = null;
 let selectedAudio = null;
 let demuxer;
@@ -66,7 +67,14 @@ demuxer = new module.TlvDemuxer({
   onPlaybackAccessUnitView(unit) {
     if (unit.codec === 'hevc' && unit.randomAccess) videoRandomAccessUnits.push(unit);
   },
-  onMseSegment() {},
+  onMseSegment(segment) {
+    if (segment.type === 'video') {
+      videoSegments.push({
+        startTimeUs: BigInt(segment.startTimeUs),
+        endTimeUs: BigInt(segment.endTimeUs),
+      });
+    }
+  },
   onMseLayerSwitch(layerSwitch) { layerSwitches.push(layerSwitch); },
   onError(error) {
     if (!error.recoverable) throw new Error(`${error.code}: ${error.message}`);
@@ -111,6 +119,14 @@ try {
   assert.ok(shortRecovery.recoveryRestartOffset > 0n);
   assert.ok(shortRecovery.recoveryTimeUs > shortRecovery.startTimeUs);
   assert.ok(shortRecovery.recoveryTimeUs - shortRecovery.startTimeUs < 2_000_000n);
+  const sealedShortPrefix = videoSegments.find(segment =>
+    segment.endTimeUs >= shortRecovery.startTimeUs &&
+    segment.endTimeUs < shortRecovery.recoveryTimeUs);
+  assert.ok(sealedShortPrefix,
+    'source damage discarded the complete sub-second video prefix before recovery');
+  assert.ok(videoSegments.some(segment =>
+    segment.startTimeUs === shortRecovery.recoveryTimeUs),
+  'video did not restart its MSE media at the parser-provided recovery RAP');
 
   const sixSecondRecovery = damages.find(damage => {
     if (damage.action !== 'seek-if-stalled' || damage.startTimeUs === null ||
@@ -161,7 +177,8 @@ try {
     currentTime: 6.58,
     paused: false,
     seeking: false,
-    play() { return Promise.resolve(); },
+    playCount: 0,
+    play() { this.playCount += 1; this.paused = false; return Promise.resolve(); },
   };
   const delayedRecovery = createMsePlaybackDamageRecovery({
     media: stalledMedia,
@@ -170,6 +187,7 @@ try {
     seek(target, previous) {
       delayedJumps.push({target, previous});
       stalledMedia.currentTime = target;
+      stalledMedia.paused = true;
     },
   });
   delayedRecovery.reportDamage(sixSecondRecovery);
@@ -183,6 +201,70 @@ try {
     target: nextForwardRap.mediaTime,
     previous: 6.58,
   }], 'the observed 6.580s waiting did not advance to the next real RAP');
+  assert.equal(stalledMedia.playCount, 1,
+    'the authoritative 6.580s recovery still required a manual play click');
+
+  const thirteenSecondRecovery = damages.find(damage =>
+    damage.action === 'seek-if-stalled' && damage.recoveryTimeUs !== null &&
+    ((damage.recoveryTimeUs - presentationStartUs) / 1_000n) === 11_611n);
+  assert.ok(thirteenSecondRecovery,
+    'sample exposed no retained damage authorization for the observed 13.245s stall');
+  const thirteenSecondRaps = videoRandomAccessUnits
+    .map(unit => ({
+      unit,
+      mediaTime: Number(unit.ptsValue) / unit.ptsTimescale -
+        Number(presentationStartUs) / 1_000_000,
+    }))
+    .filter(item => item.unit.trackId === selectedVideo && item.mediaTime >= 13.245)
+    .sort((left, right) => left.mediaTime - right.mediaTime);
+  assert.equal(thirteenSecondRaps[0]?.mediaTime.toFixed(6), '13.747079',
+    'the first observed 13-second recovery RAP changed');
+  assert.equal(thirteenSecondRaps[1]?.mediaTime.toFixed(6), '14.280934',
+    'the second observed 13-second recovery RAP changed');
+
+  let frameCallbackId = 0;
+  const repeatedStallMedia = {
+    currentTime: 13.245,
+    paused: false,
+    seeking: false,
+    playCount: 0,
+    play() { this.playCount += 1; this.paused = false; return Promise.resolve(); },
+    requestVideoFrameCallback() { frameCallbackId += 1; return frameCallbackId; },
+    cancelVideoFrameCallback() {},
+  };
+  const repeatedStallJumps = [];
+  const repeatedStallRecovery = createMsePlaybackDamageRecovery({
+    media: repeatedStallMedia,
+    presentationStartUs,
+    isCurrentLayer: damage => damage.videoTrackId === selectedVideo,
+    seek(target, previous) {
+      repeatedStallJumps.push({target, previous});
+      repeatedStallMedia.currentTime = target;
+      repeatedStallMedia.paused = true;
+    },
+  });
+  repeatedStallRecovery.reportDamage(thirteenSecondRecovery);
+  repeatedStallRecovery.observePresentedFrame(7.291);
+  repeatedStallRecovery.observeAccessUnit(thirteenSecondRaps[0].unit);
+  repeatedStallRecovery.observeAccessUnit(thirteenSecondRaps[1].unit);
+  repeatedStallRecovery.notifyWaiting();
+  repeatedStallRecovery.reportDamage(thirteenSecondRecovery);
+  repeatedStallRecovery.notifyBufferedChange();
+  assert.equal(repeatedStallJumps.length, 1,
+    'the first 13-second recovery attempt was incorrectly completed or repeated');
+  repeatedStallRecovery.notifyWaiting();
+  assert.deepEqual(repeatedStallJumps, [
+    {target: thirteenSecondRaps[0].mediaTime, previous: 13.245},
+    {target: thirteenSecondRaps[1].mediaTime, previous: thirteenSecondRaps[0].mediaTime},
+  ], 'the repeated 13.747s waiting did not advance to the next real RAP');
+  assert.equal(repeatedStallMedia.playCount, 2,
+    'repeated damage recovery did not resume playback after each SDK-owned seek');
+  repeatedStallRecovery.observePresentedFrame(
+    Number(thirteenSecondRecovery.recoveryTimeUs - presentationStartUs) / 1_000_000 + 0.01);
+  repeatedStallRecovery.notifyWaiting();
+  assert.equal(repeatedStallJumps.length, 2,
+    'presented recovery video did not retire the 13-second authorization');
+  repeatedStallRecovery.destroy();
 
   console.log(JSON.stringify({
     sample: samplePathArgument,
@@ -200,6 +282,10 @@ try {
       restartOffset: nextForwardRap.unit.restartOffset,
     },
     delayedJump: delayedJumps[0],
+    repeatedStallJumps,
+    videoSegmentsNearFirstDamage: videoSegments.filter(segment =>
+      segment.startTimeUs < shortRecovery.recoveryTimeUs + 1_000_000n &&
+      segment.endTimeUs > shortRecovery.startTimeUs - 1_000_000n),
   }, (_, value) => typeof value === 'bigint' ? value.toString() : value, 2));
 } finally {
   closeSync(input);

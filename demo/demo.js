@@ -17,16 +17,16 @@ import {
   commonBufferedRanges,
   createMsePlaybackDamageRecovery,
   startMsePlayback,
-} from '../mse-playback.mjs?v=presented-frame-recovery-v3';
+} from '../mse-playback.mjs?v=damage-resume-v4';
 import {
   createMsePlaybackFlowControl,
   createMseRecordedSeekSession,
-} from '../mse-playback.mjs?v=presented-frame-recovery-v3';
+} from '../mse-playback.mjs?v=damage-resume-v4';
 import { createWorkerTlvDemuxModule } from '../worker-tlvdemux.mjs';
 import {
   MseAppendQueue,
 } from '../mse-append-queue.mjs?v=gap-recovery-v1';
-import {createMseOutputPipeline} from '../mse-output-pipeline.mjs?v=pipeline-v1';
+import {createMseOutputPipeline} from '../mse-output-pipeline.mjs?v=config-splice-v2';
 import {
   RangeUnsupportedError,
   createBlobRecordedSource,
@@ -998,7 +998,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       );
       automaticLayerPairSignature = signature;
       if (pair?.fallback && signature !== previous) {
-        appendLog(`C++ 自動映像切替を設定 ` +
+        appendLog(`C++ 降雨対応候補を登録（切替未実行） ` +
           `0x${pair.preferred.video.packetId.toString(16)} ↔ ` +
           `0x${pair.fallback.video.packetId.toString(16)}`);
       }
@@ -1769,6 +1769,7 @@ elements.video.addEventListener('seeked', () => {
       Math.abs(elements.video.currentTime - internalSeekTarget) < 0.1) {
     internalSeekTarget = null;
   }
+  activeGapRecovery?.notifyBufferedChange();
 });
 
 createWorkerTlvDemuxModule().then(module => {

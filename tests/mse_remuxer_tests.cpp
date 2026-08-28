@@ -700,6 +700,37 @@ void test_video_source_damage_does_not_discard_independent_audio() {
           "video source damage discarded queued independent AAC media");
 }
 
+void test_video_source_damage_seals_valid_prefix_and_restarts_at_rap() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+
+    remuxer.push(hevc_unit(2, 0, 0, true, true));
+    remuxer.push(hevc_unit(2, 33'333, 33'333, false, false));
+
+    auto damaged = hevc_unit(2, 400'000, 400'000, false, false);
+    damaged.discontinuity = true;
+    damaged.discontinuity_reasons =
+        aribtlv::DiscontinuityReason::SourceDamage;
+    remuxer.push(damaged);
+
+    auto recovery = hevc_unit(2, 500'000, 500'000, true, false);
+    recovery.discontinuity = true;
+    recovery.discontinuity_reasons =
+        aribtlv::DiscontinuityReason::SourceDamage;
+    remuxer.push(recovery);
+    remuxer.push(hevc_unit(2, 533'333, 533'333, false, false));
+    remuxer.flush();
+
+    const auto segments = segments_of(sink.segments, "video");
+    check(segments.size() == 2,
+          "source damage did not split valid prefix and recovery generation");
+    check(segments[0].tfdt == 0 && segments[0].samples.size() == 2,
+          "source damage discarded the complete video prefix before the loss");
+    check(segments[1].tfdt == 500'000 && segments[1].samples.size() == 2,
+          "video did not restart at the real recovery RAP on the source timeline");
+}
+
 void test_audio_configuration_change_emits_matching_init() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
@@ -708,27 +739,38 @@ void test_audio_configuration_change_emits_matching_init() {
     remuxer.push(hevc_unit(2, 0, 0, true, true));
     remuxer.push(audio_unit(1, 0, 6));
     remuxer.push(audio_unit(1, 1024, 6));
-    remuxer.push(audio_unit(1, 2048, 2));
-    remuxer.push(audio_unit(1, 3072, 6));
+    remuxer.push(audio_unit(1, 4096, 2));
+    remuxer.push(audio_unit(1, 5120, 2));
     remuxer.flush();
 
     std::vector<tlvdemux::MseTrackInit> audio_inits;
     for (const auto& init : sink.inits) {
         if (init.type == "audio") audio_inits.push_back(init);
     }
-    check(audio_inits.size() == 3,
-          "AAC channel configuration changes did not emit replacement init segments");
-    check(audio_inits[0].channels == 6 && audio_inits[1].channels == 2 &&
-              audio_inits[2].channels == 6,
-          "AAC replacement init segments did not follow both channel transitions");
-    check(sink.splices.size() == 2,
-          "AAC channel configuration changes did not emit two audio splices");
+    check(audio_inits.size() == 2,
+          "AAC channel configuration change did not emit a replacement init segment");
+    check(audio_inits[0].channels == 6 && audio_inits[1].channels == 2,
+          "AAC replacement init segment did not follow the 6ch-to-2ch transition");
+    check(sink.splices.size() == 1,
+          "AAC channel configuration change did not emit one audio splice");
     const auto segments = segments_of(sink.segments, "audio");
-    check(segments.size() == 3,
-          "AAC channel configuration changes did not split each media generation");
-    check(segments[0].tfdt == 0 && segments[1].tfdt == 2048 &&
-              segments[2].tfdt == 3072,
-          "AAC configuration changes broke the decode timeline boundaries");
+    std::vector<const tlvdemux::MseMediaSegment*> raw_audio_segments;
+    for (const auto& segment : sink.segments) {
+        if (segment.type == "audio") raw_audio_segments.push_back(&segment);
+    }
+    check(segments.size() == 2,
+          "AAC channel configuration change did not split both media generations");
+    check(raw_audio_segments.size() == segments.size(),
+          "AAC parsed and observable media generations differ");
+    check(segments[0].tfdt == 0 && segments[1].tfdt == 4096,
+          "AAC configuration change lost its source timeline boundary");
+    check(sink.splices[0].presentation_time_us == 85333 &&
+              sink.splices[0].timestamp_offset_us == -42666,
+          "AAC configuration change did not map the new init to the prior output end");
+    const auto first_mapped_start = raw_audio_segments[1]->start_time_us +
+        sink.splices[0].timestamp_offset_us;
+    check(std::llabs(first_mapped_start - raw_audio_segments[0]->end_time_us) <= 1,
+          "AAC configuration splice left a mapped MSE audio gap");
 }
 
 struct ReorderedFrame { std::int64_t dts, pts; bool keyframe; };
@@ -2006,6 +2048,7 @@ int main() {
     test_audio_forward_gap_keeps_decoder_timeline_contiguous();
     test_audio_source_damage_keeps_queued_media_and_decoder_timeline();
     test_video_source_damage_does_not_discard_independent_audio();
+    test_video_source_damage_seals_valid_prefix_and_restarts_at_rap();
     test_audio_configuration_change_emits_matching_init();
     test_video_fragments_do_not_overlap_in_composition_time();
     test_video_fragments_do_not_overlap_with_broadcast_timescale();
