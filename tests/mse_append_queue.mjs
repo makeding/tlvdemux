@@ -167,26 +167,30 @@ async function tick() {
   await queue.waitIdle();
 }
 
-{
+for (const mime of [
+  'audio/mp4; codecs="mp4a.40.2"',
+  'video/mp4; codecs="hvc1.2.4.L123"',
+]) {
   const sourceBuffer = new FakeSourceBuffer([[0, 20]]);
   const mediaSource = new FakeMediaSource(sourceBuffer);
   const media = {currentTime: 0, error: null, buffered: sourceBuffer.buffered};
-  const queue = new MseAppendQueue(mediaSource, media, 'audio/mp4; codecs="mp4a.40.2"', null, {
+  const queue = new MseAppendQueue(mediaSource, media, mime, null, {
     forwardBufferHighSeconds: Infinity,
   });
   queue.append(new Uint8Array([1]));
-  queue.replaceFrom(7);
-  queue.appendInitialization(new Uint8Array([2]), 'audio/mp4; codecs="mp4a.40.2"', true);
-  queue.append(new Uint8Array([3]));
+  queue.spliceFrom(7, -1);
+  queue.appendInitialization(new Uint8Array([2]), mime, true);
+  queue.append(new Uint8Array([3]), {startTimeSeconds: 8, endTimeSeconds: 9});
   for (let index = 0; index < 4; index += 1) sourceBuffer.complete();
   await queue.waitIdle();
   assert.deepEqual(sourceBuffer.operations, [
     ['append', 1],
     ['remove', 7, 20],
-    ['changeType', 'audio/mp4; codecs="mp4a.40.2"'],
+    ['timestampOffset', -1],
+    ['changeType', mime],
     ['append', 2],
     ['append', 3],
-  ], 'same-MIME switch did not preserve remove -> changeType -> init -> media');
+  ], `${mime} splice did not preserve remove -> timestampOffset -> changeType -> init -> media`);
 }
 
 {

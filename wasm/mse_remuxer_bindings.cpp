@@ -92,6 +92,7 @@ const char* recovery_action_name(
     const tlvdemux::PlaybackRecoveryAction action) noexcept {
     switch (action) {
     case tlvdemux::PlaybackRecoveryAction::None: return "none";
+    case tlvdemux::PlaybackRecoveryAction::SeekIfStalled: return "seek-if-stalled";
     case tlvdemux::PlaybackRecoveryAction::Seek: return "seek";
     case tlvdemux::PlaybackRecoveryAction::WaitForRecovery: return "wait-for-recovery";
     }

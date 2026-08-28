@@ -60,21 +60,27 @@ const segment = (type, byte, startTimeUs = 0n, endTimeUs = 1000000n) => ({
   });
 }
 
-{
-  const video = new FakeQueue('video', init('video', 1, 'video/mp4'));
-  const audio = new FakeQueue('audio', init('audio', 2, 'audio/mp4'));
+for (const type of ['audio', 'video']) {
+  const mime = type === 'audio'
+    ? 'audio/mp4; codecs="mp4a.40.2"'
+    : 'video/mp4; codecs="hvc1.2.4.L123"';
+  const video = new FakeQueue('video', init('video', 1,
+    type === 'video' ? mime : 'video/mp4'));
+  const audio = new FakeQueue('audio', init('audio', 2,
+    type === 'audio' ? mime : 'audio/mp4'));
   const pipeline = createMseOutputPipeline({
     mediaSource: {}, media: {}, queues: new Map([['video', video], ['audio', audio]]),
-    forceReinitialize: () => true,
   });
-  pipeline.onMseVideoSplice({presentationTimeUs: 10000000n, timestampOffsetUs: -1000000n});
-  pipeline.onMseInit(init('video', 3, 'video/mp4'));
-  pipeline.onMseSegment(segment('video', 4, 10000000n, 11000000n));
-  assert.deepEqual(video.operations, [
+  const splice = {presentationTimeUs: 10000000n, timestampOffsetUs: -1000000n};
+  if (type === 'video') pipeline.onMseVideoSplice(splice);
+  else pipeline.onMseAudioSplice(splice);
+  pipeline.onMseInit(init(type, 3, mime));
+  pipeline.onMseSegment(segment(type, 4, 10000000n, 11000000n));
+  assert.deepEqual(pipeline.queues.get(type).operations, [
     ['splice', 9, -1],
-    ['init', 3, 'video/mp4', true],
+    ['init', 3, mime, true],
     ['append', 4, {startTimeSeconds: 10, endTimeSeconds: 11}],
-  ], 'splice/changeType/init/media ordering or unchanged-MIME reinitialization regressed');
+  ], `${type} splice did not force same-MIME changeType before init and media`);
   await pipeline.waitStable();
 }
 

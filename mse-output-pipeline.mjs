@@ -16,7 +16,6 @@ export function createMseOutputPipeline({
   onInitInstalled = () => {},
   onFirstSegment = () => {},
   onSplice = () => {},
-  forceReinitialize = () => false,
   queueOptions = {},
   freshRecordedEntryAlignment = false,
   recordedPresentationStartUs = null,
@@ -24,6 +23,7 @@ export function createMseOutputPipeline({
 }) {
   const pendingInits = new Map();
   const pendingSplices = new Map();
+  const pendingReconfigurations = new Set();
   const pendingSegments = new Map([['video', []], ['audio', []]]);
   const segmentTypes = new Set();
   const resolvedPendingBytesLimit = pendingBytesLimit ?? (freshRecordedEntryAlignment
@@ -110,7 +110,9 @@ export function createMseOutputPipeline({
     if (queues.size) {
       const queue = queues.get(init.type);
       if (!queue) throw new Error(`Missing ${init.type} SourceBuffer for ${init.mime}.`);
-      queue.appendInitialization(init.data, init.mime, forceReinitialize(init.type, init));
+      const forceChangeType = pendingReconfigurations.has(init.type);
+      queue.appendInitialization(init.data, init.mime, forceChangeType);
+      pendingReconfigurations.delete(init.type);
       onInitInstalled(init, queue, true);
       return;
     }
@@ -134,6 +136,7 @@ export function createMseOutputPipeline({
     const queue = queues.get(type);
     if (queue) {
       queue.spliceFrom(outputBoundarySeconds, timestampOffsetSeconds);
+      pendingReconfigurations.add(type);
     } else {
       pendingInits.delete(type);
       pendingSegments.get(type).length = 0;

@@ -125,9 +125,13 @@ their continuous DTS, observed RAPs, usable AAC, and explicit source-damage
 spans. Automatic playback has only two modes: preferred or rainfall. If the
 active layer is damaged, the core starts a same-timeline switch when the other
 layer already has aligned decodable video and audio. Otherwise it emits
-`PlaybackDamage` for the active layer: `seek` as soon as that layer has an
-explicit recovery RAP, or `wait-for-recovery` until such a RAP arrives. Damage
-is never retained until EOF and never inferred across an unobserved interval.
+`PlaybackDamage` for the active layer. A recovered span shorter than the
+two-second severe threshold with an explicit recovery RAP is a `warning` with
+action `seek-if-stalled`: parser prefetch only arms that recovery and never
+moves the media clock. A severe recovered span remains `severe` with action
+`seek`, while a span without a recovery RAP remains `wait-for-recovery` until a
+real RAP arrives. Damage is never retained until EOF and never inferred across
+an unobserved interval.
 Emergency preferred-to-rainfall switching also covers startup. If the selected
 preferred layer has not produced a decodable MSE video entry while the rainfall
 layer has a real RAP, a following continuous video DTS, continuous AAC, and an
@@ -151,12 +155,18 @@ Damage on the rainfall layer follows the same rule in the opposite direction.
 `onMseLayerSwitchCancelled` describe the one-shot A/V splice staging; they do
 not form a separate recovery state machine. SourceBuffer mutations use one
 ordered queue: remove, timestamp offset, `changeType`, initialization segment,
-then media. A layer
-switch reconfigures both tracks even when the MIME string is unchanged. A bare
-MediaElement `waiting` event or a later buffered range never authorizes a seek;
-only `PlaybackDamage.action === "seek"` for the currently playing layer may
-reposition the media element. Explicit PID or concrete track selection remains
-fixed mode and disables automatic layer decisions.
+then media. Every configuration splice on an existing SourceBuffer records the
+affected audio or video track independently, and the next corresponding init
+must call `changeType()` even when the MIME string is unchanged. Layer switches
+therefore reconfigure both tracks, while in-content AAC channel-layout and HEVC
+SPS/color-configuration changes reconfigure only the affected track. A bare
+MediaElement `waiting` event or a later buffered range never authorizes a seek.
+Only `PlaybackDamage.action === "seek"` for the currently playing layer may
+reposition directly; `seek-if-stalled` is retained as authorization and may be
+executed only by a causally matching `waiting`; a late event may use the next
+buffered parser-observed RAP at or after its current media clock. Explicit PID
+or concrete track selection remains fixed mode and disables automatic layer
+decisions.
 At the first usable target RAP, both tracks are logically spliced at that boundary:
 already-appended old-layer audio after it is removed, and replacement AAC is
 mapped to the same boundary within one 22 ms AAC frame. Old buffered audio must
@@ -169,7 +179,9 @@ the target init even when the MIME string is unchanged.
 For a fresh recorded playback at timestamp zero, startup and buffered-range
 handling must not assign `MediaElement.currentTime`. Only an explicit user seek,
 a selected-layer `PlaybackDamage.action === "seek"` after switching was
-unavailable, or the existing live-start policy may change the playback position.
+unavailable, a matching `waiting` authorized by `seek-if-stalled` and actual
+presented-frame evidence, or the existing live-start policy may change the
+playback position.
 The demo reports that unchanged media clock to the core for recovery decisions;
 this is observation, not a seek.
 
@@ -230,15 +242,28 @@ explicit `videoPacketId` intentionally restricts the range to that single video
 track instead of forming the automatic pair's union.
 
 Selected-layer automatic recovery remains distinct from an explicit recorded
-seek. Only a current-layer `PlaybackDamage.action === "seek"` with a concrete
-recovery timestamp may move the media clock, exactly once, and it uses the same
-union-origin mapping. It must not restart duration probing, scan the source, or
-run concurrently with an A/V layer switch; a later buffered range, damage on an
-inactive layer, and `wait-for-recovery` never authorize a seek. Damage found by
-parser prefetch is retained as authorization but must not jump over healthy
-media before the playback clock reaches that damage span. A later `waiting`
-event may execute that retained authorization once; without matching retained
-current-layer damage it remains a no-op.
+seek. A current-layer severe `PlaybackDamage.action === "seek"` with a concrete
+recovery timestamp may move the media clock exactly once using the same
+union-origin mapping. A short recovered `warning` uses `seek-if-stalled`: it is
+registered without moving the clock and may execute exactly once only after a
+`waiting` whose media clock has reached that damage. `MediaElement.currentTime`
+and `playing` are not proof that damaged video decoded: audio may advance the
+media clock beyond the first recovery RAP while the visible frame remains
+stalled. The SDK therefore tracks compositor-presented video PTS through
+`requestVideoFrameCallback()`. A presented frame at or beyond the first recovery
+RAP retires the authorization; otherwise a late `waiting` selects the earliest
+parser-observed RAP at or after the current media clock that is already buffered.
+If that RAP has not arrived or been appended yet, the authorization remains
+armed until access-unit or SourceBuffer progress makes it usable. This recovery
+must always move forward; it must never jump backward to an already-passed RAP.
+This state machine is part of the public `tlvdemux/mse-playback` SDK; the demo
+only supplies its media/layer callbacks and forwards parser RAPs, `waiting`, and
+SourceBuffer progress. Browsers without presented-frame callbacks use the safe
+legacy subset and may recover only while the media clock has not passed the
+first recovery RAP. Neither recovery path may restart duration probing, scan the
+source, or run concurrently with an A/V layer switch. A buffered range without
+a parser-observed RAP, damage on an inactive layer, ordinary `waiting`, and
+`wait-for-recovery` never authorize a seek.
 
 Recoverable AAC source-damage markers must not discard already queued audio or
 restart the selected audio fragment timeline. Missing AAC frames are compacted
@@ -269,6 +294,21 @@ failure being corrected, not an acceptable switch point. Automated
 acceptance uses the native VideoToolbox MSE probe plus the full-sample WASM
 assertions; it must not invoke browser automation or ask a user to be the
 runtime tester.
+
+The captured single-layer sample
+`20260828-141-020000_99332dc9-025e-4e76-afc4-e31c3d577059.mmts` is exactly
+`1792861104` bytes and `496.913089` seconds. It contains only video packet
+`0xa140` and audio packet `0xa141`, with no rainfall fallback. Its full-sample
+regression must expose short selected-video damage as `seek-if-stalled` with the
+complete source span, input offsets, and a real recovery RAP. Parser prefetch
+must not seek. The observed browser boundary is a `waiting` near `6.580s` after
+the first mapped recovery RAP at `6.272934s`, while the visible video frame has
+not recovered. The SDK must select the next parser-observed forward RAP at
+`6.806806s`, seek there exactly once after it is buffered, and continue. A stale
+or unrelated `waiting` must not seek forward or backward. Real-browser
+acceptance must also exercise the current demo with this sample and show that
+natural late stall recovery, continuing without a rainfall switch, MediaSource
+rebuild, recorded-seek session, or whole-source reread.
 
 Manual-to-automatic layer selection is an active transition, not only a policy
 flag. If the user has manually selected the rainfall layer, enabling automatic

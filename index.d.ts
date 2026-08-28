@@ -768,7 +768,7 @@ declare namespace createTlvDemuxModule {
     recoveryInputOffset: bigint;
     recoveryRestartOffset: bigint;
     severity: "warning" | "severe";
-    action: "none" | "seek" | "wait-for-recovery";
+    action: "none" | "seek-if-stalled" | "seek" | "wait-for-recovery";
   }
 
   interface TlvDemuxCallbacks {

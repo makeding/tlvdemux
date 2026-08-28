@@ -38,10 +38,13 @@ tlvdemux::PlaybackDamageAdvisor::observe(const aribtlv::DamageSpan& damage) cons
         ? microseconds(*damage.start_time)
         : std::nullopt;
     const auto end = microseconds(damage.end_time);
-    const auto recovery = damage.recovery_time.has_value()
+    const auto recovery = damage.recovered && damage.recovery_random_access &&
+        damage.recovery_time.has_value()
         ? microseconds(*damage.recovery_time)
         : std::nullopt;
-    if (!end.has_value() || (damage.recovery_time.has_value() && !recovery.has_value())) {
+    if (!end.has_value() ||
+        (damage.recovered && damage.recovery_random_access &&
+         damage.recovery_time.has_value() && !recovery.has_value())) {
         return std::nullopt;
     }
 
@@ -50,12 +53,11 @@ tlvdemux::PlaybackDamageAdvisor::observe(const aribtlv::DamageSpan& damage) cons
     const auto duration = interval_end >= interval_start
         ? interval_end - interval_start
         : std::int64_t{0};
-    const bool severe = !damage.recovered || duration >= kSevereDurationUs;
-    const auto action = severe
-        ? (recovery.has_value()
-              ? PlaybackRecoveryAction::Seek
-              : PlaybackRecoveryAction::WaitForRecovery)
-        : PlaybackRecoveryAction::None;
+    const bool severe = !recovery.has_value() || duration >= kSevereDurationUs;
+    const auto action = recovery.has_value()
+        ? (severe ? PlaybackRecoveryAction::Seek
+                  : PlaybackRecoveryAction::SeekIfStalled)
+        : PlaybackRecoveryAction::WaitForRecovery;
 
     return PlaybackDamage{
         damage.track_id,

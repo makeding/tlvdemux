@@ -47,7 +47,6 @@ export interface MseOutputPipelineOptions {
   onInitInstalled?: (init: MseOutputInit, queue: MseAppendQueue, reconfigured: boolean) => void;
   onFirstSegment?: (type: string, segment: MseOutputSegment) => void;
   onSplice?: (splice: MseOutputSpliceResult) => void;
-  forceReinitialize?: (type: string, init: MseOutputInit) => boolean;
   queueOptions?: MseAppendQueueOptions;
   freshRecordedEntryAlignment?: boolean;
   recordedPresentationStartUs?: bigint | null;

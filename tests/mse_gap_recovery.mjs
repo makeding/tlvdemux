@@ -196,4 +196,233 @@ const media = currentTime => ({
     'waiting did not execute the retained PlaybackDamage seek exactly once');
 }
 
+{
+  const player = media(9);
+  const jumps = [];
+  let currentVideoTrackId = 2;
+  let switchInFlight = false;
+  const recovery = createMsePlaybackDamageRecovery({
+    media: player,
+    isCurrentLayer: damage => damage.videoTrackId === currentVideoTrackId,
+    switchInFlight: () => switchInFlight,
+    seek: (target, previous) => {
+      jumps.push({target, previous});
+      player.currentTime = target;
+    },
+  });
+  const stalled = {
+    videoTrackId: 2,
+    action: 'seek-if-stalled',
+    startTimeUs: 10_000_000,
+    recoveryTimeUs: 11_500_000,
+    startInputOffset: 100n,
+    endInputOffset: 200n,
+    recoveryInputOffset: 300n,
+    recoveryRestartOffset: 250n,
+  };
+  recovery.reportDamage(stalled);
+  assert.deepEqual(jumps, [],
+    'parser prefetch executed seek-if-stalled without a waiting event');
+  recovery.notifyWaiting();
+  assert.deepEqual(jumps, [],
+    'waiting before the short damage span executed seek-if-stalled');
+
+  player.currentTime = 10.75;
+  switchInFlight = true;
+  recovery.notifyWaiting();
+  assert.deepEqual(jumps, [],
+    'waiting executed seek-if-stalled while a layer switch was in flight');
+  switchInFlight = false;
+  recovery.reportDamage(stalled);
+  assert.deepEqual(jumps, [],
+    'waiting observed during a layer switch authorized a later recovery RAP');
+  currentVideoTrackId = 3;
+  recovery.notifyWaiting();
+  assert.deepEqual(jumps, [],
+    'waiting executed seek-if-stalled for a non-current video track');
+
+  currentVideoTrackId = 2;
+  recovery.reportDamage(stalled);
+  recovery.notifyWaiting();
+  recovery.notifyWaiting();
+  assert.deepEqual(jumps, [{target: 11.5, previous: 10.75}],
+    'matching waiting did not execute seek-if-stalled exactly once at the recovery RAP');
+}
+
+{
+  const player = media(12);
+  const jumps = [];
+  const recovery = createMsePlaybackDamageRecovery({
+    media: player,
+    seek: target => jumps.push(target),
+  });
+  recovery.reportDamage({
+    videoTrackId: 2,
+    action: 'seek-if-stalled',
+    startTimeUs: 10_000_000,
+    recoveryTimeUs: 11_500_000,
+    startInputOffset: 100n,
+    endInputOffset: 200n,
+    recoveryInputOffset: 300n,
+    recoveryRestartOffset: 250n,
+  });
+  recovery.notifyWaiting();
+  player.currentTime = 10.5;
+  recovery.notifyWaiting();
+  assert.deepEqual(jumps, [],
+    'a stale seek-if-stalled candidate caused a later backward seek');
+}
+
+{
+  const player = media(6.58);
+  const jumps = [];
+  const recovery = createMsePlaybackDamageRecovery({
+    media: player,
+    seek: (target, previous) => {
+      jumps.push({target, previous});
+      player.currentTime = target;
+    },
+  });
+  recovery.reportDamage({
+    videoTrackId: 2,
+    action: 'seek-if-stalled',
+    startTimeUs: 5_873_000,
+    recoveryTimeUs: 6_273_000,
+    startInputOffset: 100n,
+    endInputOffset: 200n,
+    recoveryInputOffset: 300n,
+    recoveryRestartOffset: 250n,
+  });
+  recovery.observePresentedFrame(5.9);
+  recovery.notifyWaiting();
+  assert.deepEqual(jumps, [],
+    'late waiting jumped backward to the already-passed first recovery RAP');
+  recovery.observeAccessUnit({
+    codec: 'hevc',
+    trackId: 2,
+    randomAccess: true,
+    ptsValue: 6_806_806,
+    ptsTimescale: 1_000_000,
+  });
+  assert.deepEqual(jumps, [{target: 6.806806, previous: 6.58}],
+    'late waiting did not recover at the next parser-observed forward RAP');
+}
+
+{
+  const player = media(6.58);
+  const jumps = [];
+  const recovery = createMsePlaybackDamageRecovery({
+    media: player,
+    seek: target => jumps.push(target),
+  });
+  recovery.reportDamage({
+    videoTrackId: 2,
+    action: 'seek-if-stalled',
+    startTimeUs: 5_873_000,
+    recoveryTimeUs: 6_273_000,
+    startInputOffset: 100n,
+    endInputOffset: 200n,
+    recoveryInputOffset: 300n,
+    recoveryRestartOffset: 250n,
+  });
+  recovery.observeAccessUnit({
+    codec: 'hevc',
+    trackId: 2,
+    randomAccess: true,
+    ptsValue: 6_806_806,
+    ptsTimescale: 1_000_000,
+  });
+  recovery.observePresentedFrame(6.3);
+  recovery.notifyWaiting();
+  assert.deepEqual(jumps, [],
+    'a frame presented beyond the recovery RAP did not retire stale damage');
+}
+
+{
+  const player = media(6.58);
+  const jumps = [];
+  let targetBuffered = false;
+  const recovery = createMsePlaybackDamageRecovery({
+    media: player,
+    isTargetBuffered: target => target < 6.5 || targetBuffered,
+    seek: (target, previous) => {
+      jumps.push({target, previous});
+      player.currentTime = target;
+    },
+  });
+  recovery.reportDamage({
+    videoTrackId: 2,
+    action: 'seek-if-stalled',
+    startTimeUs: 5_873_000,
+    recoveryTimeUs: 6_273_000,
+    startInputOffset: 100n,
+    endInputOffset: 200n,
+    recoveryInputOffset: 300n,
+    recoveryRestartOffset: 250n,
+  });
+  recovery.observePresentedFrame(5.9);
+  recovery.notifyWaiting();
+  recovery.observeAccessUnit({
+    codec: 'hevc',
+    trackId: 2,
+    randomAccess: true,
+    ptsValue: 6_806_806,
+    ptsTimescale: 1_000_000,
+  });
+  assert.deepEqual(jumps, [], 'an unbuffered forward RAP triggered recovery');
+  targetBuffered = true;
+  recovery.notifyBufferedChange();
+  recovery.notifyBufferedChange();
+  assert.deepEqual(jumps, [{target: 6.806806, previous: 6.58}],
+    'buffer progress did not execute forward recovery exactly once');
+}
+
+{
+  const callbacks = new Map();
+  const cancelled = [];
+  let nextCallback = 1;
+  const player = {
+    ...media(6.58),
+    requestVideoFrameCallback(callback) {
+      const id = nextCallback++;
+      callbacks.set(id, callback);
+      return id;
+    },
+    cancelVideoFrameCallback(id) { cancelled.push(id); callbacks.delete(id); },
+  };
+  const jumps = [];
+  const recovery = createMsePlaybackDamageRecovery({
+    media: player,
+    seek: target => jumps.push(target),
+  });
+  recovery.reportDamage({
+    videoTrackId: 2,
+    action: 'seek-if-stalled',
+    startTimeUs: 5_873_000,
+    recoveryTimeUs: 6_273_000,
+    startInputOffset: 100n,
+    endInputOffset: 200n,
+    recoveryInputOffset: 300n,
+    recoveryRestartOffset: 250n,
+  });
+  const firstFrameCallback = callbacks.values().next().value;
+  callbacks.clear();
+  firstFrameCallback(0, {mediaTime: 6.3, presentedFrames: 100});
+  recovery.observeAccessUnit({
+    codec: 'hevc',
+    trackId: 2,
+    randomAccess: true,
+    ptsValue: 6_806_806,
+    ptsTimescale: 1_000_000,
+  });
+  recovery.notifyWaiting();
+  assert.deepEqual(jumps, [],
+    'automatic presented-frame observation did not retire recovered damage');
+  recovery.destroy();
+  assert.equal(cancelled.length, 1,
+    'destroy did not cancel the outstanding presented-frame callback');
+  recovery.notifyWaiting();
+  assert.deepEqual(jumps, [], 'destroyed recovery coordinator remained active');
+}
+
 console.log('MSE gap recovery tests passed');

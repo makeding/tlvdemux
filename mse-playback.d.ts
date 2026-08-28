@@ -70,18 +70,52 @@ export declare function startMsePlayback(options: {
   playResult: Promise<void>;
 } | null;
 export declare function createMsePlaybackDamageRecovery(options: {
-  media: MseMediaClock & {seeking: boolean; paused: boolean; play(): Promise<void>};
+  media: MseMediaClock & {
+    seeking: boolean;
+    paused: boolean;
+    play(): Promise<void>;
+    buffered?: {length: number; start(index: number): number; end(index: number): number};
+    requestVideoFrameCallback?: (callback: (
+      now: number, metadata: {mediaTime: number; presentedFrames?: number},
+    ) => void) => number;
+    cancelVideoFrameCallback?: (handle: number) => void;
+  };
   presentationStartUs?: bigint;
   isActive?: () => boolean;
   isCurrentLayer?: (damage: Record<string, unknown>) => boolean;
   switchInFlight?: () => boolean;
-  seek: (targetSeconds: number, previousTimeSeconds: number) => void;
+  isTargetBuffered?: (targetSeconds: number) => boolean;
+  seek: (targetSeconds: number, previousTimeSeconds: number, detail: {
+    action: 'seek-if-stalled' | 'seek';
+    damage: Record<string, unknown>;
+    firstRecoveryTime: number;
+    lastPresentedTime: number | null;
+    waitingTime: number;
+  }) => void;
 }): {
   notifyWaiting(): {start: number; end: number} | null;
+  notifyBufferedChange(): {start: number; end: number} | null;
+  observeAccessUnit(unit: {
+    codec: string;
+    trackId: bigint | number;
+    randomAccess: boolean;
+    ptsValue: bigint | number;
+    ptsTimescale: number;
+    [name: string]: unknown;
+  }): {start: number; end: number} | null;
+  /** Test/integration seam; normal browser use is observed automatically. */
+  observePresentedFrame(mediaTimeSeconds: number): number | null;
+  destroy(): void;
   reset(): void;
   reportDamage(damage: {
-    action: string;
+    action: 'none' | 'seek-if-stalled' | 'seek' | 'wait-for-recovery';
+    videoTrackId: bigint | number;
+    startTimeUs: bigint | number | null;
     recoveryTimeUs: bigint | null;
+    startInputOffset: bigint | number;
+    endInputOffset: bigint | number;
+    recoveryInputOffset: bigint | number;
+    recoveryRestartOffset: bigint | number;
     [name: string]: unknown;
   }): {start: number; end: number} | null;
 };

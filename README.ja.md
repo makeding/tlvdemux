@@ -118,8 +118,10 @@ cmake --install build --prefix /desired/prefix
 および明示的な source-damage 区間から独立に追跡します。自動再生の mode は通常と降雨の
 2 つだけです。現在のレイヤーが損傷したとき、もう一方に同一 timeline 上の decode 可能な
 映像・音声が揃っていれば core が切替を開始します。揃っていなければ現在のレイヤー向けに
-`PlaybackDamage` を通知し、明示的な復旧 RAP があれば直ちに `seek`、まだなければ
-`wait-for-recovery` とし、RAP 到着時に `seek` を通知します。損傷を EOF まで保留せず、
+`PlaybackDamage` を通知します。2 秒の severe 閾値未満で明示的な復旧 RAP がある区間は
+`warning`／`seek-if-stalled` とし、parser の先読みでは復旧を準備するだけで media clock を
+変更しません。復旧済みの severe 区間は従来どおり `severe`／`seek`、復旧 RAP がまだない区間は
+RAP 到着まで `wait-for-recovery` とします。損傷を EOF まで保留せず、
 観測していない区間の損傷を推定しません。降雨再生中も通常 tracker は更新され、caller が報告した
 実際の再生位置に連続 5 秒の decode 可能な基線と整列した RAP/AAC が揃えば通常へ戻ります。
 parser や録画 index の前進は再生時計ではありません。再生位置が timestamp 0 のままなのに数百秒先の
@@ -136,10 +138,14 @@ parser や録画 index の前進は再生時計ではありません。再生位
 `onMseLayerSwitchStarted`、`onMseLayerSwitch`、
 `onMseLayerSwitchCancelled` は一回限りの A/V splice staging を表し、独立した復旧状態機械は
 構成しません。SourceBuffer mutation は remove → timestamp offset → `changeType` →
-init segment → media の
-単一 queue 順序で行い、MIME 文字列が同じ場合も layer 切替時は両 track を再設定します。
-MediaElement の `waiting` または後方の buffered range は seek を許可せず、現在再生中の
-layer に対する `PlaybackDamage.action === "seek"` だけが位置変更できます。明示 PID または
+init segment → media の単一 queue 順序で行います。既存 SourceBuffer に対するすべての構成
+splice は対象の音声／映像 track ごとに独立して記録し、次の対応 init では MIME 文字列が同じでも
+必ず `changeType()` を実行します。layer 切替は両 track、content 内の AAC channel layout または
+HEVC SPS／color 構成の変更は該当 track だけを再設定します。
+MediaElement の `waiting` または後方の buffered range だけでは seek を許可しません。現在再生中の
+layer に対する `PlaybackDamage.action === "seek"` だけが直ちに位置変更でき、
+`seek-if-stalled` は許可として保持し、因果関係が成立する `waiting` だけが実行できます。遅延した
+event は現在の media clock 以上にある buffer 済み parser 観測 RAP を使用できます。明示 PID または
 具体的な track 選択は固定 mode のままで、自動 layer 判断を無効にします。
 最初の利用可能な切替先 RAP で両 track を同じ境界に論理 splice し、その境界より後に
 append 済みの旧 layer 音声を remove して、新しい AAC を 22 ms 以内の同じ境界へ写像します。
@@ -150,8 +156,9 @@ SourceBuffer には remove を行いません。破棄された staging の再�
 
 timestamp 0 から録画を fresh 起動するとき、起動処理と後方 buffered range は
 `MediaElement.currentTime` を代入してはいけません。位置変更を許可するのは user の明示 seek、
-layer 切替が不可能だった後の選択中 layer に対する `PlaybackDamage.action === "seek"`、または既存の
-live 起動 policy だけです。
+layer 切替が不可能だった後の選択中 layer に対する `PlaybackDamage.action === "seek"`、
+`seek-if-stalled` が許可し、実際の提示 frame 証拠と対応する `waiting`、または既存の live 起動
+policy だけです。
 demo は位置変更を行わず、その media clock を復帰判断用に core へ報告します。
 
 fresh recorded の SourceBuffer pair を作成する前に、demo は
@@ -197,14 +204,22 @@ origin からの本来の offset を維持します。duration 表示、`MediaSo
 録画の明示 seek、選択 layer の damage recovery、および MSE timestamp offset はすべてこの
 単一 mapping を使用します。明示的な `videoPacketId` は範囲をその一つの映像 track に制限します。
 
-選択 layer の自動 recovery は録画の明示 seek とは別です。現在 layer の
-`PlaybackDamage.action === "seek"` が具体的な recovery timestamp を持つ場合だけ、同じ
-和集合 origin mapping で media clock を一度だけ変更できます。duration probe の再実行、
-source scan、A/V layer switch との並行実行は禁止します。後方の buffered range、非選択 layer
-の damage、`wait-for-recovery` だけでは seek を許可しません。parser の先読みで見つかった
-damage は許可として保持しますが、playback clock がその damage span に到達する前の正常 media
-を飛ばしてはいけません。その後の `waiting` は保持済みの現在 layer の許可を一度だけ実行でき、
-対応する許可がなければ何もしません。
+選択 layer の自動 recovery は録画の明示 seek とは別です。現在 layer の severe な
+`PlaybackDamage.action === "seek"` が具体的な recovery timestamp を持つ場合は、同じ
+和集合 origin mapping で media clock を一度だけ変更できます。復旧済みの短い `warning` は
+`seek-if-stalled` とし、登録時には位置変更せず、その損傷へ media clock が到達した後の `waiting`
+でだけ一度実行できます。`MediaElement.currentTime` と `playing` は損傷映像の decode 成功を
+証明しません。音声だけで media clock が最初の復旧 RAP を越えても、表示映像は停止したままに
+なり得ます。SDK は `requestVideoFrameCallback()` で compositor に実際に提示された映像 PTS を
+追跡し、提示済み frame が最初の復旧 RAP 以上なら許可を破棄します。そうでない遅延 `waiting` は、
+現在の media clock 以上にある parser 観測済み RAP のうち、buffer 済みの最初の点を選びます。
+RAP が未到着または未 append の場合は access unit／SourceBuffer の前進まで許可を保持します。
+この復旧は必ず前方へ進み、通過済み RAP へ後方 seek してはいけません。この状態機械は public な
+`tlvdemux/mse-playback` SDK に置き、demo は media／layer callback、parser RAP、`waiting`、
+SourceBuffer の前進を転送するだけにします。提示 frame callback がない browser は安全な従来 subset
+として、media clock が最初の復旧 RAP を越えていない場合だけ復旧できます。どちらも duration probe
+の再実行、source scan、A/V layer switch との並行実行は禁止します。parser 観測済み RAP を伴わない
+buffered range、非選択 layer の damage、通常の `waiting`、`wait-for-recovery` だけでは seek を許可しません。
 
 復旧可能な AAC source-damage marker は、既に queue 済みの audio を捨てたり、選択 audio の
 fragment timeline を再開始したりしてはいけません。欠落 AAC frame は次の 1024-sample 境界へ
@@ -229,6 +244,18 @@ high-water mark で停止して 711 MiB sample を EOF まで取得してはい�
 ではなく、今回修正する失敗です。この復旧 path の自動 acceptance は native VideoToolbox MSE probe
 と全 sample WASM assertion だけで行い、browser automation を起動せず、user を最初の runtime
 tester にしません。
+
+単一 layer の captured sample
+`20260828-141-020000_99332dc9-025e-4e76-afc4-e31c3d577059.mmts` は正確に
+`1792861104` bytes、`496.913089` 秒で、映像 packet `0xa140` と音声 packet `0xa141` だけを含み、
+降雨 fallback はありません。全 sample regression では、選択映像の短い損傷を完全な source 区間、
+input offset、実在する復旧 RAP とともに `seek-if-stalled` として公開しなければなりません。
+parser の先読みでは seek しません。実 browser では最初の写像済み復旧 RAP `6.272934s` より遅い
+`6.580s` 付近で `waiting` が発生し、表示映像はまだ復旧していません。このとき SDK は次の
+parser 観測済み前方 RAP `6.806806s` を選び、buffer 済みになった後に一度だけ seek して再生を
+継続しなければなりません。古い候補や無関係な `waiting` は前後どちらにも seek してはいけません。
+実 browser acceptance では、降雨切替、MediaSource 再構築、recorded-seek session、source 全体の
+再読込なしに、この自然な遅延停止から継続することを確認します。
 
 手動から自動への layer 選択変更は policy flag だけではなく、能動的な遷移です。user が降雨対応
 layer を手動選択している場合、自動選択を有効にすると preferred／fallback A/V pair を設定し、次の

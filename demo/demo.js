@@ -17,11 +17,11 @@ import {
   commonBufferedRanges,
   createMsePlaybackDamageRecovery,
   startMsePlayback,
-} from '../mse-playback.mjs?v=live-entry-v1';
+} from '../mse-playback.mjs?v=presented-frame-recovery-v3';
 import {
   createMsePlaybackFlowControl,
   createMseRecordedSeekSession,
-} from '../mse-playback.mjs?v=live-entry-v1';
+} from '../mse-playback.mjs?v=presented-frame-recovery-v3';
 import { createWorkerTlvDemuxModule } from '../worker-tlvdemux.mjs';
 import {
   MseAppendQueue,
@@ -513,6 +513,7 @@ function releaseMedia() {
   activeVideoSwitch = null;
   activeVideoSelectionMode = null;
   activeSubtitleSwitch = null;
+  activeGapRecovery?.destroy();
   activeGapRecovery = null;
   activeSubtitleRenderer?.destroy();
   activeSubtitleRenderer = null;
@@ -540,6 +541,7 @@ function stopPlayback(quiet = false, preserveMedia = false) {
   activeVideoSwitch = null;
   activeVideoSelectionMode = null;
   activeSubtitleSwitch = null;
+  activeGapRecovery?.destroy();
   activeGapRecovery = null;
   activeSubtitleRenderer?.reset();
   currentVideoPresentationHint = null;
@@ -771,11 +773,15 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     isActive: () => generation === runGeneration,
     isCurrentLayer: damage => damage.videoTrackId === selectedVideo,
     switchInFlight: () => switchInFlight,
-    seek: (target, previousTime) => {
+    seek: (target, previousTime, detail) => {
       internalSeekTarget = target;
       elements.video.currentTime = target;
+      const presented = detail?.lastPresentedTime === null ||
+        detail?.lastPresentedTime === undefined
+        ? '不明' : `${detail.lastPresentedTime.toFixed(3)}s`;
       appendLog(`${liveMode ? 'Live 復帰' : '再生不能区間をスキップ'} ` +
-        `${previousTime.toFixed(3)}s -> ${target.toFixed(3)}s`);
+        `${previousTime.toFixed(3)}s -> ${target.toFixed(6)}s ` +
+        `(提示済み映像=${presented}, 最初の復旧RAP=${detail.firstRecoveryTime.toFixed(6)}s)`);
     },
   });
   activeGapRecovery = gapRecovery;
@@ -803,6 +809,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     });
   };
   const onMseUpdateEnd = () => {
+    gapRecovery.notifyBufferedChange();
     maybeStartPlayback();
   };
   for (const queue of activeQueues) queue.onUpdateEnd = onMseUpdateEnd;
@@ -829,7 +836,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       activeQueueByType.set(type, queue);
       if (!activeQueues.includes(queue)) activeQueues.push(queue);
     },
-    forceReinitialize: () => pendingLayerSwitch !== null,
     freshRecordedEntryAlignment: !liveMode && startTimeSeconds === 0 && !reuseMedia,
     recordedPresentationStartUs: liveMode ? null : presentationStartUs,
     onInitObserved: init => appendLog(`${init.type} 初期化 ${init.mime}`),
@@ -920,6 +926,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   };
   const onMseLayerSwitchStarted = started => {
     try {
+      gapRecovery.reset();
       switchInFlight = true;
       const video = tracks.get(started.videoTrackId);
       const audio = tracks.get(started.audioTrackId);
@@ -945,7 +952,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const onPlaybackDamage = damage => {
     try {
       gapRecovery.reportDamage(damage);
-      if (damage.severity !== 'severe') return;
+      if (damage.severity !== 'severe' && damage.action !== 'seek-if-stalled') return;
       const start = Number(damage.startTimeUs ?? damage.endTimeUs) / 1000000;
       const recovery = damage.recoveryTimeUs === null
         ? null : Number(damage.recoveryTimeUs) / 1000000;
@@ -953,10 +960,9 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       if (reportedDamage.has(key)) return;
       reportedDamage.add(key);
       if (recovery !== null) {
-        const skipped = Math.max(0, recovery - start);
         elements.playbackNotice.textContent =
           `録画データの一部が破損しているため、再生が止まった場合は ` +
-          `${skipped.toFixed(1)}秒先の復旧点へ自動的に移動します。` +
+          `次の利用可能な復旧点へ自動的に移動します。` +
           ` [${damage.code}]`;
         appendLog(`映像損傷 ${start.toFixed(3)}s -> ${recovery.toFixed(3)}s、` +
           `停止時に復旧点へスキップします [${damage.code}]`);
@@ -1227,6 +1233,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     onPlaybackAccessUnitView(unit) {
       try {
         seekSession?.observeAccessUnit(unit);
+        gapRecovery.observeAccessUnit(unit);
         const subtitleTrack = tracks.get(unit.trackId);
         if (!suppressOutput && unit.codec === 'ttml' && subtitleTrack?.kind === 'subtitle') {
           dataBroadcast.captionDataChanged(unit);
@@ -1729,6 +1736,7 @@ elements.video.addEventListener('error', () => {
   activeController?.abort();
 });
 elements.video.addEventListener('waiting', () => {
+  appendLog(`MediaElement waiting ${elements.video.currentTime.toFixed(3)}s`);
   activeGapRecovery?.notifyWaiting();
 });
 elements.video.addEventListener('seeking', () => {

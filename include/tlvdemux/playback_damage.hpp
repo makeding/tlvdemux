@@ -14,6 +14,7 @@ enum class PlaybackDamageSeverity {
 
 enum class PlaybackRecoveryAction {
     None,
+    SeekIfStalled,
     Seek,
     WaitForRecovery,
 };

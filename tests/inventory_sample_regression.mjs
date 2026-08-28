@@ -17,6 +17,7 @@ const samples = [
   {path: 'demo/20260731-102-170000_272b7cdc-8d85-4f77-91df-b935f3ae0e96.mmts', size: 5206465015, duration: '465.949621'},
   {path: 'demo/20260815-141-020000_34968268-7eab-4ee5-ab93-d2097c3d839f.mmts', size: 6685541501, duration: '1815.036727'},
   {path: 'demo/20260828-101-021500_8deb3dd2-39e9-471c-a9ba-a6dfe23feeb6.mmts', size: 1487535853, duration: '536.686256', audioDamage: true},
+  {path: 'demo/20260828-141-020000_99332dc9-025e-4e76-afc4-e31c3d577059.mmts', size: 1792861104, duration: '496.913089', videoDamage: true},
   {path: 'demo/8k.mmts', size: 4360105984, duration: '459.572727', randomSeeks: true},
   {path: 'demo/8k1.mmts', size: 364994560, duration: '31.915216'},
   {path: 'demo/audiotrack.tlv', size: 173162496, duration: '60.744010', layers: true},
@@ -124,6 +125,10 @@ for (const sample of samples) {
   if (sample.audioDamage) {
     run(`AAC damage flow ${sample.path}`, process.execPath,
       ['tests/wasm_audio_damage_flow_sample.mjs', wasm, sample.path]);
+  }
+  if (sample.videoDamage) {
+    run(`single-layer video damage flow ${sample.path}`, process.execPath,
+      ['tests/wasm_single_track_damage_flow_sample.mjs', wasm, sample.path]);
   }
 }
 
