@@ -57,6 +57,33 @@ export declare function commonBufferedAhead(
 export declare function createMsePlaybackFlowControl(
   options: MsePlaybackFlowControlOptions,
 ): MsePlaybackFlowControl;
+export declare function startMsePlayback(options: {
+  media: MseMediaClock & {play(): Promise<void>};
+  queues: MsePlaybackQueues;
+  liveMode?: boolean;
+  minimumLiveBufferSeconds?: number;
+  play?: () => Promise<void>;
+}): {
+  range: MseBufferedRange;
+  commonAhead: number;
+  aligned: boolean;
+  playResult: Promise<void>;
+} | null;
+export declare function createMsePlaybackDamageRecovery(options: {
+  media: MseMediaClock & {seeking: boolean; paused: boolean; play(): Promise<void>};
+  isActive?: () => boolean;
+  isCurrentLayer?: (damage: Record<string, unknown>) => boolean;
+  switchInFlight?: () => boolean;
+  seek: (targetSeconds: number, previousTimeSeconds: number) => void;
+}): {
+  notifyWaiting(): null;
+  reset(): void;
+  reportDamage(damage: {
+    action: string;
+    recoveryTimeUs: bigint | null;
+    [name: string]: unknown;
+  }): {start: number; end: number} | null;
+};
 
 export interface MseRecordedSource {
   size: bigint;

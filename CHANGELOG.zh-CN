@@ -4,6 +4,13 @@
 > `tlvdemux` 命名空间。相关条目以 **旧 `tlvdemux` 实现** 标记；这只是历史名称，
 > 并非独立产品线。
 
+## [Unreleased]
+
+- 增加公开 browser SDK 模块，统一承载 16 MiB 有界录制 seek、MSE output queue、
+  轨道/层级选择、严格 recorded Range source、时长探测、live 输入合并、播放损坏恢复及 Worker RPC。
+- demo 已迁移到公开模块并删除重复 lifecycle helper。package publish 仍是需明确执行的 release
+  动作；在文档所列 DPlayer 常规 npm cutover 与 consumer 验收完成前，该批次不算完成。
+
 ## [0.2.4] - 2026-08-26
 
 Commit range: `7aa53cb..HEAD`

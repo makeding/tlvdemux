@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-import { coalesceReadableStream } from '../demo/live-stream.mjs';
+import { coalesceReadableStream } from '../stream-input.mjs';
 
 function bytes(length, value) {
   return new Uint8Array(length).fill(value);

@@ -54,6 +54,51 @@ export function commonBufferedAhead(media, queues, toleranceSeconds = ENTRY_TOLE
   return range ? Math.max(0, range.end - media.currentTime) : 0;
 }
 
+export function startMsePlayback({
+  media,
+  queues,
+  liveMode = false,
+  minimumLiveBufferSeconds = 0,
+  play = () => media.play(),
+}) {
+  const ranges = commonBufferedRanges(queues);
+  if (!ranges.length) return null;
+  const currentTime = media.currentTime;
+  const range = liveMode
+    ? ranges.find(item => item.end > currentTime + 0.001)
+    : ranges.find(item => item.start <= currentTime + ENTRY_TOLERANCE_SECONDS &&
+        item.end > currentTime + 0.001);
+  if (!range) return null;
+  const commonAhead = range.end - Math.max(currentTime, range.start);
+  if (liveMode && commonAhead < minimumLiveBufferSeconds) return null;
+  const aligned = liveMode && currentTime < range.start - 0.001;
+  if (aligned) media.currentTime = range.start;
+  return {range, commonAhead, aligned, playResult: play()};
+}
+
+export function createMsePlaybackDamageRecovery({
+  media,
+  isActive = () => true,
+  isCurrentLayer = () => true,
+  switchInFlight = () => false,
+  seek,
+}) {
+  return {
+    notifyWaiting() { return null; },
+    reset() {},
+    reportDamage(damage) {
+      if (damage.action !== 'seek' || damage.recoveryTimeUs === null ||
+          !isActive() || !isCurrentLayer(damage) || switchInFlight() || media.seeking) return null;
+      const target = Number(damage.recoveryTimeUs) / 1000000;
+      if (!Number.isFinite(target) || target < 0) return null;
+      const previousTime = media.currentTime;
+      seek(target, previousTime);
+      if (!media.paused) media.play().catch(() => {});
+      return {start: target, end: target};
+    },
+  };
+}
+
 export function createMsePlaybackFlowControl({
   media,
   queues,

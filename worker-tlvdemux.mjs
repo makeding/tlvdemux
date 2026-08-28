@@ -1,4 +1,15 @@
-const protocol = globalThis.TlvDemuxWorkerProtocol;
+export const TLV_DEMUX_WORKER_PROTOCOL = Object.freeze({
+  init: 'tlvdemux:init',
+  ready: 'tlvdemux:ready',
+  create: 'tlvdemux:create',
+  invoke: 'tlvdemux:invoke',
+  destroy: 'tlvdemux:destroy',
+  result: 'tlvdemux:result',
+  event: 'tlvdemux:event',
+  failure: 'tlvdemux:failure',
+});
+
+const protocol = TLV_DEMUX_WORKER_PROTOCOL;
 
 export function workerResultValue(message) {
   return 'value' in message ? message.value : true;
@@ -7,18 +18,38 @@ export function workerResultValue(message) {
 function remoteError(value) {
   const error = new Error(value?.message || 'tlvdemux worker failed');
   error.name = value?.name || 'Error';
+  if (value?.code !== undefined) error.code = value.code;
   if (value?.stack) error.stack = value.stack;
   return error;
 }
 
+function applicationKey(state) {
+  return `${state.contextId}:${state.organizationId}:${state.applicationId}`;
+}
+
+function resourceKey(contextId, path) {
+  return `${contextId}:${path}`;
+}
+
+function createObjectCache(callbacks) {
+  return {
+    callbacks,
+    entries: new Map(),
+    applications: new Map(),
+    resources: new Map(),
+    broadcastClock: null,
+    layoutConfiguration: null,
+  };
+}
+
 class WorkerClient {
-  constructor({ workerUrl, wasmUrl }) {
-    this.worker = new Worker(workerUrl);
+  constructor({ workerUrl, wasmUrl, workerFactory }) {
+    this.worker = workerFactory(workerUrl);
     this.nextRequestId = 1;
     this.nextObjectId = 1;
+    this.closed = false;
     this.pending = new Map();
-    this.callbacks = new Map();
-    this.entries = new Map();
+    this.caches = new Map();
     this.worker.onmessage = event => this.receive(event.data);
     this.worker.onerror = event => this.failAll(
       new Error(event.message || 'tlvdemux worker crashed'));
@@ -27,11 +58,10 @@ class WorkerClient {
 
   receive(message) {
     if (message.type === protocol.event) {
-      if (message.name === 'onApplicationState' && message.value?.applicationEntry) {
-        this.entries.set(`${message.objectId}:${message.value.contextId}`,
-          message.value.applicationEntry);
-      }
-      const callback = this.callbacks.get(message.objectId)?.[message.name];
+      const cache = this.caches.get(message.objectId);
+      if (!cache) return;
+      this.updateCache(cache, message.name, message.value);
+      const callback = cache.callbacks?.[message.name];
       if (typeof callback === 'function') callback(message.value);
       return;
     }
@@ -48,6 +78,9 @@ class WorkerClient {
   }
 
   request(type, fields = {}, transfer = []) {
+    if (this.closed) {
+      return Promise.reject(new DOMException('tlvdemux worker closed', 'AbortError'));
+    }
     const requestId = this.nextRequestId++;
     const promise = new Promise((resolve, reject) => {
       this.pending.set(requestId, { resolve, reject });
@@ -59,9 +92,14 @@ class WorkerClient {
   async create(objectType, callbacks = null, options = {}) {
     await this.ready;
     const objectId = this.nextObjectId++;
-    if (callbacks) this.callbacks.set(objectId, callbacks);
-    await this.request(protocol.create, { objectId, objectType, options });
-    return objectId;
+    if (callbacks) this.caches.set(objectId, createObjectCache(callbacks));
+    try {
+      await this.request(protocol.create, { objectId, objectType, options });
+      return objectId;
+    } catch (error) {
+      this.caches.delete(objectId);
+      throw error;
+    }
   }
 
   async invoke(objectId, method, args = [], transfer = []) {
@@ -70,20 +108,42 @@ class WorkerClient {
   }
 
   destroy(objectId) {
-    this.callbacks.delete(objectId);
-    for (const key of this.entries.keys()) {
-      if (key.startsWith(`${objectId}:`)) this.entries.delete(key);
-    }
-    void this.request(protocol.destroy, { objectId });
+    this.caches.delete(objectId);
+    if (!this.closed) void this.request(protocol.destroy, { objectId }).catch(() => {});
   }
 
-  applicationEntry(objectId, contextId) {
-    return this.entries.get(`${objectId}:${contextId}`) ?? null;
+  cache(objectId) { return this.caches.get(objectId); }
+
+  updateCache(cache, name, value) {
+    if (name === 'onApplicationState') {
+      cache.applications.set(applicationKey(value), value);
+      if (value.applicationEntry) cache.entries.set(value.contextId, value.applicationEntry);
+      else cache.entries.delete(value.contextId);
+    } else if (name === 'onApplicationResourceView') {
+      cache.resources.set(resourceKey(value.contextId, value.path), value);
+    } else if (name === 'onApplicationResourceRemoved') {
+      cache.resources.delete(resourceKey(value.contextId, value.path));
+    } else if (name === 'onApplicationRemoved') {
+      cache.applications.delete(applicationKey(value));
+    } else if (name === 'onApplicationResourcesReset') {
+      cache.entries.clear();
+      cache.applications.clear();
+      cache.resources.clear();
+    } else if (name === 'onBroadcastClock') {
+      cache.broadcastClock = value;
+    } else if (name === 'onLayoutConfiguration') {
+      cache.layoutConfiguration = value;
+    } else if (name === 'onServiceStateReset') {
+      cache.layoutConfiguration = null;
+    }
   }
 
   close() {
+    if (this.closed) return;
+    this.closed = true;
     this.worker.terminate();
     this.failAll(new DOMException('tlvdemux worker closed', 'AbortError'));
+    this.caches.clear();
   }
 }
 
@@ -107,8 +167,11 @@ class WorkerObject {
   delete() {
     if (this.closed) return;
     this.closed = true;
-    void this.ready.then(objectId => this.client.destroy(objectId));
+    if (this.objectId !== null) this.client.destroy(this.objectId);
+    else void this.ready.then(objectId => this.client.destroy(objectId)).catch(() => {});
   }
+
+  isDeleted() { return this.closed; }
 }
 
 class WorkerDurationProbe extends WorkerObject {
@@ -130,12 +193,14 @@ class WorkerDurationProbe extends WorkerObject {
 }
 
 class WorkerDemuxer extends WorkerObject {
-  constructor(client, callbacks) {
+  constructor(client, callbacks, options = {}) {
     super(client, 'demuxer', callbacks, {
       mseMaxAudioChannels: callbacks?.mseMaxAudioChannels || 0,
+      ...options,
     });
   }
 
+  initialized() { return this.ready.then(() => undefined); }
   configureTrackSelection(options) {
     return this.call('configureTrackSelection', [options]);
   }
@@ -202,26 +267,55 @@ class WorkerDemuxer extends WorkerObject {
   seekPointCount() { return this.call('seekPointCount'); }
   indexState() { return this.call('indexState'); }
   applicationEntry(contextId) {
-    return this.objectId === null ? null :
-      this.client.applicationEntry(this.objectId, contextId);
+    return this.cache()?.entries.get(contextId) ?? null;
   }
+  applications() { return [...(this.cache()?.applications.values() ?? [])]; }
+  broadcastClock() { return this.cache()?.broadcastClock ?? null; }
+  layoutConfiguration() { return this.cache()?.layoutConfiguration ?? null; }
+  applicationResources(contextId = undefined) {
+    return [...(this.cache()?.resources.values() ?? [])]
+      .filter(resource => contextId === undefined || resource.contextId === contextId)
+      .map(resource => ({
+        contextId: resource.contextId,
+        componentTag: resource.componentTag,
+        transactionId: resource.transactionId,
+        downloadId: resource.downloadId,
+        mpuSequenceNumber: resource.mpuSequenceNumber,
+        itemId: resource.itemId,
+        version: resource.version,
+        path: resource.path,
+        contentType: resource.contentType,
+        size: resource.data.byteLength,
+        generation: resource.generation,
+      }));
+  }
+  applicationResource(contextId, path) {
+    const resource = this.cache()?.resources.get(resourceKey(contextId, path));
+    return resource ? {...resource, data: resource.data.slice()} : null;
+  }
+  cache() { return this.objectId === null ? undefined : this.client.cache(this.objectId); }
 }
 
 export async function createWorkerTlvDemuxModule(options = {}) {
-  if (!protocol) throw new Error('demux-worker-protocol.js was not loaded');
   const client = new WorkerClient({
     workerUrl: options.workerUrl || new URL(
-      './demux-worker-runtime.js?v=cpp-layer-state-v1', import.meta.url),
+      './worker/demux-worker-runtime.js', import.meta.url),
     wasmUrl: options.wasmUrl || new URL(
-      '../build-wasm/tlvdemux.js?v=cpp-layer-state-v1', import.meta.url).href,
+      './dist/tlvdemux.js', import.meta.url).href,
+    workerFactory: options.workerFactory || (url => new Worker(url)),
   });
-  await client.ready;
+  try {
+    await client.ready;
+  } catch (error) {
+    client.close();
+    throw error;
+  }
   return {
     DurationProbe: class extends WorkerDurationProbe {
       constructor() { super(client); }
     },
     TlvDemuxer: class extends WorkerDemuxer {
-      constructor(callbacks) { super(client, callbacks); }
+      constructor(callbacks, objectOptions) { super(client, callbacks, objectOptions); }
     },
     close: () => client.close(),
   };

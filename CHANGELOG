@@ -5,6 +5,15 @@
 > labelled **legacy `tlvdemux` implementation**; this is a historical name,
 > not a separate product line.
 
+## [Unreleased]
+
+- Add public browser SDK modules for bounded recorded seek, MSE output queues,
+  track/layer selection, strict recorded Range sources, duration probing, live
+  input coalescing, playback-damage recovery, and Worker RPC.
+- Migrate the demo to those public modules and remove its duplicated lifecycle
+  helpers. Package publication remains an explicit release action; the batch
+  stays incomplete until the documented DPlayer npm cutover and acceptance.
+
 ## [0.2.4] - 2026-08-26
 
 Commit range: `7aa53cb..HEAD`

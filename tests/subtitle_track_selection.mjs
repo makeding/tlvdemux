@@ -3,7 +3,7 @@ import {
   preferredCaptionTrack,
   shouldRenderSubtitleTrack,
   subtitleTrackKind,
-} from '../demo/subtitle-tracks.mjs';
+} from '../track-selection.mjs';
 
 const caption = {trackId: 1n, packetId: 0xf330, subtitle: {type: 0}};
 const alternateCaption = {trackId: 2n, packetId: 0xf331, subtitle: {type: 0}};

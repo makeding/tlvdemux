@@ -1,6 +1,13 @@
-importScripts('./demux-worker-protocol.js');
-
-const protocol = globalThis.TlvDemuxWorkerProtocol;
+const protocol = Object.freeze({
+  init: 'tlvdemux:init',
+  ready: 'tlvdemux:ready',
+  create: 'tlvdemux:create',
+  invoke: 'tlvdemux:invoke',
+  destroy: 'tlvdemux:destroy',
+  result: 'tlvdemux:result',
+  event: 'tlvdemux:event',
+  failure: 'tlvdemux:failure',
+});
 const applicationDrainBatch = 32;
 const objects = new Map();
 let modulePromise = null;
@@ -10,6 +17,7 @@ function serializeError(error) {
   return {
     name: error?.name || 'Error',
     message: error?.message || String(error),
+    code: error?.code,
     stack: error?.stack || '',
   };
 }
@@ -198,6 +206,7 @@ function createDemuxer(module, objectId, options) {
     },
     tracks: new Map(),
     layerSwitch: null,
+    indexDurationUs: options.indexDurationUs ?? null,
   };
   const event = (name, transform = value => value) => value => {
     sendEvent(objectId, name, transform(value));
@@ -246,6 +255,7 @@ function createDemuxer(module, objectId, options) {
       reconcileMptSelection(record, snapshot);
       sendEvent(objectId, 'onMptSnapshot', snapshot);
     },
+    onServiceStateReset: event('onServiceStateReset'),
     onLayoutConfiguration: event('onLayoutConfiguration'),
     onApplicationService: event('onApplicationService'),
     onDataAsset: event('onDataAsset'),
@@ -256,7 +266,11 @@ function createDemuxer(module, objectId, options) {
     onViewerParticipationNotification: event('onViewerParticipationNotification'),
     onApplicationResourceView(resource) {
       const data = copyBytes(resource.data);
-      sendEvent(objectId, 'onApplicationResourceView', { ...resource, data }, [data.buffer]);
+      sendEvent(objectId, 'onApplicationResourceView', {
+        ...resource,
+        data,
+        generation: record.instance.applicationResourceGeneration(),
+      }, [data.buffer]);
     },
     onApplicationResourceRemoved: event('onApplicationResourceRemoved'),
     onApplicationRemoved: event('onApplicationRemoved'),
@@ -272,6 +286,7 @@ function createDemuxer(module, objectId, options) {
     },
     onError: event('onError'),
   });
+  if (record.indexDurationUs !== null) record.instance.setIndexDuration(record.indexDurationUs);
   return record;
 }
 

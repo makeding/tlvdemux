@@ -195,6 +195,9 @@ runtime tester.
 
 ## Library usage
 
+The staged plan for moving the remaining shared browser playback behavior into
+the public SDK is documented in [Browser playback SDK convergence plan](docs/browser-sdk-roadmap.md).
+
 Browser integrations import the recorded-seek coordinator instead of copying
 demo probe logic:
 
@@ -741,13 +744,14 @@ Live mode.
 The demo contains a deliberately small fMP4/MSE layer and does not depend on
 mmts.js at runtime. Browser HEVC MSE support is still required.
 
-Demuxing and fMP4 remuxing run in `demo/demux-worker-runtime.js`. The main
+Demuxing and fMP4 remuxing run in the public `worker/demux-worker-runtime.js`. The main
 thread sends input chunks as transferable buffers and receives only MSE init
 segments, media segments, subtitle payloads, application files, and small
-control events. `demo/worker-tlvdemux.js` owns the RPC facade, while
-`demo/demux-worker-protocol.js` contains the shared message names. Keeping these
-three responsibilities separate makes it possible to change the player UI,
-the transport protocol, or the worker-side demux lifecycle independently.
+control events. `worker-tlvdemux.mjs` owns the RPC facade and
+`worker/demux-worker-runtime.js` is a self-contained classic Worker entry that
+can also be bundled by a consumer's Worker loader. Keeping UI outside this
+public pair lets consumers change presentation without copying the RPC or
+worker-side demux lifecycle.
 
 Run the repeatable WASM throughput benchmark with:
 

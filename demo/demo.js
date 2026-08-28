@@ -3,27 +3,36 @@ import { HlgSdrRenderer } from '../hlg-sdr-renderer.mjs?v=cpp-color-lut-v1';
 import {
   automaticLayerSwitchEnabled,
   audioTrackChoices,
+  configureAutomaticLayerPair as configureSdkAutomaticLayerPair,
   correspondingAudioTrack,
+  resolveLayerPair,
   sameVideoLayerGroup,
   selectionLevel,
   shouldReprobeVideoLayerForSeek,
-} from './asset-groups.mjs?v=cpp-layer-state-v1';
-import { shouldRenderSubtitleTrack, subtitleTrackKind } from './subtitle-tracks.mjs?v=subtitle-planes-v1';
-import { coalesceReadableStream } from './live-stream.mjs?v=asset-groups-v3';
+  shouldRenderSubtitleTrack,
+  subtitleTrackKind,
+} from '../track-selection.mjs?v=public-selection-v1';
+import { coalesceReadableStream } from '../stream-input.mjs?v=public-stream-v1';
 import {
   commonBufferedRanges,
-  createMseGapRecovery,
+  createMsePlaybackDamageRecovery,
   startMsePlayback,
-} from './mse-gap-recovery.mjs?v=damage-recovery-v1';
+} from '../mse-playback.mjs?v=recorded-seek-v1';
 import {
   createMsePlaybackFlowControl,
   createMseRecordedSeekSession,
 } from '../mse-playback.mjs?v=recorded-seek-v1';
-import { createWorkerTlvDemuxModule } from './worker-tlvdemux.js?v=cpp-layer-state-v1';
+import { createWorkerTlvDemuxModule } from '../worker-tlvdemux.mjs';
 import {
   MseAppendQueue,
-  finalizeMseMediaSource,
 } from '../mse-append-queue.mjs?v=gap-recovery-v1';
+import {createMseOutputPipeline} from '../mse-output-pipeline.mjs?v=pipeline-v1';
+import {
+  RangeUnsupportedError,
+  createBlobRecordedSource,
+  openHttpRecordedSource,
+  probeRecordedDuration,
+} from '../recorded-source.mjs?v=public-source-v1';
 
 const b62RendererClass = import('/aribb62.js/dist/aribb62.js')
   .then(module => module.B62TTMLRenderer)
@@ -365,8 +374,6 @@ function mediaErrorMessage(error = elements.video.error) {
   return `MediaError ${names[error.code] || error.code}${error.message ? `: ${error.message}` : ''}`;
 }
 
-class RangeUnsupportedError extends Error {}
-
 function formatBytes(value) {
   const byteCount = typeof value === 'bigint' ? value : BigInt(value);
   if (byteCount < 1024n) return `${byteCount} B`;
@@ -391,13 +398,6 @@ function formatDuration(duration) {
   return `${clock} (${seconds.toFixed(6)}s)`;
 }
 
-function toSafeNumber(value, label) {
-  if (value < 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new Error(`${label} がブラウザーの安全な整数範囲を超えています`);
-  }
-  return Number(value);
-}
-
 function parsePacketId() {
   const text = elements.videoPacketId.value.trim();
   if (!text) return undefined;
@@ -409,60 +409,12 @@ function parsePacketId() {
 }
 
 function localSource(file) {
-  return {
-    identity: file,
-    label: file.name,
-    size: BigInt(file.size),
-    async read(offset, length) {
-      const start = toSafeNumber(offset, 'Range 開始位置');
-      const end = toSafeNumber(offset + length, 'Range 終了位置');
-      return new Uint8Array(await file.slice(start, end).arrayBuffer());
-    },
-  };
-}
-
-function parseContentRange(value) {
-  const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(value || '');
-  if (!match) return null;
-  return { start: BigInt(match[1]), end: BigInt(match[2]), size: BigInt(match[3]) };
-}
-
-async function discoverRemoteSize(url, signal) {
-  const response = await fetch(url, { headers: { Range: 'bytes=0-0' }, signal });
-  const range = parseContentRange(response.headers.get('Content-Range'));
-  if (response.status !== 206 || !range || range.start !== 0n || range.end !== 0n) {
-    await response.body?.cancel();
-    throw new RangeUnsupportedError('サーバーは HTTP Range に対応していません');
-  }
-  await response.arrayBuffer();
-  return range.size;
+  return createBlobRecordedSource(file);
 }
 
 async function remoteSource(rawUrl, signal) {
   const url = new URL(rawUrl, window.location.href).href;
-  const size = await discoverRemoteSize(url, signal);
-  return {
-    identity: url,
-    label: url,
-    size,
-    async read(offset, length) {
-      const end = offset + length - 1n;
-      const response = await fetch(url, {
-        headers: { Range: `bytes=${offset}-${end}` }, signal,
-      });
-      const returned = parseContentRange(response.headers.get('Content-Range'));
-      if (response.status !== 206 || !returned || returned.start !== offset ||
-          returned.end !== end || returned.size !== size) {
-        await response.body?.cancel();
-        throw new RangeUnsupportedError(`不正な Range 応答です: bytes ${offset}-${end}/${size} が必要です`);
-      }
-      const data = new Uint8Array(await response.arrayBuffer());
-      if (BigInt(data.byteLength) !== length) {
-        throw new Error(`Range の長さが一致しません: 期待値 ${length}、実際 ${data.byteLength}`);
-      }
-      return data;
-    },
-  };
+  return openHttpRecordedSource({url, signal});
 }
 
 function liveRemoteSource(rawUrl, signal) {
@@ -576,7 +528,6 @@ function stopPlayback(quiet = false, preserveMedia = false) {
   runGeneration += 1;
   activeController?.abort();
   void activeProbe?.cancel();
-  activeProbe?.delete();
   activeDemuxer?.delete();
   activeController = null;
   activeProbe = null;
@@ -608,41 +559,33 @@ async function probeDuration(source, generation) {
   if (videoPacketId !== undefined) options.videoPacketId = videoPacketId;
   const probe = new wasmModule.DurationProbe();
   activeProbe = probe;
-  if (!await probe.begin(source.size, options)) {
-    throw new Error(`再生時間の検出を開始できません: ${await probe.failure()}`);
-  }
-  let number = 0;
-  while (await probe.state() === 'need-range') {
-    const request = await probe.nextRange();
-    if (!request) throw new Error('検出器から Range リクエストが返されませんでした');
-    number += 1;
-    const end = request.offset + request.length - 1n;
-    elements.probeState.textContent = `Range 検出 ${number}`;
-    appendLog(`検出 #${number} bytes=${request.offset}-${end} (${formatBytes(request.length)})`);
-    let data;
-    try { data = await source.read(request.offset, request.length); }
-    catch (error) {
-      if (generation === runGeneration) await probe.failRange(request.requestId);
-      throw error;
-    }
+  try {
+    const probed = await probeRecordedDuration({
+      source,
+      probe,
+      options,
+      isActive: () => generation === runGeneration,
+      onRange: request => {
+        const end = request.offset + request.length - 1n;
+        elements.probeState.textContent = `Range 検出 ${request.number}`;
+        appendLog(`検出 #${request.number} bytes=${request.offset}-${end} ` +
+          `(${formatBytes(request.length)})`);
+      },
+      onProgress: progress => {
+        if (progress.transferredBytes !== null) {
+          elements.transferred.textContent = formatBytes(progress.transferredBytes);
+        }
+      },
+    });
     if (generation !== runGeneration) return null;
-    if (!await probe.pushRange(request.requestId, request.offset, data, true)) {
-      throw new Error(`Range #${number} は検出器に拒否されました`);
-    }
-    elements.transferred.textContent = formatBytes(await probe.transferredBytes());
+    return {
+      duration: probed.duration,
+      videoPacketId: probed.selectedVideoPacketId,
+      transferred: probed.transferredBytes,
+    };
+  } finally {
+    if (activeProbe === probe) activeProbe = null;
   }
-  const state = await probe.state();
-  if (state !== 'complete') {
-    throw new Error(`検出未完了: ${state} / ${await probe.failure()}`);
-  }
-  const result = {
-    duration: await probe.duration(),
-    videoPacketId: await probe.selectedVideoPacketId(),
-    transferred: await probe.transferredBytes(),
-  };
-  probe.delete();
-  activeProbe = null;
-  return result;
 }
 
 function bufferedAhead() {
@@ -785,6 +728,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   let pendingLayerSwitch = null;
   let switchInFlight = false;
   let automaticLayerPairSignature = null;
+  let automaticLayerPairUpdate = Promise.resolve();
   let selectedAudio = null;
   let selectedSubtitle = null;
   let subtitleEventCount = 0;
@@ -796,10 +740,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   let played = startTimeSeconds === 0 && reuseMedia && !elements.video.paused;
   let suppressOutput = startTimeSeconds > 0;
   let seekSession = null;
-  const pendingInits = new Map();
-  const pendingSplices = new Map();
-  const pendingSegments = new Map([['video', []], ['audio', []]]);
-  const mseSegmentTypes = new Set();
   const reportedDamage = new Set();
   const externalDurationUs = liveMode ? null : BigInt(Math.round(
      durationSeconds(probeResult.duration) * 1000000));
@@ -814,7 +754,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     queueHighBytes: SOURCE_QUEUE_HIGH_BYTES,
   });
 
-  const gapRecovery = createMseGapRecovery({
+  const gapRecovery = createMsePlaybackDamageRecovery({
     media: elements.video,
     isActive: () => generation === runGeneration,
     isCurrentLayer: damage => damage.videoTrackId === selectedVideo,
@@ -855,129 +795,63 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   };
   for (const queue of activeQueues) queue.onUpdateEnd = onMseUpdateEnd;
 
-  const appendSegment = segment => {
-    const queue = queues.get(segment.type);
-    if (!queue) {
-      const pending = pendingSegments.get(segment.type);
-      pending.push(segment);
-      if (pending.reduce((sum, item) => sum + item.data.byteLength, 0) >
-          SOURCE_QUEUE_HIGH_BYTES) {
-        throw new Error(`${segment.type} の初期化待ちが長すぎます`);
-      }
-      return;
-    }
-    queue.append(segment.data, {
-      startTimeSeconds: Number(segment.startTimeUs) / 1000000,
-      endTimeSeconds: Number(segment.endTimeUs) / 1000000,
-    });
-  };
-
-  const installPairedInits = () => {
-    if (!pendingInits.has('video') || !pendingInits.has('audio') || queues.size) return;
-    for (const type of ['video', 'audio']) {
-      const init = pendingInits.get(type);
+  const msePipeline = createMseOutputPipeline({
+    mediaSource,
+    media: elements.video,
+    queues,
+    onUpdateEnd: onMseUpdateEnd,
+    queueOptions: {
+      backBufferSeconds: BACK_BUFFER_SECONDS,
+      forwardBufferHighSeconds: FORWARD_BUFFER_HIGH_SECONDS,
+      getMediaError: media => mediaErrorMessage(media.error),
+    },
+    queueFactory(type, init, update, options) {
       let queue = activeQueueByType.get(type);
       if (queue && queue.mime !== init.mime) {
         throw new Error(`シーク中に ${type} codec が変化しました: ${queue.mime} -> ${init.mime}`);
       }
-      if (!queue) {
-        queue = new MseAppendQueue(mediaSource, elements.video, init.mime, onMseUpdateEnd, {
-          backBufferSeconds: BACK_BUFFER_SECONDS,
-          forwardBufferHighSeconds: FORWARD_BUFFER_HIGH_SECONDS,
-          getMediaError: media => mediaErrorMessage(media.error),
-        });
-        activeQueueByType.set(type, queue);
-        activeQueues.push(queue);
-      }
-      queues.set(type, queue);
-      const splice = pendingSplices.get(type);
-      if (splice) {
-        queue.setTimestampOffset(splice.timestampOffsetSeconds);
-        pendingSplices.delete(type);
-      }
-    }
-    for (const type of ['video', 'audio']) {
-      const init = pendingInits.get(type);
-      queues.get(type).append(init.data);
-      const details = type === 'video'
+      if (!queue) queue = new MseAppendQueue(mediaSource, elements.video, init.mime, update, options);
+      return queue;
+    },
+    onQueueCreated(type, queue) {
+      activeQueueByType.set(type, queue);
+      if (!activeQueues.includes(queue)) activeQueues.push(queue);
+    },
+    forceReinitialize: () => pendingLayerSwitch !== null,
+    onInitObserved: init => appendLog(`${init.type} 初期化 ${init.mime}`),
+    onInitInstalled(init, _queue, reconfigured) {
+      const details = init.type === 'video'
         ? `${init.width}x${init.height}`
         : `${init.sampleRate}Hz ${init.channels}ch`;
-      elements.mediaInfo.textContent += ` · ${type} ${details}`;
-    }
-    for (const type of ['video', 'audio']) {
-      for (const segment of pendingSegments.get(type)) appendSegment(segment);
-      pendingSegments.get(type).length = 0;
-    }
-  };
-
+      if (reconfigured) {
+        const expression = init.type === 'video' ? / · video [^·]+/ : / · audio [^·]+$/;
+        elements.mediaInfo.textContent = elements.mediaInfo.textContent.replace(
+          expression, ` · ${init.type} ${details}`);
+      } else {
+        elements.mediaInfo.textContent += ` · ${init.type} ${details}`;
+      }
+    },
+    onFirstSegment: type => appendLog(`${type} media segment 開始`),
+    onSplice: splice => appendLog(
+      `${splice.type === 'video' ? '映像' : '音声'}バッファ切替 ` +
+      `source=${splice.sourceBoundarySeconds.toFixed(6)}s ` +
+      `output=${splice.outputBoundarySeconds.toFixed(6)}s`),
+  });
   const onMseInit = init => {
-      const type = init.type;
-      try {
-        appendLog(`${type} 初期化 ${init.mime}`);
-        if (queues.size) {
-          const queue = queues.get(type);
-          if (!queue) {
-            throw new Error(`${type} の SourceBuffer が見つかりません: ${init.mime}`);
-          }
-          // Keep the reconfiguration in the same SourceBuffer mutation queue:
-          // old media -> changeType (when needed) -> new init -> new media.
-          queue.appendInitialization(init.data, init.mime, pendingLayerSwitch !== null);
-          if (type === 'video') {
-            elements.mediaInfo.textContent = elements.mediaInfo.textContent.replace(
-              / · video [^·]+/, ` · video ${init.width}x${init.height}`);
-          } else if (type === 'audio') {
-            elements.mediaInfo.textContent = elements.mediaInfo.textContent.replace(
-              / · audio [^·]+$/, ` · audio ${init.sampleRate}Hz ${init.channels}ch`);
-          }
-          return;
-        }
-        pendingInits.set(type, init);
-        installPairedInits();
-      } catch (error) { callbackError = error; }
+    try { msePipeline.onMseInit(init); }
+    catch (error) { callbackError = error; }
   };
   const onMseSegment = segment => {
-      try {
-        if (!mseSegmentTypes.has(segment.type)) {
-          mseSegmentTypes.add(segment.type);
-          appendLog(`${segment.type} media segment 開始`);
-        }
-        appendSegment(segment);
-      }
-      catch (error) { callbackError = error; }
+    try { msePipeline.onMseSegment(segment); }
+    catch (error) { callbackError = error; }
   };
   const onMseAudioSplice = splice => {
-    try {
-      const sourceBoundary = Number(splice.presentationTimeUs) / 1000000;
-      const timestampOffset = Number(splice.timestampOffsetUs ?? 0n) / 1000000;
-      const boundary = Math.max(0, sourceBoundary + timestampOffset);
-      const queue = queues.get('audio');
-      if (queue) {
-        queue.spliceFrom(boundary, timestampOffset);
-      } else {
-        pendingInits.delete('audio');
-        pendingSegments.get('audio').length = 0;
-        pendingSplices.set('audio', {timestampOffsetSeconds: timestampOffset});
-      }
-      appendLog(`音声バッファ切替 source=${sourceBoundary.toFixed(6)}s ` +
-        `output=${boundary.toFixed(6)}s`);
-    } catch (error) { callbackError = error; }
+    try { msePipeline.onMseAudioSplice(splice); }
+    catch (error) { callbackError = error; }
   };
   const onMseVideoSplice = splice => {
-    try {
-      const sourceBoundary = Number(splice.presentationTimeUs) / 1000000;
-      const timestampOffset = Number(splice.timestampOffsetUs ?? 0n) / 1000000;
-      const boundary = Math.max(0, sourceBoundary + timestampOffset);
-      const queue = queues.get('video');
-      if (queue) {
-        queue.spliceFrom(boundary, timestampOffset);
-      } else {
-        pendingInits.delete('video');
-        pendingSegments.get('video').length = 0;
-        pendingSplices.set('video', {timestampOffsetSeconds: timestampOffset});
-      }
-      appendLog(`映像バッファ切替 source=${sourceBoundary.toFixed(6)}s ` +
-        `output=${boundary.toFixed(6)}s`);
-    } catch (error) { callbackError = error; }
+    try { msePipeline.onMseVideoSplice(splice); }
+    catch (error) { callbackError = error; }
   };
   const onMseLayerSwitch = layer => {
     try {
@@ -1088,50 +962,27 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   videoSelectionMode = automaticLayerSwitchEnabled(wantedVideoPacketId)
     ? 'auto' : 'fixed';
 
-  const configureAutomaticLayerPair = () => {
+  const refreshAutomaticLayerPair = () => {
     if (!demuxer) return;
-    if (videoSelectionMode === 'fixed') {
-      if (automaticLayerPairSignature !== 'disabled') {
-        automaticLayerPairSignature = 'disabled';
-        void demuxer.clearAutomaticLayerSwitch();
-      }
-      return;
-    }
     const currentAudio = [...knownAudioTracks.values()].find(
       track => track.trackId === selectedAudio,
     );
-    if (!selectedVideoTrack || !currentAudio) return;
-    const videos = [...knownVideoTracks.values()]
-      .filter(track => sameVideoLayerGroup(selectedVideoTrack, track))
-      .sort((left, right) =>
-        (selectionLevel(left) ?? 0xff) - (selectionLevel(right) ?? 0xff));
-    const preferredVideo = videos[0];
-    const fallbackVideo = videos.find(track =>
-      selectionLevel(track) !== null &&
-      selectionLevel(track) > (selectionLevel(preferredVideo) ?? 0xff));
-    if (!preferredVideo || !fallbackVideo) return;
-    const preferredAudio = correspondingAudioTrack(
-      knownAudioTracks.values(), currentAudio,
-      selectionLevel(preferredVideo), selectedAudioGroupId,
-    );
-    const fallbackAudio = correspondingAudioTrack(
-      knownAudioTracks.values(), currentAudio,
-      selectionLevel(fallbackVideo), selectedAudioGroupId,
-    );
-    if (!preferredAudio || !fallbackAudio) return;
-    const signature = [
-      preferredVideo.trackId, preferredAudio.track.trackId,
-      fallbackVideo.trackId, fallbackAudio.track.trackId,
-    ].join(':');
-    if (signature === automaticLayerPairSignature) return;
-    automaticLayerPairSignature = signature;
-    void demuxer.configureAutomaticLayerSwitch(
-      preferredVideo.trackId, preferredAudio.track.trackId,
-      fallbackVideo.trackId, fallbackAudio.track.trackId,
-    );
-    appendLog(`C++ 自動映像切替を設定 ` +
-      `0x${preferredVideo.packetId.toString(16)} ↔ ` +
-      `0x${fallbackVideo.packetId.toString(16)}`);
+    const pair = selectedVideoTrack && currentAudio ? resolveLayerPair(
+      [...knownVideoTracks.values(), ...knownAudioTracks.values()],
+      selectedVideoTrack, currentAudio, selectedAudioGroupId,
+    ) : null;
+    automaticLayerPairUpdate = automaticLayerPairUpdate.then(async () => {
+      const previous = automaticLayerPairSignature;
+      const signature = await configureSdkAutomaticLayerPair(
+        demuxer, pair, previous, {manual: videoSelectionMode === 'fixed'},
+      );
+      automaticLayerPairSignature = signature;
+      if (pair?.fallback && signature !== previous) {
+        appendLog(`C++ 自動映像切替を設定 ` +
+          `0x${pair.preferred.video.packetId.toString(16)} ↔ ` +
+          `0x${pair.fallback.video.packetId.toString(16)}`);
+      }
+    }).catch(error => { callbackError = error; });
   };
 
   const selectAudioTrack = (track, groupIdentification = null) => {
@@ -1141,7 +992,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       track.assetGroups?.[0]?.groupIdentification ?? null;
     void demuxer.selectTrack('audio', selectedAudio);
     renderAudioTracks();
-    configureAutomaticLayerPair();
+    refreshAutomaticLayerPair();
   };
 
   const synchronizeAudioForVideoLayer = () => {
@@ -1287,7 +1138,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
           if (selectedSubtitle === null || track.packetId === desired) selectSubtitleTrack(track);
         }
       }
-      configureAutomaticLayerPair();
+      refreshAutomaticLayerPair();
     },
     onTrackRemoved(track) {
       seekSession?.observeTrackRemoved(track);
@@ -1303,7 +1154,10 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       if (track.kind === 'video') {
         const removedSelectedVideo = selectedVideo === track.trackId;
         knownVideoTracks.delete(track.packetId);
-        if (removedSelectedVideo) selectedVideo = null;
+        if (removedSelectedVideo) {
+          selectedVideo = null;
+          selectedVideoTrack = null;
+        }
         renderVideoTracks();
       } else if (track.kind === 'audio') {
         knownAudioTracks.delete(track.packetId);
@@ -1317,8 +1171,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       }
       if (track.kind === 'video' || track.kind === 'audio') {
         automaticLayerPairSignature = null;
-        void demuxer.clearAutomaticLayerSwitch();
-        configureAutomaticLayerPair();
+        refreshAutomaticLayerPair();
       }
     },
     onBroadcastClock(clock) {
@@ -1476,15 +1329,16 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       elements.videoPacketId.value = '';
       videoSelectionMode = 'auto';
       automaticLayerPairSignature = null;
-      configureAutomaticLayerPair();
+      refreshAutomaticLayerPair();
       renderVideoTracks();
       appendLog('映像レイヤーを自動選択に設定しました');
       return;
     }
     elements.videoPacketId.value = String(packetId);
     videoSelectionMode = 'fixed';
-    automaticLayerPairSignature = 'disabled';
-    await demuxer.clearAutomaticLayerSwitch();
+    automaticLayerPairSignature = await configureSdkAutomaticLayerPair(
+      demuxer, null, automaticLayerPairSignature, {manual: true, force: true},
+    );
     if (pendingLayerSwitch && selectedVideo !== null) {
       await demuxer.selectTrack('video', selectedVideo);
     }
@@ -1675,7 +1529,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   activeVideoSelectionMode = null;
   activeSubtitleSwitch = null;
   if (generation !== runGeneration) return;
-  const finalized = await finalizeMseMediaSource(mediaSource, activeQueues, {
+  const finalized = await msePipeline.finalize({
     truncateToCommonEnd: !liveMode && incompleteInputTail,
   });
   if (finalized.truncatedTo !== null) {
@@ -1766,7 +1620,7 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false,
     console.error(error);
   } finally {
     if (generation === runGeneration) {
-      activeProbe?.delete();
+      void activeProbe?.cancel();
       activeProbe = null;
       activeDemuxer?.delete();
       activeDemuxer = null;

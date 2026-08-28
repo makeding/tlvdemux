@@ -4,6 +4,14 @@
 > プロジェクトで `tlvdemux` 名前空間を使用していました。該当項目は
 > **旧 `tlvdemux` 実装**と表記します。これは別製品ではなく、歴史上の名称です。
 
+## [Unreleased]
+
+- 16 MiB 制限付き録画 seek、MSE output queue、track／layer 選択、strict recorded Range
+  source、duration probe、live input coalescing、playback damage recovery、Worker RPC を
+  public browser SDK module として追加しました。
+- demo を public module へ移行して重複 lifecycle helper を削除しました。package publish は明示的な
+  release action とし、その後の DPlayer 通常 npm cutover と consumer acceptance まで batch は未完了です。
+
 ## [0.2.4] - 2026-08-26
 
 Commit range: `7aa53cb..HEAD`

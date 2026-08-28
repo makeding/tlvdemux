@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 
 import {
   commonBufferedRanges,
-  createMseGapRecovery,
+  createMsePlaybackDamageRecovery,
   startMsePlayback,
-} from '../demo/mse-gap-recovery.mjs';
+} from '../mse-playback.mjs';
 
 const queue = ranges => ({bufferedRanges: () => ranges});
 const queues = (video, audio) => new Map([
@@ -91,7 +91,7 @@ const media = currentTime => ({
   ]);
   const player = media(46);
   const jumps = [];
-  const recovery = createMseGapRecovery({
+  const recovery = createMsePlaybackDamageRecovery({
     media: player,
     seek: target => {
       jumps.push(target);
@@ -110,7 +110,7 @@ const media = currentTime => ({
   const jumps = [];
   let currentVideoTrackId = 2;
   let switchInFlight = false;
-  const recovery = createMseGapRecovery({
+  const recovery = createMsePlaybackDamageRecovery({
     media: player,
     isCurrentLayer: damage => damage.videoTrackId === currentVideoTrackId,
     switchInFlight: () => switchInFlight,

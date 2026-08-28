@@ -167,6 +167,9 @@ tester にしません。
 
 ## ライブラリの使い方
 
+残る共通 browser playback behavior を public SDK へ移す段階的な計画は
+[Browser playback SDK 集約計画](docs/browser-sdk-roadmap.ja.md) に記載しています。
+
 browser integration は demo の probe logic を複製せず、録画 seek coordinator を import します。
 
 ```js
@@ -694,12 +697,12 @@ fallback します。
 demo は意図的に小さく保った fMP4／MSE layer を持ち、実行時には mmts.js に依存
 しません。ただし、ブラウザー側の HEVC MSE 対応は必要です。
 
-demux と fMP4 remux は `demo/demux-worker-runtime.js` で実行されます。main thread は
+demux と fMP4 remux は public `worker/demux-worker-runtime.js` で実行されます。main thread は
 transferable buffer として input chunk を送り、MSE init segment、media segment、
 subtitle payload、application file、小さな control event だけを受け取ります。
-`demo/worker-tlvdemux.js` が RPC facade を担い、`demo/demux-worker-protocol.js` が
-共有 message name を定義します。この 3 つの責務を分離することで、player UI、
-transport protocol、worker 側の demux lifecycle を個別に変更できます。
+`worker-tlvdemux.mjs` が RPC facade を担い、`worker/demux-worker-runtime.js` は consumer の
+Worker loader でも bundle できる自己完結した classic Worker entry です。UI をこの public pair の外に
+置くため、RPC と worker 側 demux lifecycle を複製せず presentation を変更できます。
 
 再現可能な WASM throughput benchmark は次のように実行します。
 

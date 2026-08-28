@@ -3,23 +3,26 @@ import {
   automaticLayerSwitchEnabled,
   audioSelectionIdentity,
   audioTrackChoices,
+  configureAutomaticLayerPair,
   correspondingAudioTrack,
   resolveAudioSelection,
   sameVideoLayerGroup,
   selectionLevel,
   shouldReprobeVideoLayerForSeek,
-} from '../demo/asset-groups.mjs';
+  currentMptTracks,
+  resolveLayerPair,
+} from '../track-selection.mjs';
 
 const track = (packetId, groups, componentTag = packetId & 0xff) => ({
-  kind: 'audio', contextId: 1, packetId, componentTag, assetGroups: groups.map(
+  kind: 'audio', trackId: BigInt(packetId), contextId: 1, packetId, componentTag, assetGroups: groups.map(
   ([groupIdentification, selectionLevel]) => ({groupIdentification, selectionLevel}),
 )});
 
-const videoHigh = {kind: 'video', contextId: 1, packetId: 0xf300, componentTag: 0,
+const videoHigh = {kind: 'video', trackId: 1n, contextId: 1, packetId: 0xf300, componentTag: 0,
   assetGroups: [{groupIdentification: 0x00, selectionLevel: 0}]};
-const videoLow = {kind: 'video', contextId: 1, packetId: 0xf301, componentTag: 1,
+const videoLow = {kind: 'video', trackId: 2n, contextId: 1, packetId: 0xf301, componentTag: 1,
   assetGroups: [{groupIdentification: 0x00, selectionLevel: 1}]};
-const videoBase = {kind: 'video', contextId: 1, packetId: 0xf302, componentTag: 0,
+const videoBase = {kind: 'video', trackId: 3n, contextId: 1, packetId: 0xf302, componentTag: 0,
   assetGroups: []};
 const audioMainHigh = track(0xf310, [[0x10, 0]]);
 const audioSubHigh = track(0xf311, [[0x11, 0]]);
@@ -93,5 +96,35 @@ const ordinaryAudio = track(0xf320, []);
 assert.deepEqual(audioTrackChoices([ordinaryAudio]), [
   {track: ordinaryAudio, groupIdentification: null},
 ]);
+
+assert.deepEqual(currentMptTracks([videoHigh, videoLow], [videoLow]), [videoLow]);
+assert.deepEqual(resolveLayerPair(
+  [videoHigh, videoLow, audioMainHigh, audioMainLow], videoLow, audioMainLow,
+), {
+  preferred: {video: videoHigh, audio: audioMainHigh, groupIdentification: 0x10},
+  fallback: {video: videoLow, audio: audioMainLow, groupIdentification: 0x10},
+});
+
+const operations = [];
+const demuxer = {
+  configureAutomaticLayerSwitch: (...ids) => operations.push(['configure', ...ids]),
+  clearAutomaticLayerSwitch: () => operations.push(['clear']),
+};
+const pair = resolveLayerPair(
+  [videoHigh, videoLow, audioMainHigh, audioMainLow], videoLow, audioMainLow,
+);
+const signature = await configureAutomaticLayerPair(demuxer, pair, null);
+assert.equal(signature, `1:${audioMainHigh.trackId}:2:${audioMainLow.trackId}`);
+assert.deepEqual(operations, [[
+  'configure', videoHigh.trackId, audioMainHigh.trackId,
+  videoLow.trackId, audioMainLow.trackId,
+]]);
+assert.equal(await configureAutomaticLayerPair(demuxer, pair, signature), signature);
+assert.equal(operations.length, 1, 'unchanged automatic layer pair was reconfigured');
+assert.equal(await configureAutomaticLayerPair(demuxer, null, signature), 'unavailable');
+assert.deepEqual(operations.at(-1), ['clear']);
+assert.equal(await configureAutomaticLayerPair(demuxer, pair, 'unavailable', {manual: true}),
+  'disabled');
+assert.deepEqual(operations.at(-1), ['clear']);
 
 console.log('asset group selection test passed');

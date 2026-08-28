@@ -48,6 +48,32 @@
       "import": "./mse-playback.mjs",
       "default": "./mse-playback.mjs"
     },
+    "./mse-output-pipeline": {
+      "types": "./mse-output-pipeline.d.ts",
+      "import": "./mse-output-pipeline.mjs",
+      "default": "./mse-output-pipeline.mjs"
+    },
+    "./track-selection": {
+      "types": "./track-selection.d.ts",
+      "import": "./track-selection.mjs",
+      "default": "./track-selection.mjs"
+    },
+    "./stream-input": {
+      "types": "./stream-input.d.ts",
+      "import": "./stream-input.mjs",
+      "default": "./stream-input.mjs"
+    },
+    "./recorded-source": {
+      "types": "./recorded-source.d.ts",
+      "import": "./recorded-source.mjs",
+      "default": "./recorded-source.mjs"
+    },
+    "./worker-client": {
+      "types": "./worker-tlvdemux.d.ts",
+      "import": "./worker-tlvdemux.mjs",
+      "default": "./worker-tlvdemux.mjs"
+    },
+    "./worker/demux-worker-runtime.js": "./worker/demux-worker-runtime.js",
     "./hlg-sdr-renderer": {
       "types": "./hlg-sdr-renderer.d.ts",
       "import": "./hlg-sdr-renderer.mjs",
@@ -58,6 +84,8 @@
   "files": [
     "dist/",
     "docs/performance.md",
+    "docs/browser-sdk-roadmap.md",
+    "docs/browser-sdk-roadmap.ja.md",
     "index.d.ts",
     "hlg-sdr-renderer.d.ts",
     "hlg-sdr-renderer.mjs",
@@ -65,6 +93,17 @@
     "mse-append-queue.mjs",
     "mse-playback.d.ts",
     "mse-playback.mjs",
+    "mse-output-pipeline.d.ts",
+    "mse-output-pipeline.mjs",
+    "track-selection.d.ts",
+    "track-selection.mjs",
+    "stream-input.d.ts",
+    "stream-input.mjs",
+    "recorded-source.d.ts",
+    "recorded-source.mjs",
+    "worker-tlvdemux.d.ts",
+    "worker-tlvdemux.mjs",
+    "worker/",
     "README.md",
     "README.ja.md",
     "LICENSE"
@@ -81,7 +120,7 @@
     "test:layer-sample": "node tests/wasm_layer_switch_sample.mjs dist/tlvdemux.js demo/audiotrack.tlv",
     "test:rain-startup-flow": "node tests/wasm_startup_flow_control_sample.mjs dist/tlvdemux.js demo/rain.tlv",
     "test:rain-seek": "node tests/wasm_seek_smoke.mjs dist/tlvdemux.js demo/rain.tlv 60 200 380",
-    "test": "node tests/live_stream_coalescing.mjs && node tests/mse_append_queue.mjs && node tests/mse_gap_recovery.mjs && node tests/mse_playback_flow_control.mjs && node tests/mse_recorded_seek.mjs && node tests/worker_result_value.mjs && node tests/worker_track_selection.mjs && node tests/asset_group_selection.mjs && node tests/subtitle_track_selection.mjs && node tests/hlg_sdr_lut.mjs dist/tlvdemux.js && node tests/hlg_sdr_renderer.mjs && node tests/wasm_smoke.mjs dist/tlvdemux.js && node tests/wasm_transport_metadata.mjs dist/tlvdemux.js",
+    "test": "node tests/live_stream_coalescing.mjs && node tests/recorded_source.mjs && node tests/mse_append_queue.mjs && node tests/mse_output_pipeline.mjs && node tests/mse_gap_recovery.mjs && node tests/mse_playback_flow_control.mjs && node tests/mse_recorded_seek.mjs && node tests/worker_result_value.mjs && node tests/worker_track_selection.mjs && node tests/asset_group_selection.mjs && node tests/subtitle_track_selection.mjs && node tests/hlg_sdr_lut.mjs dist/tlvdemux.js && node tests/hlg_sdr_renderer.mjs && node tests/wasm_smoke.mjs dist/tlvdemux.js && node tests/wasm_transport_metadata.mjs dist/tlvdemux.js",
     "prepack": "npm run build && npm test"
   }
 }

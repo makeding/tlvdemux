@@ -10,9 +10,8 @@ of per-access-unit callbacks on the UI thread.
 
 | Area | Owner | Responsibility |
 | --- | --- | --- |
-| Worker message constants | `demo/demux-worker-protocol.js` | Stable RPC and event names shared by both sides. |
-| Main-thread facade | `demo/worker-tlvdemux.js` | Promise correlation, transferable input, callback dispatch, and application-entry cache. |
-| Worker lifecycle | `demo/demux-worker-runtime.js` | One WASM module, probe/demux instances, track selection, resource draining, and event filtering. |
+| Main-thread facade | `worker-tlvdemux.mjs` | Promise correlation, transferable input, callback dispatch, and application/resource caches. |
+| Worker lifecycle | `worker/demux-worker-runtime.js` | Self-contained protocol, one WASM module, probe/demux instances, track selection, resource draining, and event filtering. |
 | MSE orchestration | `wasm/mse_remuxer.cpp` | Per-track state, timestamps, discontinuities, and segment emission. |
 | MP4 construction | `src/mse/mp4_builder.*` | Init/media boxes and single-pass `moof`/`mdat` output assembly. |
 | HEVC parsing | `src/mse/hevc_parser.*` | Annex-B NAL views, SPS metadata, and `hvcC`. |

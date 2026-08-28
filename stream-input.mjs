@@ -20,12 +20,10 @@ export async function* coalesceReadableStream(reader, {
   if (!Number.isFinite(maxDelayMilliseconds) || maxDelayMilliseconds < 0) {
     throw new TypeError('maxDelayMilliseconds must be a non-negative number');
   }
-
   let pendingRead = reader.read();
   let chunks = [];
   let chunkBytes = 0;
   let flushDeadline = 0;
-
   const flush = () => {
     const output = joinChunks(chunks, chunkBytes);
     chunks = [];
@@ -33,27 +31,23 @@ export async function* coalesceReadableStream(reader, {
     flushDeadline = 0;
     return output;
   };
-
   try {
     while (true) {
       let result;
       if (chunkBytes === 0) {
-        result = { kind: 'read', value: await pendingRead };
+        result = {kind: 'read', value: await pendingRead};
       } else {
         const remaining = Math.max(0, flushDeadline - now());
         result = await Promise.race([
-          pendingRead.then(value => ({ kind: 'read', value })),
-          new Promise(resolve => setTimeout(
-            () => resolve({ kind: 'deadline' }), remaining,
-          )),
+          pendingRead.then(value => ({kind: 'read', value})),
+          new Promise(resolve => setTimeout(() => resolve({kind: 'deadline'}), remaining)),
         ]);
       }
       if (result.kind === 'deadline') {
         yield flush();
         continue;
       }
-
-      const { done, value } = result.value;
+      const {done, value} = result.value;
       if (done) {
         if (chunkBytes !== 0) yield flush();
         break;
