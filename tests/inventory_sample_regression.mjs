@@ -21,6 +21,7 @@ const samples = [
   {path: 'demo/audiotrack.tlv', size: 173162496, duration: '60.744010', layers: true},
   {path: 'demo/bsp4k-lag-1.mmts', size: 162234368, duration: '41.739360'},
   {path: 'demo/bsp4k.mmts', size: 1356746752, duration: '451.934827'},
+  {path: 'demo/rain-2.tlv', size: 434642944, duration: '151.328227'},
   {path: 'demo/rain.tlv', size: 745869312, duration: '415.519422', rain: true},
   {path: 'demo/test.tlv', size: 67211264, duration: '18.968938', subtitles: true},
   {path: 'test.tlv', size: 66142023, duration: '19.090088', subtitles: true},
