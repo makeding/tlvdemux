@@ -5,6 +5,17 @@
 > labelled **legacy `tlvdemux` implementation**; this is a historical name,
 > not a separate product line.
 
+## [0.3.3] - 2026-08-28
+
+- Define the automatic dual-video recording timeline as the union of the
+  preferred and rainfall presentation ranges, expose its start and end, and use
+  the same origin for duration, startup, explicit seek, and MSE timestamps.
+- Execute a concrete selected-layer playback-damage seek exactly once, while
+  retaining damage found during prefetch until playback reaches it or stalls.
+- Keep AAC output continuous across recoverable source damage and prevent video
+  damage from resetting an independent audio timeline, avoiding Chromium
+  `DEMUXER_UNDERFLOW` on the captured recording.
+
 ## [0.3.2] - 2026-08-28
 
 - Atomically map a fresh recorded playback's first common A/V interval to

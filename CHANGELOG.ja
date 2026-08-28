@@ -4,6 +4,17 @@
 > プロジェクトで `tlvdemux` 名前空間を使用していました。該当項目は
 > **旧 `tlvdemux` 実装**と表記します。これは別製品ではなく、歴史上の名称です。
 
+## [0.3.3] - 2026-08-28
+
+- 自動 dual-video 録画の timeline を preferred／降雨 video の presentation range の
+  和集合として定義し、その start／end を公開して、duration、startup、明示 seek、
+  MSE timestamp に同一の origin を使用するよう修正しました。
+- 現在選択中の layer に concrete な playback-damage seek がある場合は一度だけ実行し、
+  prefetch 中に検出した damage は playback が到達または stall するまで保持するようにしました。
+- 回復可能な source damage をまたいでも AAC output を連続させ、video damage が独立した
+  audio timeline を reset しないようにして、captured recording で発生していた Chromium の
+  `DEMUXER_UNDERFLOW` を解消しました。
+
 ## [0.3.2] - 2026-08-28
 
 - fresh recorded playback の最初の共通 A/V 区間を、どちらの SourceBuffer も install

@@ -4,6 +4,15 @@
 > `tlvdemux` 命名空间。相关条目以 **旧 `tlvdemux` 实现** 标记；这只是历史名称，
 > 并非独立产品线。
 
+## [0.3.3] - 2026-08-28
+
+- 将自动双视频录制的时间线定义为首选轨与降雨轨 presentation range 的并集，公开其
+  start/end，并让时长、起播、显式 seek 与 MSE timestamp 共用同一个时间原点。
+- 当前选中层存在明确的 playback-damage seek 时仅执行一次；prefetch 阶段发现的 damage
+  会保留到播放抵达该区间或发生停顿后再触发。
+- 在可恢复的 source damage 前后保持 AAC output 连续，并阻止视频损坏重置独立音频
+  timeline，修复所提供录制在 Chromium 中触发的 `DEMUXER_UNDERFLOW`。
+
 ## [0.3.2] - 2026-08-28
 
 - 在安装任一 SourceBuffer 前，将 fresh recorded playback 的首个公共 A/V 区间原子映射到
