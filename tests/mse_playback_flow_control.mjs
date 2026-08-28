@@ -32,6 +32,32 @@ const queue = ranges => ({
 }
 
 {
+  const media = {
+    currentTime: 0,
+    playCount: 0,
+    play() { this.playCount += 1; return Promise.resolve(); },
+  };
+  const video = queue([]);
+  const audio = queue([{start: 0, end: 16}]);
+  const queues = new Map([['video', video], ['audio', audio]]);
+  const flow = createMsePlaybackFlowControl({
+    media, queues, requiredTracks: ['audio'],
+    wait: async () => { media.currentTime = 9; },
+  });
+  assert.deepEqual(flow.entryRange(), {start: 0, end: 16},
+    'audio-only entry waited for an empty video queue');
+  await flow.afterPush(2 * 1024 * 1024);
+  assert.equal(flow.commonAhead(), 7,
+    'audio-only backpressure did not use the audio clock/range');
+  const started = startMsePlayback({media, queues, requiredTracks: ['audio']});
+  assert.ok(started, 'audio-only playback did not start from an audio range');
+  assert.equal(media.playCount, 1);
+  flow.setRequiredTracks(['video', 'audio']);
+  assert.equal(flow.entryRange(), null,
+    'restored A/V flow did not resume strict video/audio intersection');
+}
+
+{
   const media = {currentTime: 0};
   const queues = new Map([
     ['video', queue([{start: 0, end: 4}])],

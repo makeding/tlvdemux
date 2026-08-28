@@ -226,6 +226,31 @@ SourceBuffer の前進を転送するだけにします。提示 frame callback 
 の再実行、source scan、A/V layer switch との並行実行は禁止します。parser 観測済み RAP を伴わない
 buffered range、非選択 layer の damage、通常の `waiting`、`wait-for-recovery` だけでは seek を許可しません。
 
+選択映像が、parser で観測した相異なる厳密前方の実在 recovery RAP を 3 回試しても新しい frame を
+提示できない場合、public playback resilience controller は安定 code `TLV_VIDEO_UNAVAILABLE` とともに
+`audio-only` へ入ります。これは `audio-video`、`recovering-video`、`restoring-video` と並ぶ独立 mode で、
+`PlaybackDamage.action` や severity threshold は変更しません。現在 layer の damage authorization、各 RAP
+試行後の因果関係がある `waiting`、新しい提示映像がないことのすべてを必須にします。通常の waiting、
+user pause、明示 seek、layer／audio track 切替、古い generation、非選択映像の damage では audio-only に
+してはいけません。
+
+audio-only 中は MSE の required track set を audio に変更し、startup、buffer coverage、backpressure、
+recorded-seek landing は video SourceBuffer を待ちません。非 active video output は即時破棄し、無制限の
+transition cache を作りません。runtime の in-place 切替は video SourceBuffer が実際に
+`activeSourceBuffers` から外れたことを観測した場合だけ成功とし、それ以外は新しい audio-only
+MediaSource を構築します。録画 rebuild は public index／seek session と一つの 16 MiB read budget を
+再利用します。Live は replacement audio pipeline が再生可能になるまで現在 input を有界に保持し、
+再接続や既存 audio pipeline の停止を行いません。transition 中の正準 clock は常に audio です。
+
+audio-only 再生中は audio clock より厳密に後の各実在 RAP を一度だけ restore 候補にできます。共通 A/V
+candidate が buffer 済みとなり、`requestVideoFrameCallback()` がその RAP 以後の frame の実提示を証明する
+まで `restoring-video` を維持します。candidate failure は現在の audio 再生を残して `audio-only` へ戻り、
+後続 RAP を待ちます。同じ RAP の再試行、後方 seek、user pause を上書きする `play()` は禁止します。
+明示 seek、track／layer 選択、generation replacement、source end は transition を中止します。demo は
+固定された video-stage slot に SDK の structured mode を表示し、retry count や timer を見せず、
+「映像を復旧できないため、音声のみ再生しています。利用可能になり次第、自動的に戻ります。
+[TLV_VIDEO_UNAVAILABLE]」と表示します。
+
 復旧可能な AAC source-damage marker は、既に queue 済みの audio を捨てたり、選択 audio の
 fragment timeline を再開始したりしてはいけません。欠落 AAC frame は次の 1024-sample 境界へ
 詰め、後続 fragment を連続させます。そうしない場合、映像が buffered 済みでも Chromium は

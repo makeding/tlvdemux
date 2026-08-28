@@ -138,4 +138,67 @@ for (const landingRanges of [
   assert.equal(requests.length, 1, 'a superseded seek issued another source request');
 }
 
+{
+  const media = {currentTime: 50};
+  const audio = queue();
+  const queues = new Map([['audio', audio]]);
+  const requests = [];
+  let position = 0n;
+  let session;
+  const source = {
+    size: 32n * BigInt(MiB),
+    async read(offset, length) {
+      requests.push({offset, length});
+      return new Uint8Array(Number(length));
+    },
+  };
+  const audioTrack = {kind: 'audio', codec: 'aac-latm', trackId: 2};
+  const demuxer = {
+    async setMseOutputEnabled() { return true; },
+    async setIndexDuration() { return true; },
+    async estimateOffset() { return 16n * BigInt(MiB); },
+    async setMseTimestampOffset() {},
+    async reposition(offset) { position = offset; return true; },
+    async push(data) {
+      session.observeTrack(audioTrack);
+      if (session.phase === 'head') {
+        session.observeAccessUnit({
+          codec: 'aac-latm', trackId: 2, ptsValue: 0n, ptsTimescale: 1_000_000,
+          randomAccess: false, restartOffset: 0n,
+        });
+      } else if (session.phase === 'probe') {
+        for (const ptsValue of [51_900_000n, 52_100_000n]) {
+          session.observeAccessUnit({
+            codec: 'aac-latm', trackId: 2, ptsValue, ptsTimescale: 1_000_000,
+            randomAccess: false, restartOffset: position,
+          });
+        }
+      } else if (session.phase === 'landing') {
+        audio.ranges = [{start: 49.9, end: 52}];
+      }
+      position += BigInt(data.byteLength);
+      return true;
+    },
+  };
+  session = createMseRecordedSeekSession({
+    targetTimeSeconds: 50,
+    source,
+    durationUs: 100_000_000n,
+    presentationStartUs: 2_000_000n,
+    presentationEndUs: 102_000_000n,
+    demuxer,
+    media,
+    queues,
+    requiredTracks: ['audio'],
+    headReady: () => requests.length > 0,
+    chunkBytes: MiB,
+  });
+  const result = await session.run();
+  assert.equal(result.rapPresentationTimeUs, 51_900_000n,
+    'audio-only recorded entry waited for a video RAP');
+  assert.ok(result.bytesRead <= BigInt(MSE_SEEK_READ_BUDGET_BYTES));
+  assert.equal(requests.reduce((sum, request) => sum + request.length, 0n), result.bytesRead,
+    'audio-only recorded entry exceeded its shared source-read accounting');
+}
+
 console.log('MSE recorded seek tests passed');

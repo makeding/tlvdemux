@@ -53,6 +53,12 @@ recorded/live entry gating、selected-layer playback damage recovery、live inpu
 `PlaybackDamage.action === "seek"`、既存 live-start rule だけです。subtitle rendering と
 data-broadcast DOM は consumer の責任です。
 
+同じ public batch が video-unavailable resilience を所有します。相異なる前方 RAP を 3 回試しても新しい
+提示 frame がない場合は required track set を audio にし、audio clock を進め、後続 RAP の実提示 frame
+だけで video を復帰できます。SourceBuffer の in-place 非 active 化は runtime probe 済み optimization、
+新しい audio-only／A/V MediaSource への置換を portable path とします。録画置換は 16 MiB seek budget を
+共有し、Live 置換は有界 input fan-out を使い、demo は structured mode／error event だけを表示します。
+
 ## Release／migration 順序
 
 各 batch は public implementation と contract test -> demo reference consumer -> package release ->

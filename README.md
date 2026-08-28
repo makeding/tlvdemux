@@ -273,6 +273,40 @@ source, or run concurrently with an A/V layer switch. A buffered range without
 a parser-observed RAP, damage on an inactive layer, ordinary `waiting`, and
 `wait-for-recovery` never authorize a seek.
 
+When the selected video remains unpresentable after three different,
+strictly-forward, parser-observed recovery RAP attempts, the public playback
+resilience controller enters `audio-only` with the stable code
+`TLV_VIDEO_UNAVAILABLE`. This is a fourth playback mode beside
+`audio-video`, `recovering-video`, and `restoring-video`; it does not change
+`PlaybackDamage.action` or its severity thresholds. A current-layer damage
+authorization, a causal `waiting` after each attempted RAP, and the absence of
+a newly presented video frame are all required. Ordinary waiting, a paused
+MediaElement, an explicit seek, a layer/audio-track switch, stale generation,
+or damage on an inactive video track must never enter audio-only playback.
+
+Audio-only playback changes the MSE required-track set to audio, so startup,
+buffer coverage, backpressure, and recorded-seek landing do not wait for the
+video SourceBuffer. Inactive video output is discarded immediately and never
+forms an unbounded transition cache. A runtime in-place switch is accepted only
+after the video SourceBuffer is actually absent from `activeSourceBuffers`;
+otherwise the integration must build a fresh audio-only MediaSource. Recorded
+rebuilds reuse the public index/seek session and its single 16 MiB read budget.
+Live integrations retain bounded current input while the replacement audio
+pipeline becomes playable; they must not reconnect or stop feeding the existing
+audio pipeline. The audio clock remains authoritative throughout the transition.
+
+While audio-only playback continues, each real RAP strictly after the audio
+clock is eligible for one restore attempt. Restoration stays in
+`restoring-video` until a common A/V candidate is buffered and
+`requestVideoFrameCallback()` proves a frame at or after that RAP was actually
+presented. A failed candidate leaves the current audio playback untouched and
+returns to `audio-only` to await a later RAP; it must not seek backward, repeat a
+RAP, or call `play()` over a user pause. Explicit seek, track/layer selection,
+generation replacement, and source end cancel the transition. The demo renders
+these structured SDK modes in a fixed video-stage slot and shows
+“映像を復旧できないため、音声のみ再生しています。利用可能になり次第、自動的に戻ります。
+[TLV_VIDEO_UNAVAILABLE]” without exposing retry counts or timers.
+
 Recoverable AAC source-damage markers must not discard already queued audio or
 restart the selected audio fragment timeline. Missing AAC frames are compacted
 onto the next 1024-sample boundary so subsequent fragments remain contiguous;

@@ -97,6 +97,15 @@ Acceptance: no hidden seek, no recovery from an unselected layer, generation
 and restart races cancel cleanly, live coalescing is bounded, and error codes
 remain visible to the consumer.
 
+The same public batch owns video-unavailable resilience. After three distinct
+forward RAP attempts with no newly presented frame it may switch the required
+track set to audio, keep the audio clock moving, and restore only after a later
+RAP produces an actual presented frame. In-place SourceBuffer deactivation is a
+runtime-probed optimization; fresh audio-only/A/V MediaSource replacement is the
+portable path. Recorded replacement shares the 16 MiB seek budget, live
+replacement uses bounded input fan-out, and the demo only renders structured
+mode/error events.
+
 ## Release and migration order
 
 Each batch follows: public implementation and contract tests -> demo reference

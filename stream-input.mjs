@@ -68,3 +68,45 @@ export async function* coalesceReadableStream(reader, {
     reader.releaseLock();
   }
 }
+
+/**
+ * Fans each live input chunk to the current playback consumer and, while a
+ * transition is armed, one candidate consumer. No media is retained between
+ * calls: candidate backpressure is awaited and failure detaches only the
+ * candidate, leaving the current playback input uninterrupted.
+ */
+export function createBoundedLiveTransitionInput({
+  pushActive,
+  onCandidateFailure = () => {},
+}) {
+  if (typeof pushActive !== 'function') throw new TypeError('pushActive is required');
+  let candidate = null;
+  let generation = 0;
+  return {
+    get candidateActive() { return candidate !== null; },
+    beginCandidate(pushCandidate) {
+      if (typeof pushCandidate !== 'function') throw new TypeError('pushCandidate is required');
+      generation += 1;
+      candidate = {push: pushCandidate, generation};
+      return generation;
+    },
+    cancelCandidate(candidateGeneration = generation) {
+      if (candidate?.generation !== candidateGeneration) return false;
+      candidate = null;
+      return true;
+    },
+    async push(data) {
+      await pushActive(data);
+      const pending = candidate;
+      if (!pending) return {active: true, candidate: false};
+      try {
+        await pending.push(data);
+        return {active: true, candidate: candidate?.generation === pending.generation};
+      } catch (error) {
+        if (candidate?.generation === pending.generation) candidate = null;
+        onCandidateFailure(error, pending.generation);
+        return {active: true, candidate: false, candidateError: error};
+      }
+    },
+  };
+}

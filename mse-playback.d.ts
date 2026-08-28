@@ -2,7 +2,17 @@ import type {MseAppendQueue, MseBufferedRange} from './mse-append-queue';
 
 export declare const MSE_STARTUP_NO_COMMON_AV: 'MSE_STARTUP_NO_COMMON_AV';
 export declare const MSE_SEEK_NO_COMMON_AV: 'MSE_SEEK_NO_COMMON_AV';
+export declare const TLV_VIDEO_UNAVAILABLE: 'TLV_VIDEO_UNAVAILABLE';
 export declare const MSE_SEEK_READ_BUDGET_BYTES: 16777216;
+export type MseRequiredTrack = 'video' | 'audio';
+export type MsePlaybackModeValue =
+  | 'audio-video' | 'recovering-video' | 'audio-only' | 'restoring-video';
+export declare const MsePlaybackMode: Readonly<{
+  AUDIO_VIDEO: 'audio-video';
+  RECOVERING_VIDEO: 'recovering-video';
+  AUDIO_ONLY: 'audio-only';
+  RESTORING_VIDEO: 'restoring-video';
+}>;
 
 export declare class MseStartupBufferError extends Error {
   readonly code: typeof MSE_STARTUP_NO_COMMON_AV;
@@ -27,6 +37,7 @@ export type MsePlaybackQueues = Map<string, Pick<
 export interface MsePlaybackFlowControlOptions {
   media: MseMediaClock;
   queues: MsePlaybackQueues;
+  requiredTracks?: readonly MseRequiredTrack[];
   entryKind?: 'startup' | 'live' | 'seek';
   entryTimeSeconds?: number;
   entryToleranceSeconds?: number;
@@ -41,6 +52,10 @@ export interface MsePlaybackFlowControlOptions {
 export interface MsePlaybackFlowControl {
   readonly entryKind: 'startup' | 'live' | 'seek';
   readonly entryTimeSeconds: number;
+  readonly requiredTracks: MseRequiredTrack[];
+  setRequiredTracks(
+    requiredTracks: readonly MseRequiredTrack[], entryTimeSeconds?: number,
+  ): MseRequiredTrack[];
   entryRange(): MseBufferedRange | null;
   entryCovered(): boolean;
   commonAhead(): number;
@@ -50,9 +65,12 @@ export interface MsePlaybackFlowControl {
   }>;
 }
 
-export declare function commonBufferedRanges(queues: MsePlaybackQueues): MseBufferedRange[];
+export declare function commonBufferedRanges(
+  queues: MsePlaybackQueues, requiredTracks?: readonly MseRequiredTrack[],
+): MseBufferedRange[];
 export declare function commonBufferedAhead(
   media: MseMediaClock, queues: MsePlaybackQueues, toleranceSeconds?: number,
+  requiredTracks?: readonly MseRequiredTrack[],
 ): number;
 export declare function createMsePlaybackFlowControl(
   options: MsePlaybackFlowControlOptions,
@@ -62,6 +80,7 @@ export declare function startMsePlayback(options: {
   queues: MsePlaybackQueues;
   liveMode?: boolean;
   minimumLiveBufferSeconds?: number;
+  requiredTracks?: readonly MseRequiredTrack[];
   play?: () => Promise<void>;
 }): {
   range: MseBufferedRange;
@@ -81,6 +100,7 @@ export declare function createMsePlaybackDamageRecovery(options: {
     cancelVideoFrameCallback?: (handle: number) => void;
   };
   presentationStartUs?: bigint;
+  observeFramesAutomatically?: boolean;
   isActive?: () => boolean;
   isCurrentLayer?: (damage: Record<string, unknown>) => boolean;
   switchInFlight?: () => boolean;
@@ -119,6 +139,70 @@ export declare function createMsePlaybackDamageRecovery(options: {
     [name: string]: unknown;
   }): {start: number; end: number} | null;
 };
+
+export interface MsePlaybackModeChange {
+  mode: MsePlaybackModeValue;
+  previousMode?: MsePlaybackModeValue;
+  generation: unknown;
+  code: typeof TLV_VIDEO_UNAVAILABLE | null;
+  reason?: string;
+  target?: number;
+  mediaTime?: number;
+  attemptedRaps?: number[];
+  unit?: Record<string, unknown>;
+  damage?: Record<string, unknown>;
+}
+
+export interface MsePlaybackResilienceController {
+  readonly mode: MsePlaybackModeValue;
+  readonly generation: unknown;
+  readonly attemptedRaps: number[];
+  readonly videoFrameObservationSupported: boolean;
+  reportDamage(damage: Record<string, unknown>): {start: number; end: number} | null;
+  notifyWaiting(): {start: number; end: number} | MsePlaybackModeChange | null;
+  notifyBufferedChange(): {start: number; end: number} | null;
+  observeAccessUnit(unit: {
+    codec: string;
+    trackId: bigint | number;
+    randomAccess: boolean;
+    ptsValue: bigint | number;
+    ptsTimescale: number;
+    [name: string]: unknown;
+  }): {start: number; end: number} | MsePlaybackModeChange | null;
+  observePresentedFrame(mediaTimeSeconds: number): number | null;
+  notifyVideoRestoreFailed(target?: number | null, reason?: string): MsePlaybackModeChange | null;
+  notifyExplicitSeek(nextGeneration?: unknown): MsePlaybackModeChange;
+  notifyTrackSwitch(nextGeneration?: unknown): MsePlaybackModeChange;
+  reset(nextGeneration?: unknown): MsePlaybackModeChange;
+  notifySourceEnded(): MsePlaybackModeChange;
+  destroy(): void;
+}
+
+export declare function createMsePlaybackResilienceController(options: {
+  media: MseMediaClock & {
+    seeking: boolean;
+    paused: boolean;
+    play(): Promise<void>;
+    buffered?: {length: number; start(index: number): number; end(index: number): number};
+    requestVideoFrameCallback?: (callback: (
+      now: number, metadata: {mediaTime: number; presentedFrames?: number},
+    ) => void) => number;
+    cancelVideoFrameCallback?: (handle: number) => void;
+  };
+  presentationStartUs?: bigint;
+  generation?: unknown;
+  initialMode?: 'audio-video' | 'audio-only';
+  maximumRecoveryAttempts?: number;
+  isActive?: () => boolean;
+  isCurrentLayer?: (damage: Record<string, unknown>) => boolean;
+  switchInFlight?: () => boolean;
+  isTargetBuffered?: (targetSeconds: number) => boolean;
+  seek: (targetSeconds: number, previousTimeSeconds: number, detail: Record<string, unknown>) => void;
+  onModeChange?: (event: MsePlaybackModeChange) => void;
+  onAudioOnlyRequested?: (event: MsePlaybackModeChange) => unknown | Promise<unknown>;
+  onVideoRestoreRequested?: (event: MsePlaybackModeChange) => unknown | Promise<unknown>;
+  onVideoRestored?: (event: MsePlaybackModeChange) => void;
+}): MsePlaybackResilienceController;
 
 export interface MseRecordedSource {
   size: bigint;
@@ -178,12 +262,16 @@ export interface MseRecordedSeekSessionOptions {
   demuxer: MseSeekDemuxer;
   media: MseMediaClock;
   queues: MsePlaybackQueues;
+  requiredTracks?: readonly MseRequiredTrack[];
   flowControl?: MsePlaybackFlowControl;
   signal?: AbortSignal | null;
   isActive?: () => boolean;
   headReady: () => boolean;
+  candidateTrack?: (track: MseSeekTrack) => boolean;
   candidateVideoTrack?: (track: MseSeekTrack) => boolean;
+  trackPriority?: (track: MseSeekTrack) => number;
   videoTrackPriority?: (track: MseSeekTrack) => number;
+  activateTrack?: (track: MseSeekTrack, rap: MseRecordedSeekRap) => unknown | Promise<unknown>;
   activateVideoTrack?: (track: MseSeekTrack, rap: MseRecordedSeekRap) => unknown | Promise<unknown>;
   beforeLanding?: (track: MseSeekTrack, rap: MseRecordedSeekRap) => unknown | Promise<unknown>;
   waitForAppends?: () => Promise<void>;

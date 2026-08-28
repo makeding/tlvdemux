@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   MSE_OUTPUT_PENDING_LIMIT_BYTES,
   createMseOutputPipeline,
+  setMseVideoTrackActive,
 } from '../mse-output-pipeline.mjs';
 
 class FakeQueue {
@@ -94,6 +95,53 @@ for (const type of ['audio', 'video']) {
     startTimeUs: 0n,
     endTimeUs: 1n,
   }), /initialization wait limit/);
+}
+
+{
+  const discarded = [];
+  const pipeline = createMseOutputPipeline({
+    mediaSource: {}, media: {}, mode: 'audio-only',
+    queueFactory(type, trackInit) { return new FakeQueue(type, trackInit); },
+    onInactiveOutput(event) { discarded.push(event); },
+  });
+  pipeline.onMseSegment(segment('video', 9, 0n, 1000000n));
+  pipeline.onMseInit(init('video', 8));
+  pipeline.onMseInit(init('audio', 2));
+  assert.deepEqual([...pipeline.queues.keys()], ['audio'],
+    'audio-only pipeline waited for or installed a video SourceBuffer');
+  pipeline.onMseSegment(segment('audio', 4));
+  assert.deepEqual(pipeline.queues.get('audio').operations, [
+    ['append', 2, null],
+    ['append', 4, {startTimeSeconds: 0, endTimeSeconds: 1}],
+  ]);
+  assert.equal(pipeline.pendingState().discardedBytes, 2,
+    'inactive video output was cached instead of bounded-discarded');
+  assert.deepEqual(discarded.map(event => event.kind), ['segment', 'init']);
+}
+
+{
+  const videoTrack = {selected: true};
+  const videoBuffer = {videoTracks: [videoTrack]};
+  const mediaSource = {sourceBuffers: [videoBuffer], activeSourceBuffers: [videoBuffer]};
+  const result = await setMseVideoTrackActive({
+    mediaSource, active: false,
+    settle: async () => { mediaSource.activeSourceBuffers = []; },
+  });
+  assert.equal(result.changed, true,
+    'observed activeSourceBuffers removal was not accepted');
+  assert.equal(result.requiresRebuild, false);
+}
+
+{
+  const videoTrack = {selected: true};
+  const videoBuffer = {videoTracks: [videoTrack]};
+  const mediaSource = {sourceBuffers: [videoBuffer], activeSourceBuffers: [videoBuffer]};
+  const result = await setMseVideoTrackActive({
+    mediaSource, active: false, settle: async () => {},
+  });
+  assert.equal(result.changed, false,
+    'track.selected mutation was mistaken for activeSourceBuffers success');
+  assert.equal(result.requiresRebuild, true);
 }
 
 for (const firstType of ['video', 'audio']) {

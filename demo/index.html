@@ -23,6 +23,7 @@
           <div id="broadcastVideoSurface" class="broadcast-video-surface">
             <div id="broadcastMediaPlane" class="broadcast-media-plane">
               <video id="video" controls playsinline muted></video>
+              <div id="videoRecoveryStatus" class="video-recovery-status" role="status"></div>
               <canvas id="hlgSdrWebGpuCanvas" class="hlg-sdr-canvas" aria-hidden="true" hidden></canvas>
               <canvas id="hlgSdrCanvas" class="hlg-sdr-canvas" aria-hidden="true" hidden></canvas>
               <div id="subtitleOverlay" class="subtitle-overlay" aria-live="off"></div>
@@ -182,6 +183,6 @@
   </main>
 
   <script src="/libaribhtml5/libaribhtml5.js"></script>
-  <script type="module" src="demo.js?v=damage-resume-v4"></script>
+  <script type="module" src="demo.js?v=audio-only-resilience-v1"></script>
 </body>
 </html>

@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 
-import { coalesceReadableStream } from '../stream-input.mjs';
+import {
+  coalesceReadableStream,
+  createBoundedLiveTransitionInput,
+} from '../stream-input.mjs';
 
 function bytes(length, value) {
   return new Uint8Array(length).fill(value);
@@ -83,5 +86,29 @@ await assert.rejects(
   },
   /targetBytes/,
 );
+
+{
+  const active = [];
+  const candidate = [];
+  const failures = [];
+  const input = createBoundedLiveTransitionInput({
+    pushActive: async data => active.push(data[0]),
+    onCandidateFailure: error => failures.push(error.message),
+  });
+  input.beginCandidate(async data => {
+    candidate.push(data[0]);
+    if (data[0] === 2) throw new Error('candidate failed');
+  });
+  await input.push(bytes(1, 1));
+  const failed = await input.push(bytes(1, 2));
+  await input.push(bytes(1, 3));
+  assert.deepEqual(active, [1, 2, 3],
+    'candidate failure interrupted the current live input');
+  assert.deepEqual(candidate, [1, 2],
+    'failed candidate continued receiving input');
+  assert.equal(input.candidateActive, false);
+  assert.equal(failed.candidate, false);
+  assert.deepEqual(failures, ['candidate failed']);
+}
 
 console.log('live stream coalescing tests passed');

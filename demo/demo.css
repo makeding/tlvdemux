@@ -112,6 +112,29 @@ h2 { font-size: 15px; }
   background: #080b09;
 }
 
+.video-recovery-status {
+  position: absolute;
+  z-index: 2;
+  left: 16px;
+  right: 16px;
+  bottom: 54px;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  padding: 9px 12px;
+  border: 1px solid rgba(255, 205, 107, .75);
+  border-radius: 8px;
+  color: #fff7df;
+  background: rgba(31, 25, 12, .88);
+  font-size: 12px;
+  line-height: 1.45;
+  pointer-events: none;
+}
+
+.video-recovery-status:empty {
+  visibility: hidden;
+}
+
 .hlg-sdr-canvas {
   position: absolute;
   z-index: 0;

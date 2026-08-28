@@ -15,9 +15,8 @@ import {
 import { coalesceReadableStream } from '../stream-input.mjs?v=public-stream-v1';
 import {
   commonBufferedRanges,
-  createMsePlaybackDamageRecovery,
   startMsePlayback,
-} from '../mse-playback.mjs?v=damage-resume-v4';
+} from '../mse-playback.mjs?v=audio-only-resilience-v1';
 import {
   createMsePlaybackFlowControl,
   createMseRecordedSeekSession,
@@ -26,7 +25,11 @@ import { createWorkerTlvDemuxModule } from '../worker-tlvdemux.mjs';
 import {
   MseAppendQueue,
 } from '../mse-append-queue.mjs?v=gap-recovery-v1';
-import {createMseOutputPipeline} from '../mse-output-pipeline.mjs?v=config-splice-v2';
+import {createMseOutputPipeline} from '../mse-output-pipeline.mjs?v=audio-only-resilience-v1';
+import {
+  MsePlaybackMode,
+  createDemoPlaybackResilience,
+} from './playback-resilience.js?v=audio-only-resilience-v1';
 import {
   RangeUnsupportedError,
   createBlobRecordedSource,
@@ -63,7 +66,7 @@ const elements = Object.fromEntries([
   'probeState', 'duration', 'videoColor', 'sourceSize', 'transferred', 'log',
   'video', 'mediaInfo', 'liveMode', 'videoTrack', 'audioTrack', 'subtitleTrack', 'subtitleOverlay',
   'toneMappingMode', 'hlgSdrCanvas', 'hlgSdrWebGpuCanvas',
-  'playbackNotice',
+  'playbackNotice', 'videoRecoveryStatus',
   'captionVisible', 'superimposeVisible',
   'broadcastViewport', 'broadcastVideoSurface', 'broadcastMediaPlane', 'broadcastFrame', 'dataRemote',
   'dataStatus', 'dataDetail', 'dataUrl',
@@ -640,7 +643,8 @@ function isTimeBuffered(time) {
 }
 
 async function playSource(source, probeResult, generation, startTimeSeconds = 0,
-                          liveMode = false, reuseMedia = false) {
+                          liveMode = false, reuseMedia = false,
+                          initialPlaybackMode = MsePlaybackMode.AUDIO_VIDEO) {
   const recordingDurationSeconds = liveMode ? Infinity : durationSeconds(probeResult.duration);
   const playbackRate = liveMode || recordingDurationSeconds < SHORT_RECORDING_THRESHOLD_SECONDS
     ? LIVE_PLAYBACK_RATE
@@ -731,6 +735,8 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   createSubtitleRenderer(liveMode);
 
   const queues = reuseMedia ? new Map(activeQueueByType) : new Map();
+  const requiredTracks = initialPlaybackMode === MsePlaybackMode.AUDIO_ONLY
+    ? ['audio'] : ['video', 'audio'];
   const tracks = new Map();
   let selectedVideo = null;
   let selectedVideoTrack = null;
@@ -759,6 +765,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const playbackFlow = createMsePlaybackFlowControl({
     media: elements.video,
     queues,
+    requiredTracks,
     entryKind: liveMode ? 'live' : startTimeSeconds > 0 ? 'seek' : 'startup',
     entryTimeSeconds: startTimeSeconds,
     highSeconds: FORWARD_BUFFER_HIGH_SECONDS,
@@ -767,10 +774,30 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     queueHighBytes: SOURCE_QUEUE_HIGH_BYTES,
   });
 
-  const gapRecovery = createMsePlaybackDamageRecovery({
+  let msePipeline = null;
+  let audioOnlyTransitionScheduled = false;
+  const scheduleRecordedRebuild = (mode, target) => {
+    if (audioOnlyTransitionScheduled || liveMode || generation !== runGeneration) return;
+    audioOnlyTransitionScheduled = true;
+    queueMicrotask(() => {
+      if (generation !== runGeneration) return;
+      appendLog(`${mode === MsePlaybackMode.AUDIO_ONLY ? '純音声' : 'A/V'} MediaSource を ` +
+        `${target.toFixed(3)}s から再構築します（seek 読み込み上限 16 MiB）`);
+      stopPlayback(true, false);
+      void loadAndPlay(target, false, false, mode);
+    });
+  };
+  const gapRecovery = createDemoPlaybackResilience({
     media: elements.video,
+    mediaSource,
+    queues,
+    playbackFlow,
+    pipeline: () => msePipeline,
     presentationStartUs,
-    isActive: () => generation === runGeneration,
+    generation,
+    initialMode: initialPlaybackMode,
+    liveMode,
+    isActive: () => generation === runGeneration && !suppressOutput,
     isCurrentLayer: damage => damage.videoTrackId === selectedVideo,
     switchInFlight: () => switchInFlight,
     seek: (target, previousTime, detail) => {
@@ -781,19 +808,29 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         ? '不明' : `${detail.lastPresentedTime.toFixed(3)}s`;
       appendLog(`${liveMode ? 'Live 復帰' : '再生不能区間をスキップ'} ` +
         `${previousTime.toFixed(3)}s -> ${target.toFixed(6)}s ` +
-        `(提示済み映像=${presented}, 最初の復旧RAP=${detail.firstRecoveryTime.toFixed(6)}s)`);
+          `(提示済み映像=${presented}, 最初の復旧RAP=${detail.firstRecoveryTime.toFixed(6)}s)`);
+    },
+    statusElement: elements.videoRecoveryStatus,
+    playbackStateElement: elements.probeState,
+    appendLog,
+    scheduleRecordedRebuild,
+    removeActiveVideoQueue(videoQueue) {
+      activeQueueByType.delete('video');
+      activeQueues = activeQueues.filter(queue => queue !== videoQueue);
     },
   });
   activeGapRecovery = gapRecovery;
 
   const maybeStartPlayback = () => {
-    if (generation !== runGeneration || queues.size < 2) return;
+    if (generation !== runGeneration ||
+        playbackFlow.requiredTracks.some(type => !queues.has(type))) return;
     if (played) return;
     const started = startMsePlayback({
       media: elements.video,
       queues,
       liveMode,
       minimumLiveBufferSeconds: LIVE_STARTUP_BUFFER_SECONDS,
+      requiredTracks: playbackFlow.requiredTracks,
     });
     if (!started) return;
     if (started.aligned) {
@@ -814,10 +851,11 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   };
   for (const queue of activeQueues) queue.onUpdateEnd = onMseUpdateEnd;
 
-  const msePipeline = createMseOutputPipeline({
+  msePipeline = createMseOutputPipeline({
     mediaSource,
     media: elements.video,
     queues,
+    requiredTracks,
     onUpdateEnd: onMseUpdateEnd,
     queueOptions: {
       backBufferSeconds: BACK_BUFFER_SECONDS,
@@ -926,7 +964,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   };
   const onMseLayerSwitchStarted = started => {
     try {
-      gapRecovery.reset();
+      gapRecovery.notifyTrackSwitch(generation);
       switchInFlight = true;
       const video = tracks.get(started.videoTrackId);
       const audio = tracks.get(started.audioTrackId);
@@ -1319,6 +1357,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   await demuxer.setMseOutputEnabled(!suppressOutput);
   activeDemuxer = demuxer;
   activeVideoSwitch = async (packetId, earliestUs = null) => {
+    gapRecovery.notifyTrackSwitch(generation);
     const track = knownVideoTracks.get(packetId);
     if (!track) throw new Error(`映像 packet_id=0x${packetId.toString(16)} は利用できません`);
     if (track.trackId === selectedVideo) return;
@@ -1386,6 +1425,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     await activeVideoSwitch(packetId);
   };
   activeAudioSwitch = async (packetId, groupIdentification = null, earliestUs = null) => {
+    gapRecovery.notifyTrackSwitch(generation);
     let track = [...tracks.values()].find(
       item => item.kind === 'audio' && item.packetId === packetId,
     );
@@ -1460,11 +1500,19 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       flowControl: playbackFlow,
       signal: activeController?.signal,
       isActive: () => generation === runGeneration,
-      headReady: () => selectedVideo !== null,
-      candidateVideoTrack: track => track.kind === 'video' &&
-        (track.trackId === selectedVideo || sameVideoLayerGroup(selectedVideoTrack, track)),
-      videoTrackPriority: track => selectionLevel(track) ?? 0xff,
+      requiredTracks,
+      headReady: () => requiredTracks.length === 1
+        ? selectedAudio !== null : selectedVideo !== null,
+      candidateTrack: track => requiredTracks.length === 1
+        ? track.kind === 'audio' && track.trackId === selectedAudio
+        : track.kind === 'video' &&
+          (track.trackId === selectedVideo || sameVideoLayerGroup(selectedVideoTrack, track)),
+      trackPriority: track => track.kind === 'video' ? selectionLevel(track) ?? 0xff : 0,
       activateVideoTrack: async track => {
+        if (requiredTracks.length === 1) {
+          if (track && track.trackId !== selectedAudio) selectAudioTrack(track);
+          return;
+        }
         if (!track || track.trackId === selectedVideo) return;
         selectedVideo = track.trackId;
         selectedVideoTrack = track;
@@ -1552,6 +1600,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     }
   }
   if (generation !== runGeneration) return;
+  gapRecovery.notifySourceEnded();
   await demuxer.flush();
   if (callbackError) throw callbackError;
   if (!liveMode) await demuxer.finalizeIndex();
@@ -1577,7 +1626,8 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
 }
 
 async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false,
-                           initialLoad = false) {
+                           initialLoad = false,
+                           initialPlaybackMode = MsePlaybackMode.AUDIO_VIDEO) {
   if (initialLoad) dataBroadcast.beginSession();
   if (!reuseMedia) {
     releaseMedia();
@@ -1611,6 +1661,7 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false,
   elements.mediaInfo.textContent = '準備中';
   elements.playbackNotice.hidden = true;
   elements.playbackNotice.textContent = '';
+  elements.videoRecoveryStatus.textContent = '';
   elements.log.textContent = '';
   try {
     let liveMode = elements.liveMode.checked;
@@ -1648,7 +1699,10 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false,
       elements.duration.textContent = formatDuration(probeResult.duration);
       appendLog(`再生時間 ${durationSeconds(probeResult.duration).toFixed(6)}s、検出読み込み ${formatBytes(probeResult.transferred)}`);
     }
-    await playSource(source, probeResult, generation, startTimeSeconds, liveMode, reuseMedia);
+    await playSource(
+      source, probeResult, generation, startTimeSeconds, liveMode, reuseMedia,
+      initialPlaybackMode,
+    );
   } catch (error) {
     if (generation !== runGeneration || error.name === 'AbortError') return;
     elements.probeState.textContent = '失敗';
@@ -1744,7 +1798,7 @@ elements.video.addEventListener('seeking', () => {
   const target = elements.video.currentTime;
   if (internalSeekTarget !== null && Math.abs(target - internalSeekTarget) < 0.1) return;
   internalSeekTarget = null;
-  activeGapRecovery?.reset();
+  activeGapRecovery?.notifyExplicitSeek(runGeneration);
   const currentVideoTrack = knownVideoTracks.get(selectedVideoPacketId);
   const automaticFallbackActive = shouldReprobeVideoLayerForSeek(
     currentVideoTrack, parsePacketId());

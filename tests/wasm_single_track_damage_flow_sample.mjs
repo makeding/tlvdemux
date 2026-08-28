@@ -3,7 +3,11 @@ import {closeSync, openSync, readSync, statSync} from 'node:fs';
 import {createRequire} from 'node:module';
 import {resolve} from 'node:path';
 
-import {createMsePlaybackDamageRecovery} from '../mse-playback.mjs';
+import {
+  MsePlaybackMode,
+  createMsePlaybackDamageRecovery,
+  createMsePlaybackResilienceController,
+} from '../mse-playback.mjs';
 
 const [modulePathArgument, samplePathArgument] = process.argv.slice(2);
 assert.ok(modulePathArgument && samplePathArgument,
@@ -266,6 +270,48 @@ try {
     'presented recovery video did not retire the 13-second authorization');
   repeatedStallRecovery.destroy();
 
+  const realForwardRaps = thirteenSecondRaps.slice(0, 4);
+  assert.equal(realForwardRaps.length, 4,
+    'sample exposed fewer than four real forward RAPs for audio-only resilience');
+  const resilienceMedia = {
+    currentTime: 13.245,
+    paused: false,
+    seeking: false,
+    play() { return Promise.resolve(); },
+    requestVideoFrameCallback() { return 1; },
+    cancelVideoFrameCallback() {},
+  };
+  const resilienceJumps = [];
+  const resilienceModes = [];
+  const resilience = createMsePlaybackResilienceController({
+    media: resilienceMedia,
+    presentationStartUs,
+    isCurrentLayer: damage => damage.videoTrackId === selectedVideo,
+    seek(target) {
+      resilienceJumps.push(target);
+      resilienceMedia.currentTime = target;
+    },
+    onModeChange(event) { resilienceModes.push(event.mode); },
+  });
+  resilience.reportDamage(thirteenSecondRecovery);
+  for (const item of realForwardRaps.slice(0, 3)) {
+    resilience.observeAccessUnit(item.unit);
+    resilience.notifyWaiting();
+  }
+  resilience.notifyWaiting();
+  assert.deepEqual(resilienceJumps.map(value => value.toFixed(6)),
+    realForwardRaps.slice(0, 3).map(item => item.mediaTime.toFixed(6)),
+    'sample did not attempt three distinct real forward RAPs before audio-only');
+  assert.equal(resilience.mode, MsePlaybackMode.AUDIO_ONLY,
+    'three failed sample RAPs did not enter audio-only');
+  resilience.observeAccessUnit(realForwardRaps[3].unit);
+  assert.equal(resilience.mode, MsePlaybackMode.RESTORING_VIDEO,
+    'the next real sample RAP did not begin video restoration');
+  resilience.observePresentedFrame(realForwardRaps[3].mediaTime);
+  assert.equal(resilience.mode, MsePlaybackMode.AUDIO_VIDEO,
+    'a real presented sample frame did not commit video restoration');
+  resilience.destroy();
+
   console.log(JSON.stringify({
     sample: samplePathArgument,
     bytesRead: bytesReadTotal,
@@ -283,6 +329,8 @@ try {
     },
     delayedJump: delayedJumps[0],
     repeatedStallJumps,
+    resilienceJumps,
+    resilienceModes,
     videoSegmentsNearFirstDamage: videoSegments.filter(segment =>
       segment.startTimeUs < shortRecovery.recoveryTimeUs + 1_000_000n &&
       segment.endTimeUs > shortRecovery.startTimeUs - 1_000_000n),

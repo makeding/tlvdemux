@@ -120,10 +120,11 @@
     "test:layer-sample": "node tests/wasm_layer_switch_sample.mjs dist/tlvdemux.js demo/audiotrack.tlv",
     "test:rain-startup-flow": "node tests/wasm_startup_flow_control_sample.mjs dist/tlvdemux.js demo/rain.tlv",
     "test:rain-seek": "node tests/wasm_seek_smoke.mjs dist/tlvdemux.js demo/rain.tlv 60 200 380",
+    "test:single-track-resilience": "node tests/wasm_single_track_damage_flow_sample.mjs dist/tlvdemux.js demo/20260828-141-020000_99332dc9-025e-4e76-afc4-e31c3d577059.mmts",
     "test:manual-auto-layer": "node tests/wasm_manual_auto_layer_sample.mjs dist/tlvdemux.js demo/audiotrack.tlv restore && node tests/wasm_manual_auto_layer_sample.mjs dist/tlvdemux.js demo/rain.tlv defer",
     "test:inventory-samples": "node tests/inventory_sample_regression.mjs",
     "test:inventory-samples:hardware": "node tests/inventory_sample_regression.mjs --hardware-only",
-    "test": "node tests/live_stream_coalescing.mjs && node tests/recorded_source.mjs && node tests/mse_append_queue.mjs && node tests/mse_output_pipeline.mjs && node tests/mse_gap_recovery.mjs && node tests/mse_playback_flow_control.mjs && node tests/mse_recorded_seek.mjs && node tests/worker_result_value.mjs && node tests/worker_track_selection.mjs && node tests/asset_group_selection.mjs && node tests/subtitle_track_selection.mjs && node tests/hlg_sdr_lut.mjs dist/tlvdemux.js && node tests/hlg_sdr_renderer.mjs && node tests/wasm_smoke.mjs dist/tlvdemux.js && node tests/wasm_transport_metadata.mjs dist/tlvdemux.js",
+    "test": "node tests/live_stream_coalescing.mjs && node tests/recorded_source.mjs && node tests/mse_append_queue.mjs && node tests/mse_output_pipeline.mjs && node tests/mse_gap_recovery.mjs && node tests/mse_playback_resilience.mjs && node tests/mse_playback_flow_control.mjs && node tests/mse_recorded_seek.mjs && node tests/demo_audio_only_contract.mjs && node tests/worker_result_value.mjs && node tests/worker_track_selection.mjs && node tests/asset_group_selection.mjs && node tests/subtitle_track_selection.mjs && node tests/hlg_sdr_lut.mjs dist/tlvdemux.js && node tests/hlg_sdr_renderer.mjs && node tests/wasm_smoke.mjs dist/tlvdemux.js && node tests/wasm_transport_metadata.mjs dist/tlvdemux.js",
     "prepack": "npm run build && npm test"
   }
 }
