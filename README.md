@@ -173,6 +173,18 @@ unavailable, or the existing live-start policy may change the playback position.
 The demo reports that unchanged media clock to the core for recovery decisions;
 this is observation, not a seek.
 
+Before a fresh recorded SourceBuffer pair is created, the demo enables atomic
+entry alignment in `createMseOutputPipeline()`. The pipeline stages both init
+segments and their first media segments until it finds the earliest common A/V
+source interval, assigns both SourceBuffers the same negative `timestampOffset`
+that maps that interval's start to timestamp zero, and then commits each queue in
+timestamp-offset -> init -> media order. An explicit staged splice offset, such
+as a rainfall-layer startup mapping, always takes precedence: entry alignment
+must neither derive another offset nor add one to the splice mapping. Live,
+explicit-seek, and reused-MediaSource paths do not enable this fresh-entry mode.
+The presence of two later, not-yet-mapped track ranges is therefore not an
+immediate `MSE_STARTUP_NO_COMMON_AV`; fresh startup fails only when no common A/V
+entry can be formed within the existing 16 MiB input budget.
 When the first usable rainfall RAP is later than that fresh playback entry, the
 splice retains the RAP's source presentation time and carries a negative MSE
 timestamp offset that maps the replacement A/V output onto timestamp zero. The

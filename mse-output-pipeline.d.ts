@@ -49,6 +49,7 @@ export interface MseOutputPipelineOptions {
   onSplice?: (splice: MseOutputSpliceResult) => void;
   forceReinitialize?: (type: string, init: MseOutputInit) => boolean;
   queueOptions?: MseAppendQueueOptions;
+  freshRecordedEntryAlignment?: boolean;
   pendingBytesLimit?: number;
 }
 export interface MseOutputPipeline {

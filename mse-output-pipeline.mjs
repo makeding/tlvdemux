@@ -1,6 +1,7 @@
 import {MseAppendQueue, finalizeMseMediaSource} from './mse-append-queue.mjs';
 
 export const MSE_OUTPUT_PENDING_LIMIT_BYTES = 4 * 1024 * 1024;
+const MSE_FRESH_RECORDED_PENDING_LIMIT_BYTES = 16 * 1024 * 1024;
 
 export function createMseOutputPipeline({
   mediaSource,
@@ -17,12 +18,16 @@ export function createMseOutputPipeline({
   onSplice = () => {},
   forceReinitialize = () => false,
   queueOptions = {},
-  pendingBytesLimit = MSE_OUTPUT_PENDING_LIMIT_BYTES,
+  freshRecordedEntryAlignment = false,
+  pendingBytesLimit = null,
 }) {
   const pendingInits = new Map();
   const pendingSplices = new Map();
   const pendingSegments = new Map([['video', []], ['audio', []]]);
   const segmentTypes = new Set();
+  const resolvedPendingBytesLimit = pendingBytesLimit ?? (freshRecordedEntryAlignment
+    ? MSE_FRESH_RECORDED_PENDING_LIMIT_BYTES
+    : MSE_OUTPUT_PENDING_LIMIT_BYTES);
 
   const pendingBytes = type => (pendingSegments.get(type) ?? [])
     .reduce((sum, segment) => sum + segment.data.byteLength, 0);
@@ -33,7 +38,7 @@ export function createMseOutputPipeline({
       const pending = pendingSegments.get(segment.type);
       if (!pending) throw new Error(`Unsupported MSE segment type: ${segment.type}`);
       pending.push(segment);
-      if (pendingBytes(segment.type) > pendingBytesLimit) {
+      if (pendingBytes(segment.type) > resolvedPendingBytesLimit) {
         throw new Error(`${segment.type} media exceeded the initialization wait limit.`);
       }
       return;
@@ -44,8 +49,32 @@ export function createMseOutputPipeline({
     });
   };
 
+  const firstCommonEntryUs = () => {
+    let earliest = null;
+    for (const video of pendingSegments.get('video')) {
+      for (const audio of pendingSegments.get('audio')) {
+        const start = BigInt(video.startTimeUs) > BigInt(audio.startTimeUs)
+          ? BigInt(video.startTimeUs) : BigInt(audio.startTimeUs);
+        const end = BigInt(video.endTimeUs) < BigInt(audio.endTimeUs)
+          ? BigInt(video.endTimeUs) : BigInt(audio.endTimeUs);
+        if (end > start && (earliest === null || start < earliest)) earliest = start;
+      }
+    }
+    return earliest;
+  };
+
   const installPairedInits = () => {
     if (queues.size || !pendingInits.has('video') || !pendingInits.has('audio')) return false;
+    let entryTimestampOffsetSeconds = null;
+    if (freshRecordedEntryAlignment) {
+      if (pendingSplices.size > 0) {
+        if (!pendingSplices.has('video') || !pendingSplices.has('audio')) return false;
+      } else {
+        const entryUs = firstCommonEntryUs();
+        if (entryUs === null) return false;
+        entryTimestampOffsetSeconds = -Number(entryUs) / 1000000;
+      }
+    }
     for (const type of ['video', 'audio']) {
       const init = pendingInits.get(type);
       const queue = queueFactory(type, init, onUpdateEnd, queueOptions);
@@ -55,6 +84,8 @@ export function createMseOutputPipeline({
       if (splice) {
         queue.setTimestampOffset(splice.timestampOffsetSeconds);
         pendingSplices.delete(type);
+      } else if (entryTimestampOffsetSeconds !== null) {
+        queue.setTimestampOffset(entryTimestampOffsetSeconds);
       }
     }
     for (const type of ['video', 'audio']) {
@@ -89,6 +120,7 @@ export function createMseOutputPipeline({
       onFirstSegment(segment.type, segment);
     }
     appendSegment(segment);
+    installPairedInits();
   };
 
   const splice = (type, detail) => {

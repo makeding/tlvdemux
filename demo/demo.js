@@ -818,6 +818,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       if (!activeQueues.includes(queue)) activeQueues.push(queue);
     },
     forceReinitialize: () => pendingLayerSwitch !== null,
+    freshRecordedEntryAlignment: !liveMode && startTimeSeconds === 0 && !reuseMedia,
     onInitObserved: init => appendLog(`${init.type} 初期化 ${init.mime}`),
     onInitInstalled(init, _queue, reconfigured) {
       const details = init.type === 'video'

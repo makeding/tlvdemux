@@ -5,6 +5,15 @@
 > labelled **legacy `tlvdemux` implementation**; this is a historical name,
 > not a separate product line.
 
+## [0.3.2] - 2026-08-28
+
+- Atomically map a fresh recorded playback's first common A/V interval to
+  timestamp zero before installing either SourceBuffer, without changing the
+  media-element clock.
+- Preserve explicit rainfall splice offsets, and defer
+  `MSE_STARTUP_NO_COMMON_AV` until the 16 MiB startup budget is exhausted when
+  no common A/V entry can be formed.
+
 ## [0.3.1] - 2026-08-28
 
 - Give live playback its own flow-control entry so a valid first common A/V

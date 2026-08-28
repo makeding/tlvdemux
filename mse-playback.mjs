@@ -132,11 +132,7 @@ export function createMsePlaybackFlowControl({
     if (queues.size < 2) return null;
     const ranges = perTrackRanges();
     if (!ranges.every(items => items.length > 0)) return null;
-    if (entryKind === 'startup') {
-      return new MseStartupBufferError(
-        'Audio and video were appended, but their common range does not cover timestamp 0.');
-    }
-    if (entryKind === 'live') return null;
+    if (entryKind === 'startup' || entryKind === 'live') return null;
     const hasNewSeekMedia = [...queues].every(([type, queue]) =>
       JSON.stringify(queue.bufferedRanges()) !== initialRanges.get(type));
     if (!hasNewSeekMedia) return null;

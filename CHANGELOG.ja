@@ -4,6 +4,13 @@
 > プロジェクトで `tlvdemux` 名前空間を使用していました。該当項目は
 > **旧 `tlvdemux` 実装**と表記します。これは別製品ではなく、歴史上の名称です。
 
+## [0.3.2] - 2026-08-28
+
+- fresh recorded playback の最初の共通 A/V 区間を、どちらの SourceBuffer も install
+  する前に media-element clock を変更せず timestamp 0 へ atomic に写像しました。
+- 明示的な降雨 splice offset を維持し、共通 A/V entry を形成できない場合の
+  `MSE_STARTUP_NO_COMMON_AV` を 16 MiB startup budget の消費時まで延期しました。
+
 ## [0.3.1] - 2026-08-28
 
 - Live 再生に専用の flow-control entry を追加し、最初の正常な共通 A/V 区間が

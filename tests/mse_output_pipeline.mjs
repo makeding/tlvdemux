@@ -90,4 +90,61 @@ const segment = (type, byte, startTimeUs = 0n, endTimeUs = 1000000n) => ({
   }), /initialization wait limit/);
 }
 
+for (const firstType of ['video', 'audio']) {
+  const secondType = firstType === 'video' ? 'audio' : 'video';
+  const pipeline = createMseOutputPipeline({
+    mediaSource: {}, media: {}, freshRecordedEntryAlignment: true,
+    queueFactory(type, trackInit) { return new FakeQueue(type, trackInit); },
+  });
+  const timing = {
+    video: [166833n, 300000n],
+    audio: [4875n, 260875n],
+  };
+  pipeline.onMseInit(init(firstType, firstType === 'video' ? 1 : 2));
+  pipeline.onMseSegment(segment(firstType, firstType === 'video' ? 3 : 4,
+    ...timing[firstType]));
+  pipeline.onMseInit(init(secondType, secondType === 'video' ? 1 : 2));
+  assert.equal(pipeline.queues.size, 0,
+    `${firstType}-first startup committed before common A/V was known`);
+  pipeline.onMseSegment(segment(secondType, secondType === 'video' ? 3 : 4,
+    ...timing[secondType]));
+  assert.deepEqual(pipeline.queues.get('video').operations, [
+    ['offset', -0.166833],
+    ['append', 1, null],
+    ['append', 3, {startTimeSeconds: 0.166833, endTimeSeconds: 0.3}],
+  ], `${firstType}-first video did not commit offset -> init -> media atomically`);
+  assert.deepEqual(pipeline.queues.get('audio').operations, [
+    ['offset', -0.166833],
+    ['append', 2, null],
+    ['append', 4, {startTimeSeconds: 0.004875, endTimeSeconds: 0.260875}],
+  ], `${firstType}-first audio did not share the atomic entry mapping`);
+}
+
+{
+  const pipeline = createMseOutputPipeline({
+    mediaSource: {}, media: {}, freshRecordedEntryAlignment: true,
+    queueFactory(type, trackInit) { return new FakeQueue(type, trackInit); },
+  });
+  pipeline.onMseVideoSplice({presentationTimeUs: 821944n, timestampOffsetUs: -821944n});
+  pipeline.onMseInit(init('video', 1));
+  pipeline.onMseSegment(segment('video', 3, 1000000n, 2000000n));
+  pipeline.onMseInit(init('audio', 2));
+  pipeline.onMseSegment(segment('audio', 4, 900000n, 2000000n));
+  assert.equal(pipeline.queues.size, 0,
+    'fresh entry committed before both explicit track splice offsets arrived');
+  pipeline.onMseAudioSplice({presentationTimeUs: 821944n, timestampOffsetUs: -821944n});
+  pipeline.onMseInit(init('audio', 2));
+  pipeline.onMseSegment(segment('audio', 4, 900000n, 2000000n));
+  assert.deepEqual(pipeline.queues.get('video').operations, [
+    ['offset', -0.821944],
+    ['append', 1, null],
+    ['append', 3, {startTimeSeconds: 1, endTimeSeconds: 2}],
+  ], 'fresh alignment replaced or compounded the explicit video splice offset');
+  assert.deepEqual(pipeline.queues.get('audio').operations, [
+    ['offset', -0.821944],
+    ['append', 2, null],
+    ['append', 4, {startTimeSeconds: 0.9, endTimeSeconds: 2}],
+  ], 'fresh alignment replaced or compounded the explicit audio splice offset');
+}
+
 console.log('MSE output pipeline tests passed');

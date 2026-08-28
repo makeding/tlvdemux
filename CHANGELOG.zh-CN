@@ -4,6 +4,13 @@
 > `tlvdemux` 命名空间。相关条目以 **旧 `tlvdemux` 实现** 标记；这只是历史名称，
 > 并非独立产品线。
 
+## [0.3.2] - 2026-08-28
+
+- 在安装任一 SourceBuffer 前，将 fresh recorded playback 的首个公共 A/V 区间原子映射到
+  timestamp 0，且不修改 media-element clock。
+- 保留显式降雨 splice offset；只有在 16 MiB startup budget 用尽后仍无法形成公共 A/V
+  入口时，才返回 `MSE_STARTUP_NO_COMMON_AV`。
+
 ## [0.3.1] - 2026-08-28
 
 - 为 Live 播放增加独立的 flow-control 入口：首个有效公共 A/V 区间即使从

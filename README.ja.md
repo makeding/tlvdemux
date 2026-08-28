@@ -154,6 +154,16 @@ layer 切替が不可能だった後の選択中 layer に対する `PlaybackDam
 live 起動 policy だけです。
 demo は位置変更を行わず、その media clock を復帰判断用に core へ報告します。
 
+fresh recorded の SourceBuffer pair を作成する前に、demo は
+`createMseOutputPipeline()` の atomic entry alignment を有効にします。pipeline は両 track の init と
+最初の media segment を staging し、最初の共通 A/V source 区間を検出して、その先頭を timestamp 0
+へ写像する同一の負の `timestampOffset` を両 SourceBuffer に設定してから、各 queue を
+timestamp offset -> init -> media の順に commit します。降雨 layer の startup mapping など、明示的に
+staging 済みの splice offset がある場合は必ずそれを優先し、entry alignment で別の offset を推導したり
+加算したりしてはいけません。Live、明示 seek、MediaSource 再利用 path ではこの fresh-entry mode を
+有効にしません。そのため、両 track の後方 range がまだ timestamp 0 に写像されていないことだけで
+`MSE_STARTUP_NO_COMMON_AV` を即時に返してはいけません。fresh startup が失敗するのは、既存の 16 MiB
+input budget 内で共通 A/V entry を形成できなかった場合だけです。
 fresh playback の入口より最初の降雨 RAP が後にある場合、splice は RAP の source PTS を維持しつつ、
 replacement A/V 出力を timestamp 0 へ写像する負の MSE timestamp offset を通知します。demo は同じ
 SourceBuffer mutation queue で replacement init／media より前にこの offset を適用します。入力の

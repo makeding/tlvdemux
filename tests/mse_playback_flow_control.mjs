@@ -21,10 +21,14 @@ const queue = ranges => ({
     ['audio', queue([{start: 0.821944, end: 4}])],
   ]);
   const flow = createMsePlaybackFlowControl({media, queues});
-  await assert.rejects(
-    flow.afterPush(2 * 1024 * 1024),
-    error => error.code === MSE_STARTUP_NO_COMMON_AV,
-    'detached startup A/V did not stop further input immediately');
+  for (let push = 1; push < 8; push += 1) {
+    const result = await flow.afterPush(2 * 1024 * 1024);
+    assert.equal(result.entryCovered, false,
+      'unmapped startup A/V was incorrectly classified as timestamp-zero media');
+  }
+  await assert.rejects(flow.afterPush(2 * 1024 * 1024), error =>
+    error.code === MSE_STARTUP_NO_COMMON_AV,
+  'unmapped startup A/V did not stop at the 16 MiB input budget');
 }
 
 {
