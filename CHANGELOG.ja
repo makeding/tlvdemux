@@ -11,6 +11,8 @@
   public browser SDK module として追加しました。
 - demo を public module へ移行して重複 lifecycle helper を削除しました。package publish は明示的な
   release action とし、その後の DPlayer 通常 npm cutover と consumer acceptance まで batch は未完了です。
+- Worker 境界で caller 所有の `Uint8Array` を保持し、録画 seek の probe／landing 間の cache 再利用が
+  detached `ArrayBuffer` で失敗しないよう修正しました。
 
 ## [0.2.4] - 2026-08-26
 

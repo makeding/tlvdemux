@@ -177,6 +177,12 @@ exhaustion fails with `MSE_SEEK_NO_COMMON_AV` and stops reading. It must never b
 reported as `MSE_STARTUP_NO_COMMON_AV`, cause a hidden media-element seek, or
 fall back to scanning the complete recording.
 
+The Worker client treats every public `Uint8Array` input as caller-owned.
+`TlvDemuxer.push()`, duration-probe `pushRange()`, and `setMseEdid()` transfer an
+SDK-owned copy and must never detach the caller's `ArrayBuffer`. In particular,
+an explicit seek may reuse cached source bytes across probe and landing without
+throwing a detached-`ArrayBuffer` error or initiating another seek.
+
 The `rain.tlv` validation contract requires its first automatic switch at the
 earliest rainfall RAP (currently about `821944us`), before any preferred-layer
 init, the later approximately 46-second preferred damage event, or any seek. The

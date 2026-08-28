@@ -20,13 +20,16 @@ class FakeWorker {
   }
 
   postMessage(message, transfer = []) {
-    this.messages.push({message, transfer});
+    const transferByteLengths = transfer.map(buffer => buffer.byteLength);
+    // Match browser Worker semantics: transfer detaches the SDK-side buffer.
+    const delivered = structuredClone(message, {transfer});
+    this.messages.push({message: delivered, transferByteLengths});
     queueMicrotask(() => {
-      if (message.type === protocol.invoke) {
-        const value = message.method === 'switchAudioTrack' ? null : true;
-        this.onmessage?.({data: {type: protocol.result, requestId: message.requestId, value}});
+      if (delivered.type === protocol.invoke) {
+        const value = delivered.method === 'switchAudioTrack' ? null : true;
+        this.onmessage?.({data: {type: protocol.result, requestId: delivered.requestId, value}});
       } else {
-        this.onmessage?.({data: {type: protocol.result, requestId: message.requestId, value: true}});
+        this.onmessage?.({data: {type: protocol.result, requestId: delivered.requestId, value: true}});
       }
     });
   }
@@ -99,7 +102,26 @@ assert.equal(demuxer.applicationResources().length, 0);
 const bytes = Uint8Array.of(1, 2, 3);
 await demuxer.push(bytes);
 const pushMessage = fake.messages.find(entry => entry.message.method === 'push');
-assert.deepEqual(pushMessage.transfer, [bytes.buffer]);
+assert.deepEqual(pushMessage.transferByteLengths, [3]);
+assert.deepEqual([...pushMessage.message.args[0]], [1, 2, 3]);
+assert.doesNotThrow(() => bytes.subarray(0, 3),
+  'worker demuxer left a detached ArrayBuffer after push');
+assert.equal(bytes.buffer.byteLength, 3,
+  'worker demuxer detached the caller-owned source buffer');
+assert.deepEqual([...bytes.subarray(0, 3)], [1, 2, 3],
+  'caller-owned source bytes were not reusable after worker push');
+const edid = Uint8Array.of(4, 5);
+await demuxer.setMseEdid(edid);
+assert.equal(edid.buffer.byteLength, 2,
+  'worker EDID configuration detached caller-owned bytes');
+const durationProbe = new module.DurationProbe();
+const durationBytes = Uint8Array.of(6, 7, 8, 9);
+await durationProbe.pushRange(1, 0n, durationBytes, true);
+assert.doesNotThrow(() => durationBytes.subarray(0, 4),
+  'worker duration probe left a detached ArrayBuffer after pushRange');
+assert.equal(durationBytes.buffer.byteLength, 4,
+  'worker duration probe detached caller-owned range bytes');
+durationProbe.delete();
 demuxer.delete();
 assert.equal(demuxer.isDeleted(), true);
 fake.event(1, 'onTrack', {trackId: 3n});

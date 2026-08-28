@@ -154,6 +154,12 @@ EOF、または budget 消費の場合は `MSE_SEEK_NO_COMMON_AV` で読み込�
 `MSE_STARTUP_NO_COMMON_AV` として報告したり、MediaElement の hidden seek や録画全体の scan に
 fallback してはいけません。
 
+Worker client は public API に渡されたすべての `Uint8Array` を caller 所有として扱います。
+`TlvDemuxer.push()`、duration probe の `pushRange()`、`setMseEdid()` は SDK 所有の copy だけを
+transfer し、caller の `ArrayBuffer` を detach してはいけません。特に明示 seek は、detached
+`ArrayBuffer` error や追加 seek を起こさず、probe と landing の間で cache 済み source bytes を
+再利用できなければなりません。
+
 `rain.tlv` の検証では、最初の自動切替を最初の降雨 RAP（現在約 `821944us`）で要求し、通常 layer
 の init、後続する約 46 秒の通常 damage event、あらゆる seek より先に完了させます。最初の切替先
 source 境界は `821944us` のまま、startup timestamp offset により最初の共通 MSE A/V 区間を

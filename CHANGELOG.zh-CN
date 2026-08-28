@@ -10,6 +10,8 @@
   轨道/层级选择、严格 recorded Range source、时长探测、live 输入合并、播放损坏恢复及 Worker RPC。
 - demo 已迁移到公开模块并删除重复 lifecycle helper。package publish 仍是需明确执行的 release
   动作；在文档所列 DPlayer 常规 npm cutover 与 consumer 验收完成前，该批次不算完成。
+- Worker 边界现在保留调用方持有的 `Uint8Array`，避免录制 seek 在 probe/landing 间复用缓存时因
+  `ArrayBuffer` 已 detached 而失败。
 
 ## [0.2.4] - 2026-08-26
 

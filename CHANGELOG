@@ -13,6 +13,8 @@
 - Migrate the demo to those public modules and remove its duplicated lifecycle
   helpers. Package publication remains an explicit release action; the batch
   stays incomplete until the documented DPlayer npm cutover and acceptance.
+- Preserve caller-owned `Uint8Array` inputs at the Worker boundary so recorded
+  seek probe/landing cache reuse cannot fail on a detached `ArrayBuffer`.
 
 ## [0.2.4] - 2026-08-26
 

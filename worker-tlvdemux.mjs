@@ -186,8 +186,10 @@ class WorkerDurationProbe extends WorkerObject {
   selectedVideoPacketId() { return this.call('selectedVideoPacketId'); }
   transferredBytes() { return this.call('transferredBytes'); }
   pushRange(requestId, offset, bytes, endOfRange) {
-    const data = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
-      ? bytes : bytes.slice();
+    // Worker transfer lists detach their ArrayBuffer in the caller. Source
+    // implementations and recorded-seek sessions are allowed to retain and
+    // reuse public API input, so transfer only an SDK-owned copy.
+    const data = bytes.slice();
     return this.call('pushRange', [requestId, offset, data, endOfRange], [data.buffer]);
   }
 }
@@ -205,8 +207,7 @@ class WorkerDemuxer extends WorkerObject {
     return this.call('configureTrackSelection', [options]);
   }
   push(bytes) {
-    const data = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
-      ? bytes : bytes.slice();
+    const data = bytes.slice();
     return this.call('push', [data], [data.buffer]);
   }
   flush() { return this.call('flush'); }
@@ -244,8 +245,7 @@ class WorkerDemuxer extends WorkerObject {
     return this.call('setMseToneMappingMode', [mode]);
   }
   setMseEdid(edid) {
-    const data = edid.byteOffset === 0 && edid.byteLength === edid.buffer.byteLength
-      ? edid : edid.slice();
+    const data = edid.slice();
     return this.call('setMseEdid', [data], [data.buffer]);
   }
   setMseOutputConnected(connected) {
