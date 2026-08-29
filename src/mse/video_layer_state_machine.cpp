@@ -56,6 +56,7 @@ void VideoLayerStateMachine::select(
     const std::optional<std::uint64_t> video_track_id) noexcept {
     selected_video_id_ = video_track_id;
     selected_output_started_ = false;
+    playback_position_advancing_ = false;
     clearUnrecoveredDamage();
 }
 

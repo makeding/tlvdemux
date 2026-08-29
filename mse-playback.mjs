@@ -739,15 +739,12 @@ export function createMseRecordedSeekSession({
     const previousFrontier = probeFrontiers.get(unit.trackId);
     if (previousFrontier === undefined || pts > previousFrontier) probeFrontiers.set(unit.trackId, pts);
     if ((track.kind === 'video' && !unit.randomAccess) || pts > sourceTargetUs + toleranceUs) return;
-    const previous = probeRaps.get(unit.trackId);
-    if (!previous || pts > previous.ptsUs) {
-      probeRaps.set(unit.trackId, {
-        trackId: unit.trackId,
-        ptsUs: pts,
-        seconds: Number(unit.ptsValue) / unit.ptsTimescale,
-        restartOffset: BigInt(unit.restartOffset),
-      });
-    }
+    probeRaps.set(`${unit.trackId}:${pts}`, {
+      trackId: unit.trackId,
+      ptsUs: pts,
+      seconds: Number(unit.ptsValue) / unit.ptsTimescale,
+      restartOffset: BigInt(unit.restartOffset),
+    });
   };
 
   const cachedAt = offset => cachedRanges.find(item => item.start <= offset && item.end > offset);
@@ -799,24 +796,31 @@ export function createMseRecordedSeekSession({
       frontier > sourceTargetUs + toleranceUs);
   };
 
-  const bestRap = () => [...probeRaps.values()]
-    .filter(rap => rap.ptsUs <= sourceTargetUs && tracks.has(rap.trackId))
+  const bestRap = (minimumPrerollUs = 0n) => [...probeRaps.values()]
+    .filter(rap => rap.ptsUs <= sourceTargetUs - minimumPrerollUs &&
+      tracks.has(rap.trackId))
     .sort((left, right) => {
       if (left.ptsUs !== right.ptsUs) return left.ptsUs > right.ptsUs ? -1 : 1;
       return videoTrackPriority(tracks.get(left.trackId)) - videoTrackPriority(tracks.get(right.trackId));
     })[0] ?? null;
 
   const hasUsablePrerollRap = () => {
-    const rap = bestRap();
+    const rap = bestRap(minimumLandingPrerollUs);
     return rap !== null && rap.ptsUs + probePrerollUs >= sourceTargetUs;
   };
 
   const interpolatedTargetOffset = () => {
     const before = timelineBeforeTarget;
     const after = timelineAfterTarget;
-    if (!before || !after || after.ptsUs === before.ptsUs || after.offset <= before.offset) return null;
-    return before.offset + (after.offset - before.offset) * (sourceTargetUs - before.ptsUs) /
-      (after.ptsUs - before.ptsUs);
+    if (before && after && after.ptsUs !== before.ptsUs && after.offset > before.offset) {
+      return before.offset + (after.offset - before.offset) * (sourceTargetUs - before.ptsUs) /
+        (after.ptsUs - before.ptsUs);
+    }
+    if (before && before.ptsUs > BigInt(presentationStartUs) && before.offset > 0n) {
+      return before.offset * (sourceTargetUs - BigInt(presentationStartUs)) /
+        (before.ptsUs - BigInt(presentationStartUs));
+    }
+    return null;
   };
 
   const run = async () => {
@@ -847,40 +851,62 @@ export function createMseRecordedSeekSession({
     const estimate = BigInt(estimateValue);
     const estimatedWindow = source.size * BigInt(Math.round(probePrerollSeconds * 1000000)) / durationUs;
     const window = clampBigInt(estimatedWindow, chunkSize, 2n * 1024n * 1024n);
-    const estimateForwardBias = 10n * 1024n * 1024n * BigInt(targetUs) / durationUs;
-    let candidate = clampBigInt(estimate + estimateForwardBias, 0n,
+    let candidate = clampBigInt(estimate > window ? estimate - window : 0n, 0n,
       source.size > chunkSize ? source.size - chunkSize : 0n);
     let chosen = null;
+    const probedCandidates = new Set();
+    let earliestCandidate = candidate;
 
     for (;;) {
       ensureActive();
       phase = 'probe';
       probeFrontiers.clear();
-      probeRaps.clear();
+      probedCandidates.add(candidate);
+      if (candidate < earliestCandidate) earliestCandidate = candidate;
       await demuxer.reposition(candidate, true);
       let offset = candidate;
-      while (offset < source.size && !frontiersPastTarget() && !hasUsablePrerollRap()) {
+      const probeEnd = candidate + window < source.size
+        ? candidate + window : source.size;
+      while (offset < probeEnd && !frontiersPastTarget() && !hasUsablePrerollRap()) {
         const data = await read(offset, chunkSize);
         await push(data, offset);
         offset += BigInt(data.byteLength);
       }
-      chosen = bestRap();
-      if (chosen && (sourceTargetUs - chosen.ptsUs >= minimumLandingPrerollUs ||
-          candidate === 0n)) break;
-      if (chosen) {
+      const landingRap = bestRap(minimumLandingPrerollUs);
+      chosen = landingRap && landingRap.ptsUs + probePrerollUs >= sourceTargetUs
+        ? landingRap : bestRap();
+      const chosenPrerollUs = chosen === null ? null : sourceTargetUs - chosen.ptsUs;
+      if (chosen && ((chosenPrerollUs >= minimumLandingPrerollUs &&
+          chosenPrerollUs <= probePrerollUs) || candidate === 0n)) break;
+      if (chosen && chosenPrerollUs < minimumLandingPrerollUs) {
         const earlierCandidate = chosen.restartOffset > window
           ? chosen.restartOffset - window : 0n;
         candidate = earlierCandidate < candidate
           ? earlierCandidate : candidate > window ? candidate - window : 0n;
         continue;
       }
-      if (candidate === 0n) throw new MseRecordedSeekError('no-rap');
+      if (candidate === 0n) {
+        while (offset < source.size) {
+          const data = await read(offset, chunkSize);
+          await push(data, offset);
+          offset += BigInt(data.byteLength);
+          chosen = bestRap();
+          if (chosen) break;
+        }
+        if (!chosen) throw new MseRecordedSeekError('no-rap');
+        break;
+      }
       const interpolated = interpolatedTargetOffset();
       const interpolatedCandidate = interpolated === null ? null
         : interpolated > window ? interpolated - window : 0n;
-      const nextCandidate = interpolatedCandidate !== null && interpolatedCandidate < candidate
-        ? interpolatedCandidate : candidate > window ? candidate - window : 0n;
-      candidate = nextCandidate < candidate ? nextCandidate : 0n;
+      let nextCandidate = interpolatedCandidate ??
+        (candidate > window ? candidate - window : 0n);
+      nextCandidate = clampBigInt(nextCandidate, 0n,
+        source.size > chunkSize ? source.size - chunkSize : 0n);
+      if (probedCandidates.has(nextCandidate)) {
+        nextCandidate = earliestCandidate > window ? earliestCandidate - window : 0n;
+      }
+      candidate = nextCandidate;
     }
 
     const chosenTrack = tracks.get(chosen.trackId);

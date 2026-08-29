@@ -135,7 +135,8 @@ splice として有効です。RAP を playhead の 2 秒以内だけに制限�
 `20260828-101-180000_4c9f94c3-6ed1-455f-9fee-fcfa8c062de0.mmts` の regression は parser を 8 秒先行
 させ、source presentation time 460 秒より前に降雨→通常の復帰を完了しなければなりません。また表示
 11:37（697 秒）および境界に近い 820 秒への seek で、単一 16 MiB budget 内に exact common A/V coverage
-を保持しなければなりません。
+を保持しなければなりません。sample の common A/V interval に含まれる media time 1 秒から 1573 秒までを
+1 秒刻みで検証し、すべて同じ exact-target／budget contract を満たさなければなりません。
 通常から降雨への緊急切替は起動時も対象です。選択中の通常 layer が decode 可能な MSE 映像入口を
 まだ出力しておらず、降雨 layer に実 RAP、その後の連続映像 DTS、連続 AAC、整列した A/V 境界が
 揃った時点で、core は `health-degradation` 理由で直ちに切り替えます。要求する最早時刻は現在の
@@ -215,7 +216,9 @@ probe、landing は 1 MiB 単位で読み、stable recovery RAP に届く前に�
 なければ観測済み候補の解析前縁が target を越えた時点で停止します。未観測 layer を待たず target
 より後でない観測済みの最も近い有効な RAP を選択します。probe interpolation は source offset 0 の public union start を
 以前の anchor として初期化し、保持上限で anchor が失われる AU history ではなく、target の直前と直後に
-最も近い観測を保持します。片側がまだ得られない場合、次の bounded probe
+最も近い観測を保持します。各 candidate は次の interpolation の前に最大一つの 2 秒 probe window だけを
+読み、観測済み RAP は candidate 間で有効なまま保持します。これにより variable-bitrate estimate が
+target の反対側へ外れても無制限な sequential scan へ変わりません。片側がまだ得られない場合、次の bounded probe
 は probe window 一つ分だけ後方へ移動します。file 先頭との中間へ二分して無関係な過去区間で共有 budget
 を消費してはいけません。A/V landing の選択 RAP は target より 1 秒以上前でなければならず、近すぎる
 RAP の場合は上限内で一つ前の probe を行い、AAC が exact target より前から始まるようにします。それより
