@@ -72,15 +72,30 @@ for (const type of ['audio', 'video']) {
   const pipeline = createMseOutputPipeline({
     mediaSource: {}, media: {}, queues: new Map([['video', video], ['audio', audio]]),
   });
-  const splice = {presentationTimeUs: 10000000n, timestampOffsetUs: -1000000n};
+  if (type === 'audio') {
+    audio.setTimestampOffset(-0.650638);
+    audio.operations.length = 0;
+  }
+  const splice = type === 'audio'
+    ? {presentationTimeUs: 16938688n, timestampOffsetUs: -714638n}
+    : {presentationTimeUs: 10000000n, timestampOffsetUs: -1000000n};
   if (type === 'video') pipeline.onMseVideoSplice(splice);
   else pipeline.onMseAudioSplice(splice);
   pipeline.onMseInit(init(type, 3, mime));
-  pipeline.onMseSegment(segment(type, 4, 10000000n, 11000000n));
+  const mediaTiming = type === 'audio'
+    ? [16938688n, 17938688n]
+    : [10000000n, 11000000n];
+  pipeline.onMseSegment(segment(type, 4, ...mediaTiming));
+  const expectedSplice = type === 'audio'
+    ? ['splice', 16.22405, -0.714638]
+    : ['splice', 9, -1];
   assert.deepEqual(pipeline.queues.get(type).operations, [
-    ['splice', 9, -1],
+    expectedSplice,
     ['init', 3, mime, true],
-    ['append', 4, {startTimeSeconds: 10, endTimeSeconds: 11}],
+    ['append', 4, {
+      startTimeSeconds: Number(mediaTiming[0]) / 1000000,
+      endTimeSeconds: Number(mediaTiming[1]) / 1000000,
+    }],
   ], `${type} splice did not force same-MIME changeType before init and media`);
   await pipeline.waitStable();
 }

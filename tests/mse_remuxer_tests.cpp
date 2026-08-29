@@ -591,6 +591,8 @@ void test_video_source_damage_waits_for_a_clean_gop_before_restart() {
 void test_audio_configuration_change_emits_matching_init() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
+    constexpr std::int64_t entry_offset_us = -650638;
+    remuxer.setTimestampOffset(entry_offset_us);
     remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
     remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
     remuxer.push(hevc_unit(2, 0, 0, true, true));
@@ -622,12 +624,51 @@ void test_audio_configuration_change_emits_matching_init() {
     check(segments[0].tfdt == 0 && segments[1].tfdt == 4096,
           "AAC configuration change lost its source timeline boundary");
     check(sink.splices[0].presentation_time_us == 85333 &&
-              sink.splices[0].timestamp_offset_us == -42666,
-          "AAC configuration change did not map the new init to the prior output end");
+              sink.splices[0].timestamp_offset_us == entry_offset_us - 42666,
+          "AAC configuration change replaced the absolute entry mapping with a delta");
     const auto first_mapped_start = raw_audio_segments[1]->start_time_us +
         sink.splices[0].timestamp_offset_us;
-    check(std::llabs(first_mapped_start - raw_audio_segments[0]->end_time_us) <= 1,
+    const auto old_mapped_end = raw_audio_segments[0]->end_time_us + entry_offset_us;
+    check(std::llabs(first_mapped_start - old_mapped_end) <= 1,
           "AAC configuration splice left a mapped MSE audio gap");
+
+    remuxer.push(audio_unit(1, 8192, 6));
+    remuxer.push(audio_unit(1, 9216, 6));
+    remuxer.flush();
+    check(sink.splices.size() == 2 &&
+              sink.splices[1].timestamp_offset_us == entry_offset_us - 85333,
+          "a second AAC configuration change fell back to a zero-based offset");
+
+    constexpr std::int64_t seek_offset_us = -1000000;
+    remuxer.setTimestampOffset(seek_offset_us);
+    remuxer.reposition();
+    remuxer.push(hevc_unit(2, 0, 0, true, true));
+    remuxer.push(audio_unit(1, 12000, 6));
+    remuxer.push(audio_unit(1, 13024, 6));
+    remuxer.push(audio_unit(1, 16096, 2));
+    remuxer.push(audio_unit(1, 17120, 2));
+    remuxer.flush();
+    check(sink.splices.size() == 3 &&
+              sink.splices[2].timestamp_offset_us == seek_offset_us - 42666,
+          "reposition discarded the explicit absolute AAC timestamp offset");
+
+    TestSink selection_sink;
+    tlvdemux::MseRemuxer selection_remuxer(selection_sink);
+    selection_remuxer.setTimestampOffset(entry_offset_us);
+    selection_remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    selection_remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    selection_remuxer.push(hevc_unit(2, 0, 0, true, true));
+    for (const auto pts : {48000, 49024}) {
+        selection_remuxer.push(audio_unit(1, pts, 6));
+        selection_remuxer.push(audio_unit(2, pts, 2));
+    }
+    selection_remuxer.flush();
+    const auto old_selection_end = selection_sink.segments.back().end_time_us;
+    selection_remuxer.selectTrack(tlvdemux::TrackKind::Audio, 2);
+    selection_remuxer.push(audio_unit(2, 50048, 2));
+    selection_remuxer.flush();
+    check(selection_sink.segments.back().start_time_us == old_selection_end,
+          "audio track reuse applied the absolute SourceBuffer offset twice");
 }
 
 struct ReorderedFrame { std::int64_t dts, pts; bool keyframe; };

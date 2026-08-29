@@ -21,6 +21,7 @@ export interface MseOutputSegment {
 }
 export interface MseOutputSplice {
   presentationTimeUs: bigint;
+  /** Complete SourceBuffer.timestampOffset in microseconds, not a delta. */
   timestampOffsetUs?: bigint;
   [name: string]: unknown;
 }

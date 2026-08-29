@@ -167,6 +167,14 @@ packet `0xf301` while installing the new `0xf300` decoder/color configuration.
 The same boundary also changes the selected `0xf310` AAC layout from 6 channels
 to 2 channels. Both changes must continue through the existing SourceBuffers
 without a rainfall-layer switch or a persistent `waiting` at `16.168s`.
+For an audio splice, `timestampOffsetUs` is the complete absolute
+`SourceBuffer.timestampOffset`, never a relative adjustment. In the cold-start
+`demo/sdr-hdr.tlv` regression, fresh entry alignment first installs
+`-650638us`; the AAC configuration change at source `16938688us` then replaces
+it with `-714638us`, mapping both the old audio end and replacement audio start
+to `16224050us`. That content transition must stay on video packet `0xf300`,
+must not trigger a layer switch or recovery seek, and must not be concealed by
+selecting the rainfall layer.
 A bare
 MediaElement `waiting` event or a later buffered range never authorizes a seek.
 Only `PlaybackDamage.action === "seek"` for the currently playing layer may

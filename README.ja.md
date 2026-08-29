@@ -147,6 +147,12 @@ transition であり、選択 layer の損傷を示すものではありませ�
 構成を適用する間も再生は `0xf300` に留まり、降雨対応 packet `0xf301` を選択してはいけません。
 同じ境界では選択音声 `0xf310` も 6ch から 2ch へ変化します。どちらも既存 SourceBuffer 上で継続し、
 降雨 layer 切替や `16.168s` の持続的な `waiting` を発生させてはいけません。
+音声 splice の `timestampOffsetUs` は相対補正値ではなく、常に完全な絶対
+`SourceBuffer.timestampOffset` です。`demo/sdr-hdr.tlv` の cold-start regression では、fresh entry
+alignment がまず `-650638us` を設定し、source `16938688us` の AAC 構成変更でこれを
+`-714638us` に置換します。これにより旧音声の終端と replacement 音声の先頭はいずれも
+`16224050us` に写像されます。この content transition は映像 packet `0xf300` に留まり、layer
+切替や recovery seek を発生させず、降雨 layer の選択で隠してはいけません。
 MediaElement の `waiting` または後方の buffered range だけでは seek を許可しません。現在再生中の
 layer に対する `PlaybackDamage.action === "seek"` だけが直ちに位置変更でき、
 `seek-if-stalled` は許可として保持し、因果関係が成立する `waiting` だけが実行できます。遅延した

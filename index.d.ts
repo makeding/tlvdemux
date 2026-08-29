@@ -650,11 +650,13 @@ declare namespace createTlvDemuxModule {
 
   interface MseAudioSplice {
     presentationTimeUs: bigint;
+    /** Complete SourceBuffer.timestampOffset in microseconds, not a delta. */
     timestampOffsetUs: bigint;
   }
 
   interface MseVideoSplice {
     presentationTimeUs: bigint;
+    /** Complete SourceBuffer.timestampOffset in microseconds, not a delta. */
     timestampOffsetUs: bigint;
   }
 

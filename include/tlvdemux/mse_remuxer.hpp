@@ -35,11 +35,13 @@ struct MseMediaSegment {
 
 struct MseAudioSplice {
     std::int64_t presentation_time_us = 0;
+    // Complete SourceBuffer.timestampOffset, never a relative adjustment.
     std::int64_t timestamp_offset_us = 0;
 };
 
 struct MseVideoSplice {
     std::int64_t presentation_time_us = 0;
+    // Complete SourceBuffer.timestampOffset, never a relative adjustment.
     std::int64_t timestamp_offset_us = 0;
 };
 

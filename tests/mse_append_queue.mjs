@@ -178,15 +178,18 @@ for (const mime of [
     forwardBufferHighSeconds: Infinity,
   });
   queue.append(new Uint8Array([1]));
-  queue.spliceFrom(7, -1);
+  const audio = mime.startsWith('audio/');
+  if (audio) queue.setTimestampOffset(-0.650638);
+  queue.spliceFrom(audio ? 16.22405 : 7, audio ? -0.714638 : -1);
   queue.appendInitialization(new Uint8Array([2]), mime, true);
   queue.append(new Uint8Array([3]), {startTimeSeconds: 8, endTimeSeconds: 9});
   for (let index = 0; index < 4; index += 1) sourceBuffer.complete();
   await queue.waitIdle();
   assert.deepEqual(sourceBuffer.operations, [
     ['append', 1],
-    ['remove', 7, 20],
-    ['timestampOffset', -1],
+    ...(audio ? [['timestampOffset', -0.650638]] : []),
+    ['remove', audio ? 16.22405 : 7, 20],
+    ['timestampOffset', audio ? -0.714638 : -1],
     ['changeType', mime],
     ['append', 2],
     ['append', 3],

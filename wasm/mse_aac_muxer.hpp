@@ -9,6 +9,7 @@ public:
         clear_resume();
         if (!preserve_history) {
             history_.clear();
+            contiguous_emitted_end_us_.reset();
             timeline_offset_us_.reset();
             source_buffer_timestamp_offset_us_ = 0;
         }
@@ -16,29 +17,39 @@ public:
 
     void activate() {
         clear_resume();
-        contiguous_emitted_end_.reset();
-        source_buffer_timestamp_offset_us_ = 0;
+        contiguous_emitted_end_us_.reset();
         BaseMuxer::activate();
     }
 
-    // Continue this muxer's decode timeline at the exact end of the previous
-    // audio track. This is set before the first access unit of a new track and
-    // reset on every later activation, including switches back to a used track.
+    void set_source_buffer_timestamp_offset(
+        const std::int64_t timestamp_offset_us) noexcept {
+        source_buffer_timestamp_offset_us_ = timestamp_offset_us;
+    }
+
+    // Continue this muxer's mapped output timeline at the exact end of the
+    // previous audio track. The media timestamps remain in SourceBuffer input
+    // coordinates, so remove this muxer's complete absolute timestamp offset
+    // before anchoring the first access unit.
     void resume_at(const std::int64_t resume_at_ticks,
                    const std::uint32_t resume_timescale) {
         timestamp_correction_ticks_ = 0;
         resume_at_ticks_ = resume_at_ticks;
         resume_timescale_ = resume_timescale;
         resume_offset_ticks_ = track_.has_value()
-            ? std::optional<std::int64_t>(scaled(resume_at_ticks,
-                                                resume_timescale, track_->timescale))
+            ? std::optional<std::int64_t>(
+                scaled(resume_at_ticks, resume_timescale, track_->timescale) -
+                scaled(source_buffer_timestamp_offset_us_, 1000000,
+                       track_->timescale))
             : std::nullopt;
         resume_origin_ticks_.reset();
         first_after_resume_ = false;
     }
 
     std::optional<std::int64_t> emitted_timeline_end() const noexcept {
-        return contiguous_emitted_end_;
+        return contiguous_emitted_end_us_.has_value() && track_.has_value()
+            ? std::optional<std::int64_t>{scaled(
+                *contiguous_emitted_end_us_, 1000000, track_->timescale)}
+            : std::nullopt;
     }
 
     std::optional<std::uint32_t> track_timescale() const noexcept {
@@ -63,7 +74,7 @@ public:
             });
         if (first == history_.end()) return std::nullopt;
         clear_resume();
-        contiguous_emitted_end_.reset();
+        contiguous_emitted_end_us_.reset();
         const auto source_boundary = first->pts;
         const auto boundary_us = output_boundary_us.value_or(
             scaled(source_boundary, track_->timescale, 1000000));
@@ -148,7 +159,9 @@ public:
                 // Now that we know this track's timescale, convert the resume
                 // point (given in the previous track's timescale) into ours.
                 resume_offset_ticks_ = scaled(*resume_at_ticks_,
-                    resume_timescale_, track_->timescale);
+                    resume_timescale_, track_->timescale) -
+                    scaled(source_buffer_timestamp_offset_us_, 1000000,
+                           track_->timescale);
             }
         }
         if (!timeline_offset_us_.has_value()) {
@@ -182,23 +195,19 @@ public:
             const auto old_timescale = track_->timescale;
             const auto boundary_us = scaled(timestamp, old_timescale, 1000000);
             flush();
-            const auto contiguous_output_end_us = contiguous_emitted_end_.has_value()
-                ? std::optional<std::int64_t>{scaled(
-                    *contiguous_emitted_end_, old_timescale, 1000000)}
-                : std::nullopt;
-            const auto timestamp_offset_us = contiguous_output_end_us.has_value()
-                ? *contiguous_output_end_us - boundary_us
-                : source_buffer_timestamp_offset_us_;
+            const auto contiguous_output_end_us = contiguous_emitted_end_us_;
+            const auto continuity_adjustment_us = contiguous_output_end_us.has_value()
+                ? *contiguous_output_end_us -
+                    source_buffer_timestamp_offset_us_ - boundary_us
+                : 0;
+            const auto timestamp_offset_us =
+                source_buffer_timestamp_offset_us_ + continuity_adjustment_us;
             history_.clear();
             timestamp_correction_ticks_ = 0;
             if (selected) output_.audio_splice(boundary_us, timestamp_offset_us);
             source_buffer_timestamp_offset_us_ = timestamp_offset_us;
             replace_track(audio_track(frame), selected);
             timestamp = scaled(boundary_us, 1000000, track_->timescale);
-            if (contiguous_output_end_us.has_value()) {
-                contiguous_emitted_end_ = scaled(
-                    *contiguous_output_end_us, 1000000, track_->timescale);
-            }
         }
         if (!history_.empty() && timestamp <= history_.back().pts) {
             if (!unit.discontinuity) return;
@@ -271,24 +280,28 @@ private:
 
     void on_segment_emitted(const std::vector<Sample>& samples) override {
         if (samples.empty()) return;
-        const auto timestamp_offset = scaled(
-            source_buffer_timestamp_offset_us_, 1000000, track_->timescale);
-        const auto start = samples.front().pts + timestamp_offset;
-        auto end = start + static_cast<std::int64_t>(samples.front().duration);
+        const auto start = scaled(
+            samples.front().pts, track_->timescale, 1000000) +
+            source_buffer_timestamp_offset_us_;
+        auto end = scaled(
+            samples.front().pts +
+                static_cast<std::int64_t>(samples.front().duration),
+            track_->timescale, 1000000) + source_buffer_timestamp_offset_us_;
         for (const auto& sample : samples) {
             end = std::max(
-                end, sample.pts + timestamp_offset +
-                    static_cast<std::int64_t>(sample.duration));
+                end, scaled(sample.pts + static_cast<std::int64_t>(sample.duration),
+                            track_->timescale, 1000000) +
+                    source_buffer_timestamp_offset_us_);
         }
-        if (!contiguous_emitted_end_.has_value()) {
-            contiguous_emitted_end_ = end;
+        if (!contiguous_emitted_end_us_.has_value()) {
+            contiguous_emitted_end_us_ = end;
             return;
         }
         // Do not let a still-pending island after packet loss redefine the
         // handoff boundary. The replacement track must start at the end of
         // the old audio that a decoder can actually play continuously.
-        if (start <= *contiguous_emitted_end_ + 2) {
-            contiguous_emitted_end_ = std::max(*contiguous_emitted_end_, end);
+        if (start <= *contiguous_emitted_end_us_ + 2) {
+            contiguous_emitted_end_us_ = std::max(*contiguous_emitted_end_us_, end);
         }
     }
 
@@ -309,7 +322,7 @@ private:
     std::optional<std::int64_t> resume_offset_ticks_;
     std::optional<std::int64_t> resume_origin_ticks_;
     bool first_after_resume_ = false;
-    std::optional<std::int64_t> contiguous_emitted_end_;
+    std::optional<std::int64_t> contiguous_emitted_end_us_;
     std::int64_t source_buffer_timestamp_offset_us_ = 0;
     std::int64_t timestamp_correction_ticks_ = 0;
     std::optional<std::int64_t> timeline_offset_us_;
