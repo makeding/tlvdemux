@@ -4,6 +4,16 @@
 > プロジェクトで `tlvdemux` 名前空間を使用していました。該当項目は
 > **旧 `tlvdemux` 実装**と表記します。これは別製品ではなく、歴史上の名称です。
 
+## [0.3.5] - 2026-08-29
+
+- AAC 構成変更、reposition、layer 切替、音声 track の再利用をまたいで完全な絶対
+  `SourceBuffer.timestampOffset` を維持し、fresh recorded の entry mapping を相対的な
+  連続性補正値で置き換えないようにしました。
+- `0xf300` の SDR→HDR transition を単一 video generation に留めたまま、選択中の
+  `0xf310` 音声を 6ch から 2ch へ切り替えます。音声 splice の両側を絶対
+  `-714638us` offset で `16.224050s` に写像し、降雨 layer 切替や recovery seek を
+  発生させないようにしました。
+
 ## [0.3.4] - 2026-08-29
 
 - public な video-unavailable resilience mode を追加し、前方 RAP での復旧に 3 回失敗した後は

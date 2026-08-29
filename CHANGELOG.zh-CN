@@ -4,6 +4,14 @@
 > `tlvdemux` 命名空间。相关条目以 **旧 `tlvdemux` 实现** 标记；这只是历史名称，
 > 并非独立产品线。
 
+## [0.3.5] - 2026-08-29
+
+- 在 AAC 配置变化、reposition、层切换和音轨复用过程中保持完整的绝对
+  `SourceBuffer.timestampOffset`，不再用相对连续性修正覆盖 fresh recorded 的入口映射。
+- 让 `0xf300` 的 SDR→HDR 过渡始终保持单一视频 generation，同时将选中的 `0xf310`
+  音频从 6ch 切为 2ch；使用绝对 `-714638us` offset 将音频 splice 两侧都映射到
+  `16.224050s`，且不触发降雨层切换或 recovery seek。
+
 ## [0.3.4] - 2026-08-29
 
 - 增加公开的 video-unavailable resilience 模式：连续三次前向 RAP 恢复仍无新画面后，

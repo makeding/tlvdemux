@@ -5,6 +5,17 @@
 > labelled **legacy `tlvdemux` implementation**; this is a historical name,
 > not a separate product line.
 
+## [0.3.5] - 2026-08-29
+
+- Preserve the complete absolute `SourceBuffer.timestampOffset` across AAC
+  configuration changes, repositioning, layer switches, and reused audio
+  tracks instead of replacing the fresh-recorded entry mapping with a relative
+  continuity adjustment.
+- Keep the `0xf300` SDR-to-HDR transition on one video generation while the
+  selected `0xf310` audio changes from 6 channels to 2 channels; map both sides
+  of the audio splice to `16.224050s` with an absolute `-714638us` offset,
+  without a rainfall-layer switch or recovery seek.
+
 ## [0.3.4] - 2026-08-29
 
 - Add public video-unavailable resilience modes, switch buffer requirements to
