@@ -198,13 +198,25 @@ A/V buffered 区間であり、設定した live 起動 buffer が成立した�
 
 録画の明示 seek は別の public playback-entry contract です。head discovery、すべての RAP probe、
 正式な A/V preroll は `createMseRecordedSeekSession()` の単一 16 MiB source-read budget を共有します。
-probe と landing が重なる範囲は再利用し、budget 消費後は source request を発行しません。要求時刻より
+probe と landing が重なる範囲は再利用し、budget 消費後は source request を発行しません。head discovery、
+probe、landing は 1 MiB 単位で読み、stable recovery RAP に届く前に一度の粗い read が共有 budget の
+8 分の 1 を消費しないようにします。要求時刻より
 前の RAP は正常な preroll であり、共通 A/V buffered 区間が user の要求時刻を覆うまで seek を継続し、
 その後だけ通常の 15 秒停止／8 秒再開 backpressure へ移行します。probe は target + 50 ms までの RAP
-だけを記録し、観測済み候補の解析前縁が target を越えた時点で停止して、未観測 layer を待たず target
-より後でない最も近い RAP を選択します。正式 landing では一度だけの reposition の直後、landing input
-を一つも渡す前に、session は元の source target を一回限りの recorded-seek concealment target として
-HEVC remuxer へ渡します。その target が選択映像の
+だけを記録します。target より後でない RAP を 2 秒 preroll window 内で観測した時点で停止し、それが
+なければ観測済み候補の解析前縁が target を越えた時点で停止します。未観測 layer を待たず target
+より後でない観測済みの最も近い有効な RAP を選択します。probe interpolation は source offset 0 の public union start を
+以前の anchor として初期化し、保持上限で anchor が失われる AU history ではなく、target の直前と直後に
+最も近い観測を保持します。片側がまだ得られない場合、次の bounded probe
+は probe window 一つ分だけ後方へ移動します。file 先頭との中間へ二分して無関係な過去区間で共有 budget
+を消費してはいけません。A/V landing の選択 RAP は target より 1 秒以上前でなければならず、近すぎる
+RAP の場合は上限内で一つ前の probe を行い、AAC が exact target より前から始まるようにします。それより
+前の input が存在しない録画先頭の最初の RAP だけを例外とします。正式
+landing の一度だけの reposition はその RAP の安全な restart offset を使用します。順次 landing input
+より前に session は元の source target を一回限りの recorded-seek concealment target として HEVC
+remuxer へ渡します。
+input の PTS 順序が前後しても exact entry coverage の成立または landing failure まで保持し、その後 session
+が明示的に clear します。二回目の reposition は行いません。その target が選択映像の
 source-damage episode 内にある場合だけ、既存の stable-GOP 検証後に静止画で穴を埋めます。損傷前の
 完全な最終 sample があればその duration を stable RAP の decode boundary まで延長し、landing 内に
 前画面がなければ stable RAP の先頭 frame を target に複製します。この場合も元の RAP は元の DTS/PTS

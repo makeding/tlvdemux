@@ -1,10 +1,5 @@
 import {
   ENTRY_TOLERANCE_SECONDS,
-  commonBufferedAhead,
-  commonBufferedRanges,
-  coveringRange,
-  normalizeRequiredTracks,
-  selectRequiredQueues,
 } from './mse-playback-buffer.mjs';
 export {
   commonBufferedAhead,
@@ -18,6 +13,8 @@ import {
   MseStartupBufferError,
   TLV_VIDEO_UNAVAILABLE,
 } from './mse-playback-contract.mjs';
+import {createMsePlaybackFlowControl} from './mse-playback-flow-control.mjs';
+export {createMsePlaybackFlowControl} from './mse-playback-flow-control.mjs';
 export {
   MSE_SEEK_NO_COMMON_AV,
   MSE_SEEK_READ_BUDGET_BYTES,
@@ -28,7 +25,7 @@ export {
   TLV_VIDEO_UNAVAILABLE,
 } from './mse-playback-contract.mjs';
 
-const DEFAULT_CHUNK_BYTES = 2 * 1024 * 1024;
+const DEFAULT_CHUNK_BYTES = 1024 * 1024;
 export function createMsePlaybackDamageRecovery({
   media,
   presentationStartUs = 0n,
@@ -629,101 +626,6 @@ export function createMsePlaybackResilienceController({
   };
 }
 
-export function createMsePlaybackFlowControl({
-  media,
-  queues,
-  requiredTracks = ['video', 'audio'],
-  entryKind = 'startup',
-  entryTimeSeconds = entryKind === 'startup' ? 0 : media.currentTime,
-  entryToleranceSeconds = entryKind === 'seek' ? 0.000002 : ENTRY_TOLERANCE_SECONDS,
-  highSeconds = 15,
-  lowSeconds = 8,
-  startupNoProgressBytes = MSE_SEEK_READ_BUDGET_BYTES,
-  queueHighBytes = 4 * 1024 * 1024,
-  backBufferSeconds = 8,
-  wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
-}) {
-  if (entryKind !== 'startup' && entryKind !== 'live' && entryKind !== 'seek') {
-    throw new TypeError(`Unknown MSE playback entry kind: ${entryKind}`);
-  }
-  let startupBytes = 0;
-  let entryCovered = false;
-  let currentRequiredTracks = normalizeRequiredTracks(requiredTracks);
-  const requiredQueues = () => selectRequiredQueues(queues, currentRequiredTracks);
-
-  const trim = () => {
-    for (const queue of requiredQueues().values()) {
-      queue.trimBefore(media.currentTime - backBufferSeconds);
-    }
-  };
-  const liveEntryRange = () => commonBufferedRanges(queues, currentRequiredTracks).find(range =>
-    range.end > media.currentTime + 0.001) ?? null;
-
-  const api = {
-    entryKind,
-    get entryTimeSeconds() { return entryTimeSeconds; },
-    get requiredTracks() { return [...currentRequiredTracks]; },
-    setRequiredTracks(nextRequiredTracks, nextEntryTimeSeconds = media.currentTime) {
-      currentRequiredTracks = normalizeRequiredTracks(nextRequiredTracks);
-      if (Number.isFinite(nextEntryTimeSeconds) && nextEntryTimeSeconds >= 0) {
-        entryTimeSeconds = nextEntryTimeSeconds;
-      }
-      entryCovered = false;
-      startupBytes = 0;
-      return [...currentRequiredTracks];
-    },
-    entryRange() {
-      if (entryKind === 'live') return liveEntryRange();
-      return coveringRange(
-        queues, entryTimeSeconds, entryToleranceSeconds, currentRequiredTracks,
-      );
-    },
-    entryCovered() {
-      return entryCovered || api.entryRange() !== null;
-    },
-    commonAhead() {
-      if (entryKind === 'live') {
-        const range = liveEntryRange();
-        return range ? Math.max(0, range.end - Math.max(media.currentTime, range.start)) : 0;
-      }
-      return commonBufferedAhead(
-        media, queues, entryToleranceSeconds, currentRequiredTracks,
-      );
-    },
-    async afterPush(byteLength, isActive = () => true) {
-      trim();
-      await Promise.all([...requiredQueues().values()].map(
-        queue => queue.waitFlowControlled(queueHighBytes),
-      ));
-      if (!isActive()) return {commonAhead: 0, entryCovered};
-
-      const range = api.entryRange();
-      if (range) {
-        entryCovered = true;
-      } else if (!entryCovered) {
-        if (entryKind === 'startup' || entryKind === 'live') startupBytes += byteLength;
-        if ((entryKind === 'startup' || entryKind === 'live') &&
-            startupBytes >= startupNoProgressBytes) {
-          throw new MseStartupBufferError(
-            entryKind === 'live'
-              ? `${startupNoProgressBytes} bytes were read without forming a common live A/V range.`
-              : `${startupNoProgressBytes} bytes were read without forming a common A/V range at timestamp 0.`);
-        }
-      }
-
-      let ahead = api.commonAhead();
-      if (!entryCovered || ahead < highSeconds) return {commonAhead: ahead, entryCovered};
-      while (isActive() && ahead > lowSeconds) {
-        trim();
-        await wait(250);
-        ahead = api.commonAhead();
-      }
-      return {commonAhead: ahead, entryCovered};
-    },
-  };
-  return api;
-}
-
 function abortError() {
   if (typeof DOMException === 'function') return new DOMException('The seek was superseded.', 'AbortError');
   const error = new Error('The seek was superseded.');
@@ -792,11 +694,18 @@ export function createMseRecordedSeekSession({
   const sourceTargetUs = BigInt(presentationStartUs) + BigInt(targetUs);
   const sourceEndUs = BigInt(presentationEndUs);
   const toleranceUs = BigInt(Math.round(ENTRY_TOLERANCE_SECONDS * 1000000));
+  const probePrerollUs = BigInt(Math.round(probePrerollSeconds * 1000000));
+  const minimumLandingPrerollUs = requiredTracks.includes('video') &&
+    requiredTracks.includes('audio') ? 1000000n : 0n;
   const tracks = new Map();
   const cachedRanges = [];
   const probeFrontiers = new Map();
   const probeRaps = new Map();
-  const timelineSamples = [];
+  let timelineBeforeTarget = {
+    ptsUs: BigInt(presentationStartUs),
+    offset: 0n,
+  };
+  let timelineAfterTarget = null;
   let phase = 'idle';
   let bytesRead = 0n;
   let currentPushOffset = 0n;
@@ -815,11 +724,17 @@ export function createMseRecordedSeekSession({
     if (track.kind === 'audio' && unit.codec !== 'aac-latm') return;
     const pts = timestampUs(unit);
     if (pts === null) return;
-    timelineSamples.push({
+    const sample = {
       ptsUs: pts,
       offset: unit.inputOffset === undefined ? currentPushOffset : BigInt(unit.inputOffset),
-    });
-    if (timelineSamples.length > 512) timelineSamples.splice(0, timelineSamples.length - 512);
+    };
+    if (pts <= sourceTargetUs) {
+      if (!timelineBeforeTarget || pts > timelineBeforeTarget.ptsUs) {
+        timelineBeforeTarget = sample;
+      }
+    } else if (!timelineAfterTarget || pts < timelineAfterTarget.ptsUs) {
+      timelineAfterTarget = sample;
+    }
     if (phase !== 'probe') return;
     const previousFrontier = probeFrontiers.get(unit.trackId);
     if (previousFrontier === undefined || pts > previousFrontier) probeFrontiers.set(unit.trackId, pts);
@@ -891,11 +806,14 @@ export function createMseRecordedSeekSession({
       return videoTrackPriority(tracks.get(left.trackId)) - videoTrackPriority(tracks.get(right.trackId));
     })[0] ?? null;
 
+  const hasUsablePrerollRap = () => {
+    const rap = bestRap();
+    return rap !== null && rap.ptsUs + probePrerollUs >= sourceTargetUs;
+  };
+
   const interpolatedTargetOffset = () => {
-    const before = timelineSamples.filter(sample => sample.ptsUs <= sourceTargetUs)
-      .sort((left, right) => left.ptsUs > right.ptsUs ? -1 : left.ptsUs < right.ptsUs ? 1 : 0)[0];
-    const after = timelineSamples.filter(sample => sample.ptsUs > sourceTargetUs)
-      .sort((left, right) => left.ptsUs < right.ptsUs ? -1 : left.ptsUs > right.ptsUs ? 1 : 0)[0];
+    const before = timelineBeforeTarget;
+    const after = timelineAfterTarget;
     if (!before || !after || after.ptsUs === before.ptsUs || after.offset <= before.offset) return null;
     return before.offset + (after.offset - before.offset) * (sourceTargetUs - before.ptsUs) /
       (after.ptsUs - before.ptsUs);
@@ -929,8 +847,6 @@ export function createMseRecordedSeekSession({
     const estimate = BigInt(estimateValue);
     const estimatedWindow = source.size * BigInt(Math.round(probePrerollSeconds * 1000000)) / durationUs;
     const window = clampBigInt(estimatedWindow, chunkSize, 4n * 1024n * 1024n);
-    let lowerCandidate = 0n;
-    let upperCandidate = estimate;
     let candidate = estimate > window ? estimate - window : 0n;
     let chosen = null;
 
@@ -941,20 +857,24 @@ export function createMseRecordedSeekSession({
       probeRaps.clear();
       await demuxer.reposition(candidate, true);
       let offset = candidate;
-      while (offset < source.size && !frontiersPastTarget()) {
+      while (offset < source.size && !frontiersPastTarget() && !hasUsablePrerollRap()) {
         const data = await read(offset, chunkSize);
         await push(data, offset);
         offset += BigInt(data.byteLength);
       }
       chosen = bestRap();
-      if (chosen) break;
+      if (chosen && (sourceTargetUs - chosen.ptsUs >= minimumLandingPrerollUs ||
+          candidate === 0n)) break;
+      if (chosen) {
+        candidate = chosen.restartOffset > window ? chosen.restartOffset - window : 0n;
+        continue;
+      }
       if (candidate === 0n) throw new MseRecordedSeekError('no-rap');
-      upperCandidate = candidate;
       const interpolated = interpolatedTargetOffset();
       const interpolatedCandidate = interpolated === null ? null
         : interpolated > window ? interpolated - window : 0n;
       const nextCandidate = interpolatedCandidate !== null && interpolatedCandidate < candidate
-        ? interpolatedCandidate : (lowerCandidate + upperCandidate) / 2n;
+        ? interpolatedCandidate : candidate > window ? candidate - window : 0n;
       candidate = nextCandidate < candidate ? nextCandidate : 0n;
     }
 
@@ -964,21 +884,25 @@ export function createMseRecordedSeekSession({
     phase = 'landing';
     let offset = chosen.restartOffset;
     await demuxer.reposition(offset, true);
-    await demuxer.setMseRecordedSeekConcealmentTarget(
-      requiredTracks.includes('video') ? sourceTargetUs : null);
     await beforeLanding(chosenTrack, chosen);
     await demuxer.setMseOutputEnabled(true);
-
-    let pushedLandingInput = false;
-    while (!pushedLandingInput || !flowControl.entryCovered()) {
-      ensureActive();
-      if (offset >= source.size) throw new MseRecordedSeekError('source-ended');
-      const data = await read(offset, chunkSize);
-      await push(data, offset);
-      pushedLandingInput = true;
-      offset += BigInt(data.byteLength);
-      await waitForAppends();
-      await flowControl.afterPush(data.byteLength, active);
+    const videoConcealment = requiredTracks.includes('video');
+    await demuxer.setMseRecordedSeekConcealmentTarget(
+      videoConcealment ? sourceTargetUs : null);
+    try {
+      let pushedLandingInput = false;
+      while (!pushedLandingInput || !flowControl.entryCovered()) {
+        ensureActive();
+        if (offset >= source.size) throw new MseRecordedSeekError('source-ended');
+        const data = await read(offset, chunkSize);
+        await push(data, offset);
+        pushedLandingInput = true;
+        offset += BigInt(data.byteLength);
+        await waitForAppends();
+        await flowControl.afterPush(data.byteLength, active);
+      }
+    } finally {
+      if (videoConcealment) await demuxer.setMseRecordedSeekConcealmentTarget(null);
     }
     phase = 'complete';
     return {

@@ -259,6 +259,7 @@ void test_target_outside_damage_is_unchanged() {
     remuxer.setRecordedSeekConcealmentTarget(97'000'000);
     remuxer.push(hevc_unit(2, 98'000'000, 98'000'000, true, true));
     remuxer.push(hevc_unit(2, 98'033'367, 98'033'367, false, false));
+    remuxer.setRecordedSeekConcealmentTarget(std::nullopt);
     push_damage_episode(remuxer);
     remuxer.flush();
     const auto video = segments_of(sink.segments, "video");

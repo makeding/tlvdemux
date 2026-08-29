@@ -236,14 +236,30 @@ An explicit recorded seek is a separate public playback-entry contract. From
 head discovery through every RAP probe and the final A/V preroll,
 `createMseRecordedSeekSession()` shares one hard 16 MiB source-read budget.
 Overlapping probe and landing ranges are reused, and no source request is issued
-after exhaustion. A RAP before the requested media time is valid preroll: seek
-continues until the common buffered A/V interval covers the requested time,
+after exhaustion. Head discovery, probes, and landing use 1 MiB reads so a
+single coarse read cannot consume one eighth of that shared budget before the
+stable recovery RAP is reached. A RAP before the requested media time is valid
+preroll: seek continues until the common buffered A/V interval covers the requested time,
 then normal 15-second/8-second backpressure resumes. The probe records RAPs only
-through target + 50 ms, stops when observed candidate frontiers pass the target,
-and selects the closest RAP not later than the target without waiting for an
-unobserved layer. At the formal landing, immediately after its sole reposition
-and before any landing input, the session gives the HEVC remuxer the original
-source target as a one-shot recorded-seek concealment target. If that target
+through target + 50 ms. It stops as soon as it observes a RAP not later than
+the target within the two-second preroll window; otherwise it stops when the
+observed candidate frontiers pass the target. It selects the closest acceptable
+observed RAP not later than the target without waiting for an unobserved layer.
+Probe interpolation seeds its earlier anchor from the public
+union start at source offset zero, then retains the closest observations before
+and after the target instead of an access-unit history whose anchors can age
+out; if one side is still unavailable, the next bounded probe moves backward
+by one probe window. It must not bisect toward the file head and spend the
+shared budget in an unrelated earlier interval. An A/V landing requires its
+chosen RAP to precede the target by at least one second; a closer RAP triggers one
+bounded earlier probe so AAC begins before the exact target. The recording's
+earliest available RAP is the only exception when no earlier input exists. At
+the formal landing, the sole reposition uses that RAP's safe restart offset.
+Before the sequential landing input, the session gives the HEVC remuxer the
+original source target as a one-shot recorded-seek concealment target. It remains
+armed across out-of-PTS-order input
+until exact entry coverage succeeds or the landing fails, then the session
+explicitly clears it. No second reposition occurs. If that target
 lies in a selected-video source-damage episode, the
 remuxer fills only that hole with a still picture after the existing stable-GOP
 check: it extends the last complete pre-damage sample to the stable RAP decode

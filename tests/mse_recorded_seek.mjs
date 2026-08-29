@@ -24,6 +24,8 @@ function fixture({
   noRap = false,
   abortOnRead = false,
   cachedEstimateOffset = null,
+  estimatedOffset = 16n * BigInt(MiB),
+  probeRapUs = 51_000_000n,
 } = {}) {
   const media = {currentTime: 50};
   const video = queue();
@@ -50,7 +52,7 @@ function fixture({
   const demuxer = {
     async setMseOutputEnabled(enabled) { this.output = enabled; return true; },
     async setIndexDuration(value) { indexCalls.push(['duration', value]); return true; },
-    async estimateOffset(value) { indexCalls.push(['target', value]); return 16n * BigInt(MiB); },
+    async estimateOffset(value) { indexCalls.push(['target', value]); return estimatedOffset; },
     async setMseTimestampOffset(value) { indexCalls.push(['offset', value]); },
     async reposition(offset) {
       operations.push(['reposition', session?.phase, offset]);
@@ -72,7 +74,7 @@ function fixture({
       } else if (session.phase === 'probe') {
         if (!noRap) {
           session.observeAccessUnit({
-            codec: 'hevc', trackId: 1, ptsValue: 51000000n, ptsTimescale: 1000000,
+            codec: 'hevc', trackId: 1, ptsValue: probeRapUs, ptsTimescale: 1000000,
             randomAccess: true, restartOffset: position,
           });
         }
@@ -134,8 +136,8 @@ function fixture({
   assert.deepEqual(indexCalls.slice(0, 3), [
     ['offset', -2000000n], ['duration', 102000000n], ['target', 52000000n],
   ], 'seek estimate and MSE output did not share the union presentation range');
-  assert.deepEqual(concealmentTargets, [52_000_000n],
-    'formal landing did not arm the original source target exactly once');
+  assert.deepEqual(concealmentTargets, [52_000_000n, null],
+    'formal landing did not arm and clear the original source target exactly once');
   assert.deepEqual(operations.filter(([name, phase]) =>
     name === 'reposition' && phase === 'landing').length, 1,
   'formal landing performed a second reposition');
@@ -144,6 +146,18 @@ function fixture({
   'concealment target was armed before the final landing reposition reset');
   assert.equal(media.currentTime, 50,
     'recorded seek changed the user-requested MediaElement time');
+}
+
+{
+  const {session, media} = fixture({
+    estimatedOffset: 0n,
+    probeRapUs: 51_900_000n,
+  });
+  const result = await session.run();
+  assert.equal(result.restartOffset, 0n,
+    'a near-start seek did not accept the earliest available RAP');
+  assert.equal(media.currentTime, 50,
+    'the near-start RAP exception changed the requested MediaElement time');
 }
 
 {
@@ -161,13 +175,112 @@ function fixture({
     'recorded candidate rebuilt an estimate despite a cached active index result');
 }
 
+{
+  const media = {currentTime: 50};
+  const video = queue();
+  const audio = queue();
+  const queues = new Map([['video', video], ['audio', audio]]);
+  const requests = [];
+  const source = {
+    size: 32n * BigInt(MiB),
+    async read(offset, length) {
+      requests.push({offset, length});
+      return new Uint8Array(Number(length));
+    },
+  };
+  const track = {kind: 'video', codec: 'hevc', trackId: 1};
+  const audioTrack = {kind: 'audio', codec: 'aac-latm', trackId: 2};
+  let position = 0n;
+  const repositionOffsets = [];
+  let session;
+  const demuxer = {
+    async setMseOutputEnabled() { return true; },
+    async setIndexDuration() { return true; },
+    async estimateOffset() { return 24n * BigInt(MiB); },
+    async setMseTimestampOffset() {},
+    async reposition(offset) {
+      repositionOffsets.push(offset);
+      assert.ok(repositionOffsets.length <= 16,
+        `bounded probe fixture reposition looped: ${repositionOffsets.join(',')}`);
+      position = offset;
+      return true;
+    },
+    async setMseRecordedSeekConcealmentTarget() {},
+    async push(data) {
+      if (session.phase === 'head') {
+        session.observeTrack(track);
+        session.observeTrack(audioTrack);
+        session.observeAccessUnit({
+          codec: 'hevc', trackId: 1, ptsValue: 0n, ptsTimescale: 1_000_000,
+          randomAccess: true, restartOffset: 0n,
+        });
+      } else if (session.phase === 'probe' && position <= 18n * BigInt(MiB)) {
+        session.observeAccessUnit({
+          codec: 'hevc', trackId: 1, ptsValue: 49_000_000n, ptsTimescale: 1_000_000,
+          randomAccess: true, restartOffset: position,
+        });
+        session.observeAccessUnit({
+          codec: 'hevc', trackId: 1, ptsValue: 50_100_000n, ptsTimescale: 1_000_000,
+          randomAccess: false, restartOffset: position,
+        });
+      } else if (session.phase === 'probe' && position < 22n * BigInt(MiB)) {
+        session.observeAccessUnit({
+          codec: 'hevc', trackId: 1, ptsValue: 49_900_000n, ptsTimescale: 1_000_000,
+          randomAccess: true, restartOffset: position,
+        });
+        session.observeAccessUnit({
+          codec: 'hevc', trackId: 1, ptsValue: 50_100_000n, ptsTimescale: 1_000_000,
+          randomAccess: false, restartOffset: position,
+        });
+      } else if (session.phase === 'probe') {
+        // More than the old AU-history limit must not evict the earlier
+        // timeline anchor used to interpolate the next bounded probe.
+        for (let index = 0; index < 513; index += 1) {
+          session.observeAccessUnit({
+            codec: 'hevc', trackId: 1,
+            ptsValue: 60_000_000n + BigInt(index), ptsTimescale: 1_000_000,
+            randomAccess: false, restartOffset: position,
+          });
+        }
+      } else if (session.phase === 'landing') {
+        video.ranges = [{start: 49, end: 51}];
+        audio.ranges = [{start: 49, end: 51}];
+      }
+      position += BigInt(data.byteLength);
+      return true;
+    },
+  };
+  session = createMseRecordedSeekSession({
+    targetTimeSeconds: 50,
+    source,
+    durationUs: 100_000_000n,
+    demuxer,
+    media,
+    queues,
+    headReady: () => session?.phase === 'head' && requests.length > 0,
+    chunkBytes: MiB,
+  });
+  const result = await session.run();
+  assert.equal(result.rapPresentationTimeUs, 49_000_000n);
+  assert.equal(requests[1].offset, 23n * BigInt(MiB));
+  assert.ok(requests[2].offset > 18n * BigInt(MiB) &&
+    requests[2].offset < 22n * BigInt(MiB),
+  'an aged-out timeline anchor made the probe scan an unrelated earlier interval');
+  assert.ok(requests[3].offset <= 18n * BigInt(MiB),
+    'a RAP too close to the target did not reserve stable A/V landing preroll');
+  assert.equal(media.currentTime, 50,
+    'bounded backward probing changed the requested MediaElement time');
+}
+
 for (const landingRanges of [
   () => ({video: [{start: 51, end: 53}], audio: [{start: 51, end: 53}]}),
   () => ({video: [{start: 48, end: 51}], audio: [{start: 51.1, end: 53}]}),
 ]) {
-  const {session} = fixture({landingRanges});
+  const {session, concealmentTargets} = fixture({landingRanges});
   await assert.rejects(session.run(), error =>
     error.code === MSE_SEEK_NO_COMMON_AV && error.name !== 'MseStartupBufferError');
+  assert.deepEqual(concealmentTargets, [52_000_000n, null],
+    'a failed landing retained its one-shot concealment target');
 }
 
 {
