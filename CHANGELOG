@@ -5,7 +5,7 @@
 > labelled **legacy `tlvdemux` implementation**; this is a historical name,
 > not a separate product line.
 
-## [Unreleased]
+## [0.3.4] - 2026-08-29
 
 - Add public video-unavailable resilience modes, switch buffer requirements to
   audio after three failed forward RAP recoveries, and restore video only after
@@ -13,6 +13,13 @@
 - Add bounded recorded and live transition contracts, runtime
   `activeSourceBuffers` verification, and a stable `TLV_VIDEO_UNAVAILABLE` demo
   status without changing the video-stage geometry.
+- Keep explicit recorded seeks at the exact requested `currentTime` when the
+  target lies in damaged video: extend the final pre-damage frame or duplicate
+  the first stable RAP as a still filler, while preserving continuous AAC and
+  the original RAP timestamps.
+- Reuse the formally landed demuxer without a second reposition, rescan, or
+  expansion of the shared 16 MiB budget; unify the demo module versions and fix
+  recovery-logger initialization before accessing its controller.
 
 ## [0.3.3] - 2026-08-28
 
