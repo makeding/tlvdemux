@@ -30,6 +30,8 @@ import {createMseVideoRecoveryLogger, createRecordedMseTransitionManager,
   from './recorded-mse-transition.js?v=recorded-seek-concealment-v1';
 import {commitDemoMseCandidate, createMediaElementProxy, formatBytes, openDetachedMseMedia}
   from './mse-media-transaction.js?v=recorded-seek-concealment-v1';
+import {MSE_MAX_AUDIO_CHANNELS, createDemoTrackControls}
+  from './track-controls.js?v=recorded-seek-fence-v1';
 import {
   RangeUnsupportedError,
   createBlobRecordedSource,
@@ -165,11 +167,6 @@ elements.urlInput.addEventListener('input', () => {
   catch (_) { /* Keep the demo usable when storage is unavailable. */ }
 });
 
-const AUDIO_LAYOUTS = [
-  '不明', 'モノラル', 'デュアルモノ', 'ステレオ', '2.1ch', '3.0ch', '2.2ch',
-  '4.0ch', '5.0ch', '5.1ch', '3.3.1ch', '6.1ch', '7.1ch', '10.2ch', '22.2ch',
-];
-const MSE_MAX_AUDIO_CHANNELS = 6;
 const BrowserMediaSource = globalThis.ManagedMediaSource || globalThis.MediaSource;
 
 // Long-lived SDK objects use this proxy so an already-buffered candidate
@@ -177,124 +174,17 @@ const BrowserMediaSource = globalThis.ManagedMediaSource || globalThis.MediaSour
 // clocks or frame-callback registrations.
 const playbackMedia = createMediaElementProxy(() => elements.video);
 
-function mseAudioTrackSupported(track) {
-  const channels = track.audio?.channels ?? 0;
-  return channels === 0 || channels <= MSE_MAX_AUDIO_CHANNELS;
-}
-
-function videoTrackLabel(track) {
-  const level = selectionLevel(track);
-  const layer = level === 0 ? '通常' : level === 1 ? '降雨対応' : `level=${level ?? '—'}`;
-  return `${layer} · 0x${track.packetId.toString(16)}`;
-}
-
-function renderVideoTracks() {
-  elements.videoTrack.replaceChildren();
-  const automatic = document.createElement('option');
-  automatic.value = '';
-  automatic.textContent = '自動';
-  elements.videoTrack.append(automatic);
-  const sorted = [...knownVideoTracks.values()].sort((left, right) =>
-    (selectionLevel(left) ?? 0xff) - (selectionLevel(right) ?? 0xff) ||
-    left.packetId - right.packetId);
-  for (const track of sorted) {
-    const option = document.createElement('option');
-    option.value = String(track.packetId);
-    option.textContent = videoTrackLabel(track);
-    elements.videoTrack.append(option);
-  }
-  elements.videoTrack.value = videoSelectionMode === 'fixed' &&
-    selectedVideoPacketId !== null &&
-    knownVideoTracks.has(selectedVideoPacketId) ? String(selectedVideoPacketId) : '';
-  elements.videoTrack.disabled = knownVideoTracks.size < 2;
-}
-
-function preferredMseAudioTrack(tracks, preferredPacketId = null) {
-  const compatible = [...tracks.values()].filter(mseAudioTrackSupported);
-  if (preferredPacketId !== null) {
-    const preferred = compatible.find(track => track.packetId === preferredPacketId);
-    if (preferred) return preferred;
-  }
-  return compatible.find(track => track.audio?.mainComponent) || compatible[0];
-}
-
-function audioTrackLabel(track) {
-  const parts = [`0x${track.packetId.toString(16)}`];
-  if (track.language) parts.push(track.language);
-  if (track.audio) {
-    parts.push(AUDIO_LAYOUTS[track.audio.channelLayout] || `${track.audio.channelLayout}ch`);
-    if (track.audio.sampleRate) parts.push(`${track.audio.sampleRate}Hz`);
-    if (track.audio.mainComponent) parts.push('メイン');
-    if (track.audio.multilingual) parts.push('二か国語');
-  }
-  if (!mseAudioTrackSupported(track)) parts.push('MSE 非対応');
-  return parts.join(' · ');
-}
-
-function audioChoiceValue(choice) {
-  return choice.groupIdentification === null
-    ? `track:${choice.track.packetId}`
-    : `group:${choice.groupIdentification}`;
-}
-
-function renderAudioTracks() {
-  elements.audioTrack.replaceChildren();
-  const automatic = document.createElement('option');
-  automatic.value = '';
-  automatic.textContent = '自動';
-  elements.audioTrack.append(automatic);
-  const choices = audioTrackChoices(knownAudioTracks.values(), mseAudioTrackSupported);
-  for (const choice of choices) {
-    const {track, groupIdentification} = choice;
-    const option = document.createElement('option');
-    option.value = audioChoiceValue(choice);
-    option.textContent = groupIdentification === null
-      ? audioTrackLabel(track)
-      : `${audioTrackLabel(track)} · group=0x${groupIdentification.toString(16)}`;
-    option.disabled = !mseAudioTrackSupported(track);
-    elements.audioTrack.append(option);
-  }
-  let desiredGroup = selectedAudioGroupId;
-  if (desiredGroup === null && preferredAudioPacketId !== null) {
-    desiredGroup = knownAudioTracks.get(preferredAudioPacketId)?.assetGroups?.[0]
-      ?.groupIdentification ?? null;
-  }
-  const desiredChoice = desiredGroup !== null
-    ? choices.find(choice => choice.groupIdentification === desiredGroup)
-    : choices.find(choice => choice.track.packetId ===
-        (selectedAudioPacketId ?? preferredAudioPacketId));
-  elements.audioTrack.value = desiredChoice ? audioChoiceValue(desiredChoice) : '';
-  elements.audioTrack.disabled = choices.length === 0;
-}
-
-function subtitleTrackLabel(track) {
-  const parts = [`字幕 · 0x${track.packetId.toString(16)}`];
-  if (track.language) parts.push(track.language);
-  if (track.subtitle) {
-    parts.push(`mode=${track.subtitle.operationMode}`);
-    parts.push(`timing=${track.subtitle.timingMode}`);
-    parts.push(`display=${track.subtitle.displayMode}`);
-  }
-  return parts.join(' · ');
-}
-
-function renderSubtitleTracks() {
-  elements.subtitleTrack.replaceChildren();
-  const automatic = document.createElement('option');
-  automatic.value = '';
-  automatic.textContent = '自動';
-  elements.subtitleTrack.append(automatic);
-  for (const track of [...knownSubtitleTracks.values()].sort((a, b) => a.packetId - b.packetId)) {
-    const option = document.createElement('option');
-    option.value = String(track.packetId);
-    option.textContent = subtitleTrackLabel(track);
-    elements.subtitleTrack.append(option);
-  }
-  const desired = preferredSubtitlePacketId ?? selectedSubtitlePacketId;
-  elements.subtitleTrack.value = desired !== null && knownSubtitleTracks.has(desired)
-    ? String(desired) : '';
-  elements.subtitleTrack.disabled = knownSubtitleTracks.size === 0;
-}
+const {
+  mseAudioTrackSupported, videoTrackLabel, renderVideoTracks,
+  preferredMseAudioTrack, audioChoiceValue, renderAudioTracks, renderSubtitleTracks,
+} = createDemoTrackControls({
+  elements, selectionLevel, audioTrackChoices,
+  state: () => ({
+    knownVideoTracks, videoSelectionMode, selectedVideoPacketId,
+    knownAudioTracks, selectedAudioGroupId, preferredAudioPacketId, selectedAudioPacketId,
+    knownSubtitleTracks, preferredSubtitlePacketId, selectedSubtitlePacketId,
+  }),
+});
 
 function appendLog(message) {
   if (elements.log.textContent === '読み込み待ち…') elements.log.textContent = '';
@@ -871,6 +761,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const maybeStartPlayback = () => {
     if (generation !== runGeneration ||
         playbackFlow.requiredTracks.some(type => !queues.has(type))) return;
+    if (seekSession && seekSession.phase !== 'complete') return;
     if (played) return;
     const started = startMsePlayback({
       media: elements.video,
@@ -1526,7 +1417,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   demuxer = new wasmModule.TlvDemuxer(demuxCallbacks);
   demuxIdentity = Object.freeze({generation, demuxer, sourceIdentity: source.identity});
   activeDemuxIdentity = demuxIdentity;
-  playbackIntents.begin({
+  const initialPlaybackIntent = playbackIntents.begin({
     generation,
     demuxIdentity,
     kind: startTimeSeconds > 0 ? 'explicit-seek' : 'playback',
@@ -1698,7 +1589,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       isActive: () => generation === runGeneration,
       requiredTracks,
       headReady: () => requiredTracks.length === 1
-        ? selectedAudio !== null : selectedVideo !== null,
+        ? selectedAudio !== null : selectedVideo !== null && selectedAudio !== null,
       candidateTrack: track => requiredTracks.length === 1
         ? track.kind === 'audio' && track.trackId === selectedAudio
         : track.kind === 'video' &&
@@ -1730,10 +1621,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       },
       beforeLanding: async () => {
         suppressOutput = false;
-        if (!reuseMedia) {
-          internalSeekTarget = startTimeSeconds;
-          elements.video.currentTime = startTimeSeconds;
-        }
       },
       waitForAppends: async () => {
         await Promise.all([...queues.values()].map(queue => queue.waitStable()));
@@ -1749,7 +1636,12 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     if (generation !== runGeneration) return;
     offset = result.nextOffset;
     playbackBytes = result.bytesRead;
-    resumePlaybackIntent(startTimeSeconds);
+    internalSeekTarget = startTimeSeconds;
+    elements.video.currentTime = startTimeSeconds;
+    if (playbackIntents.isCurrent(initialPlaybackIntent)) {
+      resumePlaybackIntent(startTimeSeconds);
+    }
+    maybeStartPlayback();
     appendLog(`シーク ${startTimeSeconds.toFixed(3)}s -> 推定 ` +
       `${formatBytes(result.estimateOffset)}、RAP ` +
       `${(Number(result.rapPresentationTimeUs) / 1000000).toFixed(3)}s @ ` +
