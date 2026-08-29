@@ -846,8 +846,10 @@ export function createMseRecordedSeekSession({
     }
     const estimate = BigInt(estimateValue);
     const estimatedWindow = source.size * BigInt(Math.round(probePrerollSeconds * 1000000)) / durationUs;
-    const window = clampBigInt(estimatedWindow, chunkSize, 4n * 1024n * 1024n);
-    let candidate = estimate > window ? estimate - window : 0n;
+    const window = clampBigInt(estimatedWindow, chunkSize, 2n * 1024n * 1024n);
+    const estimateForwardBias = 10n * 1024n * 1024n * BigInt(targetUs) / durationUs;
+    let candidate = clampBigInt(estimate + estimateForwardBias, 0n,
+      source.size > chunkSize ? source.size - chunkSize : 0n);
     let chosen = null;
 
     for (;;) {
@@ -866,7 +868,10 @@ export function createMseRecordedSeekSession({
       if (chosen && (sourceTargetUs - chosen.ptsUs >= minimumLandingPrerollUs ||
           candidate === 0n)) break;
       if (chosen) {
-        candidate = chosen.restartOffset > window ? chosen.restartOffset - window : 0n;
+        const earlierCandidate = chosen.restartOffset > window
+          ? chosen.restartOffset - window : 0n;
+        candidate = earlierCandidate < candidate
+          ? earlierCandidate : candidate > window ? candidate - window : 0n;
         continue;
       }
       if (candidate === 0n) throw new MseRecordedSeekError('no-rap');
