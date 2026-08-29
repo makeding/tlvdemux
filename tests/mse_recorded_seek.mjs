@@ -19,7 +19,12 @@ function queue(ranges = []) {
   };
 }
 
-function fixture({landingRanges, noRap = false, abortOnRead = false} = {}) {
+function fixture({
+  landingRanges,
+  noRap = false,
+  abortOnRead = false,
+  cachedEstimateOffset = null,
+} = {}) {
   const media = {currentTime: 50};
   const video = queue();
   const audio = queue();
@@ -90,6 +95,7 @@ function fixture({landingRanges, noRap = false, abortOnRead = false} = {}) {
     media,
     queues,
     flowControl,
+    estimateOffset: cachedEstimateOffset,
     signal: controller.signal,
     headReady: () => session?.phase === 'head' && requests.length > 0,
     chunkBytes: MiB,
@@ -112,6 +118,21 @@ function fixture({landingRanges, noRap = false, abortOnRead = false} = {}) {
   assert.deepEqual(indexCalls.slice(0, 3), [
     ['offset', -2000000n], ['duration', 102000000n], ['target', 52000000n],
   ], 'seek estimate and MSE output did not share the union presentation range');
+}
+
+{
+  const cachedCalls = [];
+  const {session, indexCalls} = fixture({
+    cachedEstimateOffset(targetUs, sourceSize) {
+      cachedCalls.push({targetUs, sourceSize});
+      return 16n * BigInt(MiB);
+    },
+  });
+  await session.run();
+  assert.deepEqual(cachedCalls, [{targetUs: 52_000_000n, sourceSize: 32n * BigInt(MiB)}],
+    'recorded candidate did not reuse the active recording index estimate');
+  assert.ok(!indexCalls.some(([kind]) => kind === 'target'),
+    'recorded candidate rebuilt an estimate despite a cached active index result');
 }
 
 for (const landingRanges of [

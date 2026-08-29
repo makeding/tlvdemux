@@ -51,6 +51,8 @@ const sourceDamages = [];
 const layerSwitches = [];
 const videoRandomAccessUnits = [];
 const videoSegments = [];
+const audioSegments = [];
+const videoRecoveryEvents = [];
 let selectedVideo = null;
 let selectedAudio = null;
 let demuxer;
@@ -77,7 +79,18 @@ demuxer = new module.TlvDemuxer({
         startTimeUs: BigInt(segment.startTimeUs),
         endTimeUs: BigInt(segment.endTimeUs),
       });
+    } else if (segment.type === 'audio') {
+      audioSegments.push({
+        startTimeUs: BigInt(segment.startTimeUs),
+        endTimeUs: BigInt(segment.endTimeUs),
+      });
     }
+  },
+  onMseVideoRecovery(event) {
+    videoRecoveryEvents.push({
+      ...event,
+      presentationTimeUs: BigInt(event.presentationTimeUs),
+    });
   },
   onMseLayerSwitch(layerSwitch) { layerSwitches.push(layerSwitch); },
   onError(error) {
@@ -128,9 +141,47 @@ try {
     segment.endTimeUs < shortRecovery.recoveryTimeUs);
   assert.ok(sealedShortPrefix,
     'source damage discarded the complete sub-second video prefix before recovery');
+  const shortObservationIndex = videoRecoveryEvents.findIndex(event =>
+    event.phase === 'observation-started' &&
+    event.presentationTimeUs <= shortRecovery.startTimeUs &&
+    event.presentationTimeUs + 10_000n >= shortRecovery.startTimeUs);
+  assert.notEqual(shortObservationIndex, -1,
+    'first source damage exposed no canonical recovery observation');
+  const shortStableOffset = videoRecoveryEvents.slice(shortObservationIndex)
+    .findIndex(event => event.phase === 'stable-rap-committed');
+  assert.notEqual(shortStableOffset, -1,
+    'first source damage exposed no stable recovery RAP');
+  const shortRecoveryEvents = videoRecoveryEvents.slice(
+    shortObservationIndex, shortObservationIndex + shortStableOffset + 1,
+  );
+  const shortStableEvent = shortRecoveryEvents.at(-1);
   assert.ok(videoSegments.some(segment =>
-    segment.startTimeUs === shortRecovery.recoveryTimeUs),
-  'video did not restart its MSE media at the parser-provided recovery RAP');
+    segment.startTimeUs === shortStableEvent.presentationTimeUs),
+  'video did not restart its first damaged episode at the stable recovery RAP');
+
+  const unstableRecoveryIslands = [
+    [99_201_500n, 99_351_650n],
+    [99_468_433n, 99_485_117n],
+  ];
+  for (const [start, end] of unstableRecoveryIslands) {
+    assert.ok(!videoSegments.some(segment =>
+      segment.startTimeUs < end && segment.endTimeUs > start),
+    `unstable recovery island escaped into MSE video: ${start}-${end}`);
+  }
+  assert.ok(videoSegments.some(segment => segment.startTimeUs === 100_269_228n),
+    'video did not restart at the authoritative stable RAP 100.269228s');
+  const stableRecoveryEvents = videoRecoveryEvents.filter(event =>
+    event.presentationTimeUs >= 98_000_000n && event.presentationTimeUs <= 101_000_000n);
+  assert.deepEqual(stableRecoveryEvents.map(event => [event.phase, event.presentationTimeUs]), [
+      ['observation-started', 98_380_000n],
+      ['candidate-rejected', 99_468_433n],
+      ['stable-rap-committed', 100_269_228n],
+    ], 'authoritative recovery observation boundaries changed');
+  assert.ok(audioSegments.length > 1, 'authoritative sample emitted no continuous AAC');
+  for (let index = 1; index < audioSegments.length; index += 1) {
+    assert.ok(audioSegments[index].startTimeUs <= audioSegments[index - 1].endTimeUs + 2n,
+      `AAC stopped across source damage at segment ${index}`);
+  }
 
   const sixSecondRecovery = damages.find(damage => {
     if (damage.action !== 'seek-if-stalled' || damage.startTimeUs === null ||
@@ -170,11 +221,13 @@ try {
   });
   recovery.reportDamage(shortRecovery);
   assert.deepEqual(jumps, [], 'sample parser prefetch immediately executed seek-if-stalled');
+  for (const event of shortRecoveryEvents) recovery.observeVideoRecoveryEvent(event);
   recovery.notifyWaiting();
   recovery.notifyWaiting();
   assert.equal(jumps.length, 1, 'sample waiting did not execute recovery exactly once');
-  assert.equal(jumps[0].target, Number(shortRecovery.recoveryTimeUs) / 1_000_000,
-    'sample waiting did not seek to the parser-provided recovery RAP');
+  assert.equal(jumps[0].target,
+    Number(shortStableEvent.presentationTimeUs) / 1_000_000,
+    'sample waiting did not seek to the parser-proven stable recovery RAP');
 
   const delayedJumps = [];
   const stalledMedia = {
@@ -205,8 +258,8 @@ try {
     target: nextForwardRap.mediaTime,
     previous: 6.58,
   }], 'the observed 6.580s waiting did not advance to the next real RAP');
-  assert.equal(stalledMedia.playCount, 1,
-    'the authoritative 6.580s recovery still required a manual play click');
+  assert.equal(stalledMedia.playCount, 0,
+    'the authoritative 6.580s recovery overwrote visible MediaElement play/pause intent');
 
   const prefetchedScreenshotDamage = damages.find(damage => {
     if (damage.action !== 'seek-if-stalled' || damage.startTimeUs === null ||
@@ -231,11 +284,27 @@ try {
     .sort((left, right) => left.mediaTime - right.mediaTime);
   assert.ok(screenshotRaps.length >= 3,
     'sample exposed fewer than three real RAPs after the prefetched damage');
+  const screenshotObservationIndex = videoRecoveryEvents.findIndex(event =>
+    event.phase === 'observation-started' &&
+    event.presentationTimeUs <= prefetchedScreenshotDamage.startTimeUs &&
+    event.presentationTimeUs + 10_000n >= prefetchedScreenshotDamage.startTimeUs);
+  assert.notEqual(screenshotObservationIndex, -1,
+    'prefetched screenshot damage exposed no canonical recovery observation');
+  const screenshotStableOffset = videoRecoveryEvents.slice(screenshotObservationIndex)
+    .findIndex(event => event.phase === 'stable-rap-committed');
+  assert.notEqual(screenshotStableOffset, -1,
+    'prefetched screenshot damage exposed no stable recovery RAP');
+  const screenshotRecoveryEvents = videoRecoveryEvents.slice(
+    screenshotObservationIndex, screenshotObservationIndex + screenshotStableOffset + 1,
+  );
+  const screenshotStableEvent = screenshotRecoveryEvents.at(-1);
+  const screenshotStableTarget = Number(
+    screenshotStableEvent.presentationTimeUs - presentationStartUs,
+  ) / 1_000_000;
   const screenshotRecoverySegment = videoSegments.find(segment =>
-    segment.startTimeUs >= prefetchedScreenshotDamage.recoveryTimeUs - 2n &&
-    segment.startTimeUs <= prefetchedScreenshotDamage.recoveryTimeUs + 2n);
+    segment.startTimeUs === screenshotStableEvent.presentationTimeUs);
   assert.ok(screenshotRecoverySegment,
-    'prefetched screenshot damage did not restart video at its real recovery RAP');
+    'prefetched screenshot damage did not restart video at its stable recovery RAP');
   const prefetchedJumps = [];
   const prefetchedMedia = {
     currentTime: 101.810,
@@ -279,14 +348,17 @@ try {
     },
   });
   screenshotController.reportDamage(prefetchedScreenshotDamage);
+  for (const event of screenshotRecoveryEvents) {
+    screenshotController.observeVideoRecoveryEvent(event);
+  }
   screenshotController.notifyWaiting();
   assert.deepEqual(screenshotJumps, [],
-    'the future damage recovery ran before its real RAP was buffered');
-  screenshotBufferedEnd = screenshotRecovery + 0.5;
+    'the future damage recovery ran before its stable RAP was buffered');
+  screenshotBufferedEnd = screenshotStableTarget + 0.5;
   screenshotController.notifyBufferedChange();
   assert.deepEqual(screenshotJumps.map(value => value.toFixed(6)),
-    [screenshotRecovery.toFixed(6)],
-    'the future damage waiting did not run when its recovery RAP became buffered');
+    [screenshotStableTarget.toFixed(6)],
+    'the future damage waiting did not run when its stable recovery RAP became buffered');
   screenshotController.destroy();
 
   const thirteenSecondRecovery = damages.find(damage =>
@@ -342,8 +414,8 @@ try {
     {target: thirteenSecondRaps[0].mediaTime, previous: 13.245},
     {target: thirteenSecondRaps[1].mediaTime, previous: thirteenSecondRaps[0].mediaTime},
   ], 'the repeated 13.747s waiting did not advance to the next real RAP');
-  assert.equal(repeatedStallMedia.playCount, 2,
-    'repeated damage recovery did not resume playback after each SDK-owned seek');
+  assert.equal(repeatedStallMedia.playCount, 0,
+    'repeated damage recovery overwrote visible MediaElement play/pause intent');
   repeatedStallRecovery.observePresentedFrame(
     Number(thirteenSecondRecovery.recoveryTimeUs - presentationStartUs) / 1_000_000 + 0.01);
   repeatedStallRecovery.notifyWaiting();
@@ -414,6 +486,7 @@ try {
       sourceRecovery: Number(prefetchedScreenshotDamage.recoveryTimeUs) / 1_000_000,
       mediaStart: screenshotDamageStart,
       mediaRecovery: screenshotRecovery,
+      stableMediaRecovery: screenshotStableTarget,
       nextRaps: screenshotRaps.slice(0, 4).map(item => item.mediaTime),
       segmentBeforeDamage: videoSegments
         .filter(segment => segment.endTimeUs <= prefetchedScreenshotDamage.startTimeUs)
@@ -432,6 +505,8 @@ try {
     repeatedStallJumps,
     resilienceJumps,
     resilienceModes,
+    stableRecovery: videoRecoveryEvents.filter(event =>
+      event.presentationTimeUs >= 98_000_000n && event.presentationTimeUs <= 101_000_000n),
     videoSegmentsNearFirstDamage: videoSegments.filter(segment =>
       segment.startTimeUs < shortRecovery.recoveryTimeUs + 1_000_000n &&
       segment.endTimeUs > shortRecovery.startTimeUs - 1_000_000n),

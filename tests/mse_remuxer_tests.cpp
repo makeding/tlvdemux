@@ -539,11 +539,31 @@ void test_video_source_damage_waits_for_a_clean_gop_before_restart() {
         unit.discontinuity_reasons = aribtlv::DiscontinuityReason::SourceDamage;
         return unit;
     };
+    const auto damage_span = [](const std::int64_t start_us,
+                                const std::int64_t recovery_us) {
+        aribtlv::DamageSpan span;
+        span.track_id = 2;
+        span.kind = aribtlv::TrackKind::Video;
+        span.codec = aribtlv::Codec::Hevc;
+        span.start_time = aribtlv::Timestamp{start_us, 1'000'000};
+        span.end_time = {recovery_us, 1'000'000};
+        span.recovery_time = aribtlv::Timestamp{recovery_us, 1'000'000};
+        span.start_input_offset = 100;
+        span.end_input_offset = 200;
+        span.recovery_input_offset = 300;
+        span.recovery_restart_offset = 250;
+        span.reasons = aribtlv::DiscontinuityReason::SourceDamage;
+        span.recovered = true;
+        span.recovery_random_access = true;
+        return span;
+    };
     remuxer.push(damage(hevc_unit(2, 98'380'000, 98'380'000, false, false)));
     remuxer.push(hevc_unit(2, 99'201'500, 99'201'500, true, false));
     remuxer.push(hevc_unit(2, 99'351'650, 99'351'650, false, false));
+    remuxer.observeDamage(damage_span(98'384'005, 99'201'500));
     remuxer.push(damage(hevc_unit(2, 99'468'433, 99'468'433, true, false)));
     remuxer.push(hevc_unit(2, 99'485'117, 99'485'117, false, false));
+    remuxer.observeDamage(damage_span(99'468'433, 99'735'361));
     remuxer.push(hevc_unit(2, 100'269'228, 100'269'228, true, false));
     remuxer.push(hevc_unit(2, 100'302'595, 100'302'595, false, false));
     remuxer.flush();
@@ -562,6 +582,8 @@ void test_video_source_damage_waits_for_a_clean_gop_before_restart() {
                   tlvdemux::MseVideoRecoveryPhase::CandidateRejected &&
               sink.video_recovery[2].phase ==
                   tlvdemux::MseVideoRecoveryPhase::StableRapCommitted &&
+              sink.video_recovery[0].presentation_time_us == 98'380'000 &&
+              sink.video_recovery[1].presentation_time_us == 99'468'433 &&
               sink.video_recovery[2].presentation_time_us == 100'269'228,
           "source-damage recovery diagnostics lost the stable three-event contract");
 }

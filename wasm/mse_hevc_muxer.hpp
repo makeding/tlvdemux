@@ -47,6 +47,8 @@ public:
     }
     void stage_next_switch() noexcept {
         source_damage_observation_ = SourceDamageObservation::None;
+        recovery_candidate_rejected_ = false;
+        recovery_episode_reported_ = false;
         recovery_observation_eligible_ = false;
         stage_next_switch_ = true;
     }
@@ -60,6 +62,8 @@ public:
         sequence_start_ = true;
         splice_boundary_us_.reset();
         source_damage_observation_ = SourceDamageObservation::None;
+        recovery_candidate_rejected_ = false;
+        recovery_episode_reported_ = false;
         stage_next_switch_ = true;
     }
     // AacMuxer has its own (sample-rate) track timescale, so it needs this
@@ -67,6 +71,34 @@ public:
     std::optional<std::int64_t> timeline_offset_us() const noexcept {
         if (!timeline_offset_ticks_) return std::nullopt;
         return scaled(*timeline_offset_ticks_, track_->timescale, 1000000);
+    }
+    void observe_source_damage(const aribtlv::DamageSpan& damage) {
+        if (damage.kind != aribtlv::TrackKind::Video ||
+            !input_track_id_ || damage.track_id != *input_track_id_ ||
+            !recovery_observation_eligible_ ||
+            !aribtlv::hasDiscontinuityReason(
+                damage.reasons, aribtlv::DiscontinuityReason::SourceDamage)) return;
+        const auto timestamp = damage.start_time.value_or(damage.end_time);
+        const auto start_us = scaled(timestamp.value, timestamp.timescale, 1000000);
+        if (!recovery_episode_reported_) {
+            // DamageSpan is the canonical merged episode boundary. Diagnostics
+            // use the transport's 10 ms loss-window precision rather than the
+            // first arbitrary damaged access unit that happened to reach MSE.
+            const auto boundary_us = start_us >= 0
+                ? start_us / 10000 * 10000
+                : start_us;
+            output_.video_recovery(tlvdemux::MseVideoRecoveryEvent{
+                damage.track_id, boundary_us,
+                tlvdemux::MseVideoRecoveryPhase::ObservationStarted,
+            });
+            recovery_episode_reported_ = true;
+        } else if (recovery_candidate_rejected_) {
+            output_.video_recovery(tlvdemux::MseVideoRecoveryEvent{
+                damage.track_id, start_us,
+                tlvdemux::MseVideoRecoveryPhase::CandidateRejected,
+            });
+            recovery_candidate_rejected_ = false;
+        }
     }
 
     void reset(const bool clear_policy = false) {
@@ -84,6 +116,8 @@ public:
         splice_boundary_us_.reset();
         stage_next_switch_ = false;
         source_damage_observation_ = SourceDamageObservation::None;
+        recovery_candidate_rejected_ = false;
+        recovery_episode_reported_ = false;
         configuration_policy_dirty_ = false;
         current_video_properties_.reset();
         if (clear_policy) {
@@ -135,10 +169,14 @@ public:
             !track_switch_boundary && !requested_switch_boundary;
         if (track_switch_boundary || requested_switch_boundary) {
             source_damage_observation_ = SourceDamageObservation::None;
+            recovery_candidate_rejected_ = false;
+            recovery_episode_reported_ = false;
         } else if (unit.discontinuity && !source_damage) {
             // Reposition and genuine epoch changes keep their existing
             // first-RAP startup contract; they are not source recovery.
             source_damage_observation_ = SourceDamageObservation::None;
+            recovery_candidate_rejected_ = false;
+            recovery_episode_reported_ = false;
         } else if (observe_source_damage) {
             const auto previous_observation = source_damage_observation_;
             if (source_damage_observation_ == SourceDamageObservation::None) {
@@ -146,21 +184,18 @@ public:
                 // GOPs are never enqueued, so observation cannot enlarge the
                 // fragment queue or the browser transition budget.
                 flush();
+            } else if (previous_observation == SourceDamageObservation::CandidateGop) {
+                recovery_candidate_rejected_ = true;
             }
-            output_.video_recovery(tlvdemux::MseVideoRecoveryEvent{
-                unit.track_id,
-                scaled(unit.pts.value, unit.pts.timescale, 1000000),
-                previous_observation == SourceDamageObservation::CandidateGop
-                    ? tlvdemux::MseVideoRecoveryPhase::CandidateRejected
-                    : tlvdemux::MseVideoRecoveryPhase::ObservationStarted,
-            });
             started_ = false;
             no_rasl_output_ = false;
             sequence_start_ = true;
             configuration_policy_dirty_ = true;
-            source_damage_observation_ = irap >= 0 && has_vcl
-                ? SourceDamageObservation::CandidateGop
-                : SourceDamageObservation::WaitingForRap;
+            if (irap >= 0 && has_vcl) {
+                source_damage_observation_ = SourceDamageObservation::CandidateGop;
+            } else {
+                source_damage_observation_ = SourceDamageObservation::WaitingForRap;
+            }
             return;
         } else if (source_damage_observation_ ==
                    SourceDamageObservation::WaitingForRap) {
@@ -175,6 +210,8 @@ public:
             // new source-damage marker. Restart at this boundary; the observed
             // GOP itself was intentionally discarded rather than cached.
             source_damage_observation_ = SourceDamageObservation::None;
+            recovery_candidate_rejected_ = false;
+            recovery_episode_reported_ = false;
             output_.video_recovery(tlvdemux::MseVideoRecoveryEvent{
                 unit.track_id,
                 scaled(unit.pts.value, unit.pts.timescale, 1000000),
@@ -514,5 +551,7 @@ private:
     bool stage_next_switch_ = false;
     SourceDamageObservation source_damage_observation_ =
         SourceDamageObservation::None;
+    bool recovery_candidate_rejected_ = false;
+    bool recovery_episode_reported_ = false;
     bool configuration_policy_dirty_ = false;
 };

@@ -283,6 +283,14 @@ authorization, a causal `waiting` after each attempted RAP, and the absence of
 a newly presented video frame are all required. Ordinary waiting, a paused
 MediaElement, an explicit seek, a layer/audio-track switch, stale generation,
 or damage on an inactive video track must never enter audio-only playback.
+The integration explicitly forwards the visible MediaElement's `pause` and
+`play` lifecycle through `notifyPlaybackPaused()` and
+`notifyPlaybackResumed()`. A pause freezes waiting consumption, recovery-RAP
+attempts, audio-only decisions, and restore commits without clearing the current
+damage episode, stable RAP, or prior attempts. Resume only removes that freeze:
+recovery may continue after a new causal `waiting` event or a newly presented
+video frame, never from a waiting or buffer event retained across the pause. No
+damage-recovery path may call `play()` on the visible MediaElement.
 
 Audio-only playback changes the MSE required-track set to audio, so startup,
 buffer coverage, backpressure, and recorded-seek landing do not wait for the
@@ -291,6 +299,14 @@ forms an unbounded transition cache. A runtime in-place switch is accepted only
 after the video SourceBuffer is actually absent from `activeSourceBuffers`;
 otherwise the integration must build a fresh audio-only MediaSource. Recorded
 rebuilds reuse the public index/seek session and its single 16 MiB read budget.
+They are resource transactions: the old MediaSource remains attached with its
+current audio, media clock, and user play/pause intent while a bounded hidden
+candidate is built from the cached duration/index. Only a fully buffered
+audio-only candidate, or an A/V candidate whose restore RAP was actually
+presented, may be promoted. Pause may retain candidate buffers but forbids
+candidate playback and commit. Any open, format, seek, append, or decode failure
+discards only the candidate; it must not detach, stop, seek, or otherwise mutate
+the old MediaSource.
 Live integrations retain bounded current input while the replacement audio
 pipeline becomes playable; they must not reconnect or stop feeding the existing
 audio pipeline. The audio clock remains authoritative throughout the transition.
@@ -383,11 +399,11 @@ attempts can produce another causal `waiting` at `7.341s` before `seeked`.
 Because that clock still matches the last SDK attempt and presented video is
 still behind the first recovery RAP, the event must advance to the next real
 RAP at `7.874540s`. A `seeking` state at any unrelated target remains blocked.
-Each authorized recovery seek captures the MediaElement play intent before
-writing `currentTime` and, when it was playing, resumes it even if the browser
-then reports `paused`. Requiring a manual play click is a failed automatic
-recovery. A genuinely user-paused element, or ordinary `waiting` without a
-matching selected-video damage authorization, must never start playback.
+An authorized recovery seek only writes the recovery target. It never calls
+`play()` on the visible MediaElement; the browser's existing playback intent
+continues to own play/pause. A genuinely user-paused element, or ordinary
+`waiting` without a matching selected-video damage authorization, must never
+start playback.
 
 Recovery also requires decodable MSE media after the damage boundary. A
 selected-video source-damage marker seals and emits every complete valid video

@@ -148,19 +148,59 @@ const damage = {
 }
 
 {
-  const player = media(5);
+  const player = media(95.562112);
+  const modes = [];
   const controller = createMsePlaybackResilienceController({
     media: player,
     initialMode: MsePlaybackMode.RESTORING_VIDEO,
-    initialRestoreTarget: 5,
+    initialRestoreTarget: 95.562112,
     seek() {},
+    onModeChange(event) { modes.push(event); },
   });
-  controller.observePresentedFrame(4.99);
+  assert.equal(modes[0].target, 95.562112,
+    'the initial restoring-video event omitted its restore target');
+  controller.observePresentedFrame(95.56);
   assert.equal(controller.mode, MsePlaybackMode.RESTORING_VIDEO,
     'a rebuilt restore candidate committed before its RAP was presented');
-  controller.observePresentedFrame(5);
+  controller.observePresentedFrame(95.562112);
   assert.equal(controller.mode, MsePlaybackMode.AUDIO_VIDEO,
     'a rebuilt restore candidate did not commit after actual presentation');
+  controller.destroy();
+}
+
+{
+  const player = media(0.5);
+  const seeks = [];
+  const audioOnlyRequests = [];
+  const controller = createMsePlaybackResilienceController({
+    media: player,
+    isCurrentLayer: item => item.videoTrackId === 2,
+    seek(target) { seeks.push(target); player.currentTime = target; },
+    onAudioOnlyRequested(event) { audioOnlyRequests.push(event); },
+  });
+  controller.reportDamage(damage);
+  controller.notifyWaiting();
+  assert.deepEqual(seeks, [1]);
+  controller.notifyPlaybackPaused();
+  player.paused = true;
+  for (const target of [2, 3, 4]) {
+    controller.observeAccessUnit(rap(target));
+    controller.notifyBufferedChange();
+    controller.notifyWaiting();
+  }
+  assert.deepEqual(seeks, [1], 'pause consumed recovery RAP attempts');
+  assert.deepEqual(controller.attemptedRaps, [1], 'pause mutated prior recovery attempts');
+  assert.equal(controller.mode, MsePlaybackMode.RECOVERING_VIDEO,
+    'pause entered audio-only or reset the damage episode');
+  assert.equal(audioOnlyRequests.length, 0, 'pause requested audio-only playback');
+  assert.equal(player.playCount, 0, 'damage recovery overrode the user pause with play()');
+  player.paused = false;
+  controller.notifyPlaybackResumed();
+  assert.deepEqual(seeks, [1], 'resume consumed a stale waiting/buffer event');
+  controller.notifyWaiting();
+  assert.deepEqual(seeks, [1, 2],
+    'a new post-resume waiting did not consume exactly one forward stable RAP');
+  assert.equal(player.playCount, 0, 'post-resume recovery called visible MediaElement.play()');
   controller.destroy();
 }
 

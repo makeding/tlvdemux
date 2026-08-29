@@ -10,7 +10,7 @@ export interface MseLiveTransitionCommit {
   flow: unknown;
   pipeline: unknown;
   probeMedia: HTMLVideoElement;
-  presentedTime: number | null;
+  presentedTime?: number | null;
 }
 
 export interface MseLiveTransitionManager {
@@ -27,6 +27,8 @@ export interface MseLiveTransitionManager {
   transition(mode: 'audio-only' | 'restoring-video', target: number): Promise<{
     presentedTime: number | null;
   }>;
+  notifyPlaybackPaused(): void;
+  notifyPlaybackResumed(): void;
   destroy(): void;
 }
 
@@ -37,9 +39,15 @@ export declare function createLiveMseTransitionManager(options: {
   isActive: () => boolean;
   openMediaSource: (
     MediaSourceClass: typeof MediaSource, media: HTMLMediaElement,
+    lifecycle: {waitUntilPlaybackResumed(): Promise<void>},
   ) => Promise<{mediaSource: MediaSource; url: string}>;
   commit: (candidate: MseLiveTransitionCommit) => unknown | Promise<unknown>;
   appendLog: (message: string) => void;
+  liveMode?: boolean;
+  duration?: number;
+  prepareCandidate?: ((candidate: MseLiveTransitionCommit & {
+    cleanup: (() => void) | null;
+  }) => unknown | Promise<unknown>) | null;
   createProbeMedia?: () => HTMLVideoElement;
   mountProbeMedia?: (media: HTMLVideoElement) => void;
   revokeObjectURL?: (url: string) => void;
@@ -48,3 +56,10 @@ export declare function createLiveMseTransitionManager(options: {
     options: MseAppendQueueOptions, mediaSource: MediaSource, media: HTMLMediaElement,
   ) => unknown;
 }): MseLiveTransitionManager;
+
+export declare function promoteMseCandidateMedia(options: {
+  previousMedia: HTMLMediaElement;
+  candidateMedia: HTMLMediaElement;
+  restoreFocus?: boolean;
+  rebind?: (candidate: HTMLMediaElement, previous: HTMLMediaElement) => void;
+}): HTMLMediaElement;

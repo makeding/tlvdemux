@@ -297,7 +297,7 @@ const media = currentTime => ({
     recoveryRestartOffset: 250n,
   });
   recovery.notifyWaiting();
-  assert.deepEqual(jumps, [11.5], 'authorized paused recovery did not retain its target');
+  assert.deepEqual(jumps, [], 'authorized paused recovery consumed its retained target');
   assert.equal(player.playCount, 0,
     'SDK recovery overrode a genuine user-paused MediaElement');
 }
@@ -456,8 +456,8 @@ const media = currentTime => ({
     {target: 7.340679, previous: 6.806806},
     {target: 7.87454, previous: 7.340679},
   ], 'the observed 7.341s waiting was blocked by the SDK-owned seeking state');
-  assert.equal(player.playCount, 3,
-    'SDK-owned recovery seeks left playback paused until a manual play click');
+  assert.equal(player.playCount, 0,
+    'SDK-owned recovery seeks called visible MediaElement.play()');
 
   player.currentTime = 30;
   recovery.observeAccessUnit({

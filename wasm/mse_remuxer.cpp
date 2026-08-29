@@ -256,6 +256,7 @@ public:
 
     std::optional<tlvdemux::MseAutomaticLayerSwitchAccepted> observe_damage(
         const aribtlv::DamageSpan& damage) {
+        video.observe_source_damage(damage);
         const auto playback_damage = damage_advisor.observe(damage);
         if (!playback_damage) return std::nullopt;
         const auto observation = automatic_layers.observeDamage(*playback_damage);

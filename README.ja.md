@@ -233,14 +233,26 @@ buffered range、非選択 layer の damage、通常の `waiting`、`wait-for-re
 試行後の因果関係がある `waiting`、新しい提示映像がないことのすべてを必須にします。通常の waiting、
 user pause、明示 seek、layer／audio track 切替、古い generation、非選択映像の damage では audio-only に
 してはいけません。
+integration は visible MediaElement の `pause`／`play` lifecycle を
+`notifyPlaybackPaused()`／`notifyPlaybackResumed()` へ明示的に通知します。pause は current damage
+episode、stable RAP、既存の試行記録を消さず、waiting 消費、recovery RAP 試行、audio-only 判定、restore
+commit を凍結します。resume は凍結を解除するだけで、復旧は新しい因果 `waiting` または新しく実提示された
+video frame の後にのみ続行できます。pause 前の waiting／buffer event を持ち越してはならず、damage recovery
+から visible MediaElement の `play()` を呼んではいけません。
 
 audio-only 中は MSE の required track set を audio に変更し、startup、buffer coverage、backpressure、
 recorded-seek landing は video SourceBuffer を待ちません。非 active video output は即時破棄し、無制限の
 transition cache を作りません。runtime の in-place 切替は video SourceBuffer が実際に
 `activeSourceBuffers` から外れたことを観測した場合だけ成功とし、それ以外は新しい audio-only
 MediaSource を構築します。録画 rebuild は public index／seek session と一つの 16 MiB read budget を
-再利用します。Live は replacement audio pipeline が再生可能になるまで現在 input を有界に保持し、
-再接続や既存 audio pipeline の停止を行いません。transition 中の正準 clock は常に audio です。
+再利用します。録画 rebuild は resource transaction です。旧 MediaSource は現在の audio、media clock、user の
+play／pause 意図を保ったまま attach され続け、cached duration／index から bounded hidden candidate を
+構築します。audio-only candidate は target の audio が buffer 済みになった場合、A/V candidate はさらに
+restore RAP の実提示が証明された場合だけ promote できます。pause 中は candidate buffer を保持できますが、
+candidate の再生と commit は禁止します。open、format、seek、append、decode のどの失敗でも candidate
+だけを破棄し、旧 MediaSource を detach、stop、seek、変更してはいけません。
+Live は replacement audio pipeline が再生可能になるまで現在 input を有界に保持し、再接続や既存 audio
+pipeline の停止を行いません。transition 中の正準 clock は常に audio です。
 `createLiveMseTransitionManager()` は 4 MiB 上限の candidate MediaSource queue を所有し、active pipeline
 と同じ継続中 demux output を受け取ります。復旧 A/V candidate は probe MediaElement が target frame を
 `requestVideoFrameCallback()` で報告した場合だけ commit します。commit は attachment を維持した candidate
@@ -312,6 +324,8 @@ MediaElement が SDK 所有の復旧 target に対してまだ `seeking` を返�
 観測済みの `6.589s -> 6.806806s -> 7.340679s` の試行では、`seeked` より先に因果関係のある
 `waiting` が `7.341s` で再度発生します。media clock が最後の SDK 試行と一致し、提示映像が最初の
 復旧 RAP より前のままなら、この event は次の実在 RAP `7.874540s` へ進めなければなりません。
+許可された recovery seek は recovery target を書くだけで、visible MediaElement の `play()` を呼びません。
+play／pause intent は browser に既に設定された user intent が所有し続けます。
 無関係な target に対する `seeking` は引き続き復旧を許可しません。
 
 許可された各復旧 seek は、`currentTime` 更新前の MediaElement の再生意図を保持し、再生中だった

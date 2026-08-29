@@ -30,14 +30,16 @@ function probeMedia(presentedTime = null) {
     playsInline: false,
     style: {},
     currentTime: 0,
+    paused: true,
+    playCount: 0,
     removed: false,
     sourceDetached: false,
     setAttribute() {},
     load() {},
-    pause() {},
+    pause() { this.paused = true; },
     removeAttribute(name) { if (name === 'src') this.sourceDetached = true; },
     remove() { this.removed = true; },
-    play() { return Promise.resolve(); },
+    play() { this.playCount += 1; this.paused = false; return Promise.resolve(); },
     requestVideoFrameCallback(callback) {
       queueMicrotask(() => callback(0, {mediaTime: presentedTime}));
       return 1;
@@ -59,7 +61,7 @@ const segment = type => ({
   const promoted = probeMedia();
   const manager = createLiveMseTransitionManager({
     MediaSourceClass: class {},
-    media: {currentTime: 10},
+    media: {currentTime: 10, paused: false},
     isActive: () => true,
     createProbeMedia: () => promoted,
     mountProbeMedia() {},
@@ -85,10 +87,108 @@ const segment = type => ({
 }
 
 {
+  const oldMedia = {currentTime: 95.562112, paused: false, pauseCount: 0};
+  const commits = [];
+  const candidate = probeMedia();
+  const manager = createLiveMseTransitionManager({
+    MediaSourceClass: class {},
+    media: oldMedia,
+    isActive: () => true,
+    createProbeMedia: () => candidate,
+    mountProbeMedia() {},
+    openMediaSource: async () => { throw new Error('candidate open failed'); },
+    revokeObjectURL() {},
+    commit: item => commits.push(item),
+    appendLog() {},
+  });
+  await assert.rejects(
+    manager.transition(MsePlaybackMode.AUDIO_ONLY, oldMedia.currentTime),
+    /candidate open failed/,
+  );
+  assert.equal(oldMedia.currentTime, 95.562112,
+    'candidate failure changed the old MediaSource clock');
+  assert.equal(oldMedia.paused, false, 'candidate failure changed user playback intent');
+  assert.deepEqual(commits, [], 'failed candidate replaced the old MediaSource');
+  assert.equal(candidate.sourceDetached, true, 'failed candidate was not discarded');
+  manager.destroy();
+}
+
+{
+  const oldMedia = {currentTime: 95.562112, paused: false};
+  const commits = [];
+  const revoked = [];
+  const candidate = probeMedia();
+  const manager = createLiveMseTransitionManager({
+    MediaSourceClass: class {},
+    media: oldMedia,
+    isActive: () => true,
+    createProbeMedia: () => candidate,
+    mountProbeMedia() {},
+    openMediaSource: async () => ({mediaSource: {readyState: 'open'}, url: 'format-failure'}),
+    revokeObjectURL: url => revoked.push(url),
+    queueFactory: () => { throw new Error('candidate format failed'); },
+    commit: item => commits.push(item),
+    appendLog() {},
+  });
+  manager.observeInit(init('audio'));
+  await assert.rejects(
+    manager.transition(MsePlaybackMode.AUDIO_ONLY, oldMedia.currentTime),
+    /candidate format failed/,
+  );
+  assert.equal(oldMedia.currentTime, 95.562112,
+    'candidate format failure changed the old MediaSource clock');
+  assert.equal(oldMedia.paused, false,
+    'candidate format failure changed user playback intent');
+  assert.deepEqual(commits, [], 'format-failed candidate replaced the old MediaSource');
+  assert.equal(candidate.sourceDetached, true, 'format-failed candidate was not discarded');
+  assert.deepEqual(revoked, ['format-failure'], 'format-failed candidate URL was not revoked');
+  manager.destroy();
+}
+
+{
+  const commits = [];
+  const visible = {currentTime: 10, paused: true};
+  const candidate = probeMedia(10);
+  let opened = 0;
+  const manager = createLiveMseTransitionManager({
+    MediaSourceClass: class {},
+    media: visible,
+    isActive: () => true,
+    createProbeMedia: () => candidate,
+    mountProbeMedia() {},
+    openMediaSource: async (_MediaSourceClass, _probeMedia, {waitUntilPlaybackResumed}) => {
+      await waitUntilPlaybackResumed();
+      opened += 1;
+      return {mediaSource: {readyState: 'open'}, url: 'paused-av'};
+    },
+    revokeObjectURL() {},
+    queueFactory: (_type, _init, onUpdateEnd) => new FakeQueue(onUpdateEnd),
+    commit: item => commits.push(item.presentedTime),
+    appendLog() {},
+  });
+  manager.observeInit(init('video'));
+  manager.observeInit(init('audio'));
+  const completion = manager.transition(MsePlaybackMode.RESTORING_VIDEO, 10);
+  await Promise.resolve();
+  manager.observeSegment(segment('video'));
+  manager.observeSegment(segment('audio'));
+  await Promise.resolve();
+  assert.equal(opened, 0, 'paused ManagedMediaSource candidate opened through hidden play');
+  assert.deepEqual(commits, [], 'paused A/V restore candidate committed');
+  assert.equal(candidate.playCount, 0, 'paused A/V restore candidate played');
+  visible.paused = false;
+  manager.notifyPlaybackResumed();
+  await completion;
+  assert.equal(opened, 1, 'resumed ManagedMediaSource candidate did not continue opening');
+  assert.deepEqual(commits, [10]);
+  manager.destroy();
+}
+
+{
   const commits = [];
   const manager = createLiveMseTransitionManager({
     MediaSourceClass: class {},
-    media: {currentTime: 10},
+    media: {currentTime: 10, paused: false},
     isActive: () => true,
     createProbeMedia: () => probeMedia(10),
     mountProbeMedia() {},
@@ -108,6 +208,37 @@ const segment = type => ({
   assert.equal(restored.presentedTime, 10,
     'A/V candidate committed without its restore RAP being presented');
   assert.deepEqual(commits, [10]);
+  manager.destroy();
+}
+
+{
+  const commits = [];
+  const visible = {currentTime: 10, paused: true};
+  const candidate = probeMedia();
+  const manager = createLiveMseTransitionManager({
+    MediaSourceClass: class {},
+    media: visible,
+    isActive: () => true,
+    createProbeMedia: () => candidate,
+    mountProbeMedia() {},
+    openMediaSource: async () => ({mediaSource: {readyState: 'open'}, url: 'paused-url'}),
+    revokeObjectURL() {},
+    queueFactory: (_type, _init, onUpdateEnd) => new FakeQueue(onUpdateEnd),
+    commit: item => commits.push(item.mode),
+    appendLog() {},
+  });
+  manager.observeInit(init('audio'));
+  const completion = manager.transition(MsePlaybackMode.AUDIO_ONLY, 10);
+  await Promise.resolve();
+  manager.observeSegment(segment('audio'));
+  await Promise.resolve();
+  assert.deepEqual(commits, [], 'paused candidate committed over the old MediaSource');
+  assert.equal(candidate.playCount, 0, 'paused candidate started hidden playback');
+  visible.paused = false;
+  manager.notifyPlaybackResumed();
+  await completion;
+  assert.deepEqual(commits, [MsePlaybackMode.AUDIO_ONLY]);
+  assert.equal(candidate.playCount, 1, 'resumed candidate did not continue the same transaction');
   manager.destroy();
 }
 

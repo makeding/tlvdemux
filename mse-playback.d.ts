@@ -93,7 +93,6 @@ export declare function createMsePlaybackDamageRecovery(options: {
     seeking: boolean;
     paused: boolean;
     readonly videoFrameCallbackSupported?: boolean;
-    play(): Promise<void>;
     buffered?: {length: number; start(index: number): number; end(index: number): number};
     requestVideoFrameCallback?: (callback: (
       now: number, metadata: {mediaTime: number; presentedFrames?: number},
@@ -131,6 +130,8 @@ export declare function createMsePlaybackDamageRecovery(options: {
   }): {start: number; end: number} | null;
   /** Test/integration seam; normal browser use is observed automatically. */
   observePresentedFrame(mediaTimeSeconds: number): number | null;
+  notifyPlaybackPaused(): void;
+  notifyPlaybackResumed(): void;
   destroy(): void;
   reset(): void;
   reportDamage(damage: {
@@ -146,18 +147,21 @@ export declare function createMsePlaybackDamageRecovery(options: {
   }): {start: number; end: number} | null;
 };
 
-export interface MsePlaybackModeChange {
-  mode: MsePlaybackModeValue;
+interface MsePlaybackModeChangeBase {
   previousMode?: MsePlaybackModeValue;
   generation: unknown;
-  code: typeof TLV_VIDEO_UNAVAILABLE | null;
   reason?: string;
-  target?: number;
   mediaTime?: number;
   attemptedRaps?: number[];
   unit?: Record<string, unknown>;
   damage?: Record<string, unknown>;
 }
+export type MsePlaybackModeChange = MsePlaybackModeChangeBase & (
+  | {mode: 'audio-video'; code: null; target?: number}
+  | {mode: 'audio-only'; code: typeof TLV_VIDEO_UNAVAILABLE; target?: number}
+  | {mode: 'recovering-video'; code: null; target: number}
+  | {mode: 'restoring-video'; code: typeof TLV_VIDEO_UNAVAILABLE; target: number}
+);
 
 export interface MsePlaybackResilienceController {
   readonly mode: MsePlaybackModeValue;
@@ -181,6 +185,8 @@ export interface MsePlaybackResilienceController {
     phase: 'observation-started' | 'candidate-rejected' | 'stable-rap-committed';
   }): {start: number; end: number} | null;
   observePresentedFrame(mediaTimeSeconds: number): number | null;
+  notifyPlaybackPaused(): void;
+  notifyPlaybackResumed(): void;
   notifyVideoRestoreFailed(target?: number | null, reason?: string): MsePlaybackModeChange | null;
   notifyMediaElementChanged(): void;
   notifyExplicitSeek(nextGeneration?: unknown): MsePlaybackModeChange;
@@ -194,7 +200,6 @@ export declare function createMsePlaybackResilienceController(options: {
   media: MseMediaClock & {
     seeking: boolean;
     paused: boolean;
-    play(): Promise<void>;
     buffered?: {length: number; start(index: number): number; end(index: number): number};
     requestVideoFrameCallback?: (callback: (
       now: number, metadata: {mediaTime: number; presentedFrames?: number},
@@ -287,6 +292,8 @@ export interface MseRecordedSeekSessionOptions {
   activateTrack?: (track: MseSeekTrack, rap: MseRecordedSeekRap) => unknown | Promise<unknown>;
   activateVideoTrack?: (track: MseSeekTrack, rap: MseRecordedSeekRap) => unknown | Promise<unknown>;
   beforeLanding?: (track: MseSeekTrack, rap: MseRecordedSeekRap) => unknown | Promise<unknown>;
+  estimateOffset?: ((targetUs: bigint, sourceSize: bigint) =>
+    bigint | null | Promise<bigint | null>) | null;
   waitForAppends?: () => Promise<void>;
   checkError?: () => void;
   chunkBytes?: number;

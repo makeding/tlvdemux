@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 
-const [html, css, demo, adapter, liveTransition] = await Promise.all([
+const [html, css, demo, adapter, liveTransition, recordedTransition, mediaTransaction] = await Promise.all([
   readFile(new URL('../demo/index.html', import.meta.url), 'utf8'),
   readFile(new URL('../demo/demo.css', import.meta.url), 'utf8'),
   readFile(new URL('../demo/demo.js', import.meta.url), 'utf8'),
   readFile(new URL('../demo/playback-resilience.js', import.meta.url), 'utf8'),
   readFile(new URL('../mse-live-transition.mjs', import.meta.url), 'utf8'),
+  readFile(new URL('../demo/recorded-mse-transition.js', import.meta.url), 'utf8'),
+  readFile(new URL('../demo/mse-media-transaction.js', import.meta.url), 'utf8'),
 ]);
 
 assert.match(html, /id="videoRecoveryStatus" class="video-recovery-status" role="status"/,
@@ -29,11 +31,25 @@ assert.match(liveTransition, /4 \* 1024 \* 1024/,
   'Live candidate transition has no fixed byte limit');
 assert.match(liveTransition, /requestVideoFrameCallback/,
   'Live A\/V candidate commits without actual presented-frame evidence');
-assert.match(demo, /candidate\.probeMedia/,
+assert.match(mediaTransaction, /candidate\.probeMedia/,
   'demo does not promote the already-buffered Live candidate MediaElement');
-assert.match(demo, /restoreMediaFocus[\s\S]*focus\(\{preventScroll: true\}\)/,
+assert.match(liveTransition, /restoreFocus[\s\S]*focus\(\{preventScroll: true\}\)/,
   'Live candidate promotion loses MediaElement keyboard focus');
 assert.match(liveTransition, /MSE detach algorithm/,
   'Live transition can regress to detaching and emptying the proven candidate');
+assert.match(demo, /createRecordedMseTransitionManager/,
+  'recorded recovery still has no transactional candidate path');
+assert.doesNotMatch(demo, /stopPlayback\(true, false\);[\s\S]{0,120}loadAndPlay\(target/,
+  'recorded recovery still destroys the old MSE before candidate validation');
+assert.match(recordedTransition, /createMseRecordedSeekSession/,
+  'recorded candidate does not use the shared 16 MiB seek session');
+assert.match(recordedTransition, /estimateOffset:\s*cachedEstimateOffset/,
+  'recorded candidate does not reuse the active recording index estimate');
+assert.match(demo, /setIndexDuration\(presentationEndUs\)/,
+  'active recording index does not retain the cached duration for candidate estimates');
+assert.match(demo, /notifyPlaybackPaused/,
+  'demo does not freeze resilience and candidate work on user pause');
+assert.match(mediaTransaction, /waitUntilPlaybackResumed\(\)[\s\S]*mediaElement\.play\(\)/,
+  'ManagedMediaSource candidate playback bypasses the user-pause gate');
 
 console.log('demo audio-only contract tests passed');

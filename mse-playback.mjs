@@ -59,6 +59,7 @@ export function createMsePlaybackDamageRecovery({
   let lastPresentedTime = null;
   let frameCallbackId = null;
   let destroyed = false;
+  let playbackPaused = Boolean(media.paused);
   const damageKey = damage => [
     damage.videoTrackId, damage.startInputOffset, damage.endInputOffset,
     damage.recoveryTimeUs, damage.recoveryInputOffset, damage.recoveryRestartOffset,
@@ -109,14 +110,13 @@ export function createMsePlaybackDamageRecovery({
     const ownsInFlightSeek = candidate?.action === 'seek-if-stalled' &&
       candidate.lastAttemptedTarget !== null &&
       Math.abs(media.currentTime - candidate.lastAttemptedTarget) <= 0.1;
-    if (!candidate || completedDamage.has(candidate.key) ||
+    if (!candidate || completedDamage.has(candidate.key) || playbackPaused ||
         !isActive() || !isCurrentLayer(candidate.damage) ||
         switchInFlight() || observingTracks.has(trackKey(candidate.damage.videoTrackId)) ||
         (candidate.stableTargetRequired && candidate.stableTarget === null) ||
         (media.seeking && !ownsInFlightSeek) || !Number.isFinite(target) ||
         target + 0.0005 < media.currentTime || !isTargetBuffered(target)) return null;
     const previousTime = media.currentTime;
-    const resumeAfterSeek = !media.paused;
     const requiresPresentedFrame = candidate.action === 'seek-if-stalled' &&
       (frameObservationSupported || lastPresentedTime !== null);
     if (requiresPresentedFrame) {
@@ -134,14 +134,6 @@ export function createMsePlaybackDamageRecovery({
       lastPresentedTime,
       waitingTime: previousTime,
     });
-    // Preserve the play intent captured before the SDK-owned currentTime
-    // update. Some browsers expose `paused=true` immediately after that write,
-    // which must not turn an automatic recovery into a manual play operation.
-    if (resumeAfterSeek) {
-      try {
-        Promise.resolve(media.play()).catch(() => {});
-      } catch (_) { /* A rejected resume remains observable on the MediaElement. */ }
-    }
     return {start: target, end: target};
   };
 
@@ -159,7 +151,7 @@ export function createMsePlaybackDamageRecovery({
   };
 
   const recoverWaiting = () => {
-    if (waitingTime === null || destroyed || !isActive() ||
+    if (waitingTime === null || destroyed || playbackPaused || !isActive() ||
         switchInFlight()) return null;
     const currentTime = media.currentTime;
     const candidates = [...pendingDamage.values()]
@@ -187,7 +179,7 @@ export function createMsePlaybackDamageRecovery({
   };
 
   const observePresentedFrame = mediaTime => {
-    if (destroyed || !Number.isFinite(mediaTime)) return null;
+    if (destroyed || playbackPaused || !Number.isFinite(mediaTime)) return null;
     lastPresentedTime = lastPresentedTime === null
       ? mediaTime : Math.max(lastPresentedTime, mediaTime);
     retirePresentedDamage();
@@ -236,7 +228,7 @@ export function createMsePlaybackDamageRecovery({
   return {
     notifyWaiting() {
       const currentTime = media.currentTime;
-      if (!isActive() || switchInFlight()) {
+      if (playbackPaused || !isActive() || switchInFlight()) {
         waitingTime = null;
         return null;
       }
@@ -256,6 +248,7 @@ export function createMsePlaybackDamageRecovery({
       return recover(severe);
     },
     notifyBufferedChange() {
+      if (playbackPaused) return null;
       return recoverWaiting();
     },
     observeAccessUnit(unit) {
@@ -266,6 +259,7 @@ export function createMsePlaybackDamageRecovery({
       const target = sourceSeconds - Number(BigInt(presentationStartUs)) / 1000000;
       if (observingTracks.has(trackKey(unit.trackId))) return null;
       rememberRandomAccessPoint(unit.trackId, target);
+      if (playbackPaused) return null;
       return recoverWaiting();
     },
     observeVideoRecoveryEvent,
@@ -281,6 +275,7 @@ export function createMsePlaybackDamageRecovery({
       randomAccessPoints.clear();
       observingTracks.clear();
       observedRecoveryTracks.clear();
+      playbackPaused = false;
       waitingTime = null;
       waitingGeneration = 0;
       lastPresentedTime = null;
@@ -320,6 +315,13 @@ export function createMsePlaybackDamageRecovery({
       if (candidate.target < media.currentTime) return null;
       if (candidate.start === null || media.currentTime + 0.1 < candidate.start) return null;
       return recover(candidate);
+    },
+    notifyPlaybackPaused() {
+      playbackPaused = true;
+      waitingTime = null;
+    },
+    notifyPlaybackResumed() {
+      playbackPaused = false;
     },
   };
 }
@@ -370,14 +372,23 @@ export function createMsePlaybackResilienceController({
   let recoveryObservationSeen = false;
   let stableRecoveryTarget = null;
   let frameCallbackId = null;
+  let playbackPaused = Boolean(media.paused);
 
-  const modeDetail = detail => ({
-    mode,
-    generation: currentGeneration,
-    code: mode === MsePlaybackMode.AUDIO_ONLY || mode === MsePlaybackMode.RESTORING_VIDEO
-      ? TLV_VIDEO_UNAVAILABLE : null,
-    ...detail,
-  });
+  const modeDetail = detail => {
+    const event = {
+      mode,
+      generation: currentGeneration,
+      code: mode === MsePlaybackMode.AUDIO_ONLY || mode === MsePlaybackMode.RESTORING_VIDEO
+        ? TLV_VIDEO_UNAVAILABLE : null,
+      ...detail,
+    };
+    if ((mode === MsePlaybackMode.RECOVERING_VIDEO ||
+         mode === MsePlaybackMode.RESTORING_VIDEO) &&
+        (!Number.isFinite(event.target) || event.target < 0)) {
+      throw new TypeError(`${mode} mode events require a finite target.`);
+    }
+    return event;
+  };
   const setMode = (nextMode, detail = {}) => {
     if (destroyed || mode === nextMode) return modeDetail(detail);
     const previousMode = mode;
@@ -417,7 +428,7 @@ export function createMsePlaybackResilienceController({
     switchInFlight,
     isTargetBuffered,
     seek(target, previousTime, detail) {
-      if (!usable()) return;
+      if (!usable() || playbackPaused) return;
       const previousAttempt = attempts.at(-1);
       if (!previousAttempt || target > previousAttempt.target + 0.0005) {
         attempts.push({target, presentedBefore: lastPresentedTime});
@@ -441,7 +452,7 @@ export function createMsePlaybackResilienceController({
   };
 
   const observePresentedFrame = mediaTime => {
-    if (!usable() || !Number.isFinite(mediaTime)) return null;
+    if (!usable() || playbackPaused || !Number.isFinite(mediaTime)) return null;
     lastPresentedTime = lastPresentedTime === null
       ? mediaTime : Math.max(lastPresentedTime, mediaTime);
     damageRecovery.observePresentedFrame(mediaTime);
@@ -480,12 +491,16 @@ export function createMsePlaybackResilienceController({
       scheduleFrameObservation();
     });
   };
+  onModeChange(modeDetail({
+    reason: 'initial',
+    ...(mode === MsePlaybackMode.RESTORING_VIDEO ? {target: restoreTarget} : {}),
+  }));
   scheduleFrameObservation();
 
   const notifyVideoRestoreFailed = (
     target = restoreTarget, reason = 'restore-candidate-failed',
   ) => {
-    if (mode !== MsePlaybackMode.RESTORING_VIDEO || target === null ||
+    if (playbackPaused || mode !== MsePlaybackMode.RESTORING_VIDEO || target === null ||
         Math.abs(target - restoreTarget) > 0.0005) return null;
     restoreTarget = null;
     const event = setMode(MsePlaybackMode.AUDIO_ONLY, {reason, target});
@@ -504,7 +519,7 @@ export function createMsePlaybackResilienceController({
       return damageRecovery.reportDamage(damage);
     },
     notifyWaiting() {
-      if (!usable() || media.paused || switchInFlight()) return null;
+      if (!usable() || playbackPaused || media.paused || switchInFlight()) return null;
       if (mode === MsePlaybackMode.RESTORING_VIDEO && restoreTarget !== null &&
           (lastPresentedTime === null || lastPresentedTime + 0.001 < restoreTarget)) {
         return notifyVideoRestoreFailed(restoreTarget, 'restore-candidate-stalled');
@@ -521,7 +536,7 @@ export function createMsePlaybackResilienceController({
       return damageRecovery.notifyWaiting();
     },
     notifyBufferedChange() {
-      if (!usable() || mode === MsePlaybackMode.AUDIO_ONLY ||
+      if (!usable() || playbackPaused || mode === MsePlaybackMode.AUDIO_ONLY ||
           mode === MsePlaybackMode.RESTORING_VIDEO) return null;
       return damageRecovery.notifyBufferedChange();
     },
@@ -534,7 +549,8 @@ export function createMsePlaybackResilienceController({
         return damageRecovery.observeAccessUnit(unit);
       }
       if (recoveryObservationSeen && stableRecoveryTarget === null) return null;
-      if (media.paused || switchInFlight() || target <= media.currentTime + 0.0005 ||
+      if (playbackPaused || media.paused || switchInFlight() ||
+          target <= media.currentTime + 0.0005 ||
           (lastRestoreTarget !== null && target <= lastRestoreTarget + 0.0005)) return null;
       restoreTarget = target;
       lastRestoreTarget = target;
@@ -563,6 +579,16 @@ export function createMsePlaybackResilienceController({
     },
     observePresentedFrame,
     notifyVideoRestoreFailed,
+    notifyPlaybackPaused() {
+      if (destroyed || playbackPaused) return;
+      playbackPaused = true;
+      damageRecovery.notifyPlaybackPaused();
+    },
+    notifyPlaybackResumed() {
+      if (destroyed || !playbackPaused) return;
+      playbackPaused = false;
+      damageRecovery.notifyPlaybackResumed();
+    },
     notifyMediaElementChanged() {
       if (frameCallbackId !== null &&
           typeof media.cancelVideoFrameCallback === 'function') {
@@ -598,6 +624,7 @@ export function createMsePlaybackResilienceController({
       frameCallbackId = null;
       attempts = [];
       restoreTarget = null;
+      playbackPaused = false;
     },
   };
 }
@@ -769,6 +796,7 @@ export function createMseRecordedSeekSession({
   activateTrack = null,
   activateVideoTrack = activateTrack ?? (async () => {}),
   beforeLanding = async () => {},
+  estimateOffset = null,
   waitForAppends = async () => {
     await Promise.all([...queues.values()].map(queue => queue.waitStable?.() ?? Promise.resolve()));
   },
@@ -916,7 +944,11 @@ export function createMseRecordedSeekSession({
     if (!await demuxer.setIndexDuration(sourceEndUs)) {
       throw new MseRecordedSeekError('demux-failed', 'The demuxer rejected the recording duration.');
     }
-    const estimateValue = await demuxer.estimateOffset(sourceTargetUs, source.size);
+    let estimateValue = estimateOffset === null
+      ? null : await estimateOffset(sourceTargetUs, source.size);
+    if (estimateValue === null || estimateValue === undefined) {
+      estimateValue = await demuxer.estimateOffset(sourceTargetUs, source.size);
+    }
     if (estimateValue === null || estimateValue === undefined) {
       throw new MseRecordedSeekError('demux-failed', 'The demuxer could not estimate the target byte position.');
     }
