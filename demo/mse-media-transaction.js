@@ -90,7 +90,7 @@ export async function commitDemoMseCandidate({
   assertCurrent = () => {},
 }) {
   assertCurrent();
-  const target = previousMedia.currentTime;
+  const target = candidate.intentTarget ?? candidate.target ?? previousMedia.currentTime;
   if (previousMedia.paused) {
     throw new DOMException('Transition paused by the user.', 'AbortError');
   }

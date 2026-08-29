@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 
-import {createPlaybackIntentCoordinator}
-  from '../demo/playback-intent.js';
+import {createMsePlaybackIntentCoordinator}
+  from '../mse-playback.mjs';
 
 const timers = new Map();
 let timerId = 0;
-const coordinator = createPlaybackIntentCoordinator({
+const coordinator = createMsePlaybackIntentCoordinator({
   setTimer(callback) {
     const id = ++timerId;
     timers.set(id, callback);
@@ -50,4 +50,4 @@ coordinator.invalidate();
 await assert.rejects(coordinator.runCommit(candidate, async () => {}),
   error => error.name === 'AbortError');
 
-console.log('demo playback intent tests passed');
+console.log('MSE playback intent tests passed');

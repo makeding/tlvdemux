@@ -216,6 +216,10 @@ append、commit の全区間で fence されます。既存の pending switch �
 seek の一部であり automatic layer switch ではありません。要求された
 `MediaElement.currentTime`、一度だけの formal landing、共有 16 MiB budget を維持し、0 以外の
 seek を playback entry zero に写像してはいけません。
+単調増加する playback-intent token と単一の destructive commit lane は demo ではなく public な
+`tlvdemux/mse-playback` SDK が所有します。integration は明示 seek、layer switch、recovery candidate
+ごとに token を作り、すべての非同期 read／commit の前後で token と固定 demux identity を検証します。
+demo は browser event を転送し、SDK が許可した結果を install するだけです。
 probe と landing が重なる範囲は再利用し、budget 消費後は source request を発行しません。head discovery、
 probe、landing は 1 MiB 単位で読み、stable recovery RAP に届く前に一度の粗い read が共有 budget の
 8 分の 1 を消費しないようにします。要求時刻より

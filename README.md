@@ -259,6 +259,12 @@ that choice is part of the explicit seek and is not an automatic layer switch.
 It must still preserve the requested `MediaElement.currentTime`, perform one
 formal landing, share the single 16 MiB budget, and never map a nonzero seek back
 to playback entry zero.
+The monotonic playback-intent token and its single destructive commit lane are
+owned by the public `tlvdemux/mse-playback` SDK, not by the demo. Integrations
+create tokens for explicit seeks, layer switches, and recovery candidates and
+must validate the token and fixed demux identity around every asynchronous read
+or commit. The demo only forwards browser events and installs the SDK-approved
+result.
 Overlapping probe and landing ranges are reused, and no source request is issued
 after exhaustion. Head discovery, probes, and landing use 1 MiB reads so a
 single coarse read cannot consume one eighth of that shared budget before the
