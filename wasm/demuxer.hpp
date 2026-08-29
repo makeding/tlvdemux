@@ -183,6 +183,12 @@ public:
         mse_remuxer_.setTimestampOffset(timestamp_offset_us);
     }
 
+    void setMseRecordedSeekConcealmentTarget(
+        const val& presentation_time_us) {
+        mse_remuxer_.setRecordedSeekConcealmentTarget(
+            optional_number<std::int64_t>(presentation_time_us));
+    }
+
     void setMsePlaybackPosition(const std::int64_t presentation_time_us) {
         if (mse_enabled_) mse_remuxer_.setPlaybackPosition(presentation_time_us);
     }

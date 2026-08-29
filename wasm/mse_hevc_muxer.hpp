@@ -38,6 +38,13 @@ public:
             configuration_policy_dirty_ = true;
         }
     }
+    void set_recorded_seek_concealment_target(
+        const std::optional<std::int64_t> target_us) noexcept {
+        recorded_seek_concealment_target_us_ = target_us;
+        concealment_episode_marker_start_us_.reset();
+        concealment_episode_start_us_.reset();
+        concealment_pending_stable_rap_ = false;
+    }
     bool is_input_track_switch(const aribtlv::AccessUnit& unit) const noexcept {
         return unit.discontinuity && input_track_id_.has_value() &&
             *input_track_id_ != unit.track_id;
@@ -75,11 +82,17 @@ public:
     void observe_source_damage(const aribtlv::DamageSpan& damage) {
         if (damage.kind != aribtlv::TrackKind::Video ||
             !input_track_id_ || damage.track_id != *input_track_id_ ||
-            !recovery_observation_eligible_ ||
+            (!recovery_observation_eligible_ &&
+             !recorded_seek_concealment_target_us_) ||
             !aribtlv::hasDiscontinuityReason(
                 damage.reasons, aribtlv::DiscontinuityReason::SourceDamage)) return;
         const auto timestamp = damage.start_time.value_or(damage.end_time);
         const auto start_us = scaled(timestamp.value, timestamp.timescale, 1000000);
+        if (recorded_seek_concealment_target_us_ &&
+            concealment_episode_marker_start_us_ &&
+            !concealment_episode_start_us_) {
+            concealment_episode_start_us_ = start_us;
+        }
         if (!recovery_episode_reported_) {
             // DamageSpan is the canonical merged episode boundary. Diagnostics
             // use the transport's 10 ms loss-window precision rather than the
@@ -118,6 +131,10 @@ public:
         source_damage_observation_ = SourceDamageObservation::None;
         recovery_candidate_rejected_ = false;
         recovery_episode_reported_ = false;
+        recorded_seek_concealment_target_us_.reset();
+        concealment_episode_marker_start_us_.reset();
+        concealment_episode_start_us_.reset();
+        concealment_pending_stable_rap_ = false;
         configuration_policy_dirty_ = false;
         current_video_properties_.reset();
         if (clear_policy) {
@@ -165,7 +182,8 @@ public:
         const bool requested_switch_boundary =
             stage_next_switch_ && irap >= 0;
         const bool observe_source_damage = source_damage &&
-            recovery_observation_eligible_ &&
+            (recovery_observation_eligible_ ||
+             recorded_seek_concealment_target_us_.has_value()) &&
             !track_switch_boundary && !requested_switch_boundary;
         if (track_switch_boundary || requested_switch_boundary) {
             source_damage_observation_ = SourceDamageObservation::None;
@@ -178,12 +196,33 @@ public:
             recovery_candidate_rejected_ = false;
             recovery_episode_reported_ = false;
         } else if (observe_source_damage) {
+            if (!input_track_id_ && recorded_seek_concealment_target_us_) {
+                input_track_id_ = unit.track_id;
+            }
             const auto previous_observation = source_damage_observation_;
             if (source_damage_observation_ == SourceDamageObservation::None) {
                 // Preserve every complete picture before the loss. Candidate
                 // GOPs are never enqueued, so observation cannot enlarge the
                 // fragment queue or the browser transition budget.
-                flush();
+                if (recorded_seek_concealment_target_us_) {
+                    // Emit the normal prefix but retain exactly its final
+                    // sample. If this episode contains the one-shot seek
+                    // target, the stable RAP will provide its real decode
+                    // boundary; otherwise it is later sealed normally.
+                    emit_ready_keeping_pending();
+                    concealment_episode_marker_start_us_ = scaled(
+                        unit.pts.value, unit.pts.timescale, 1000000);
+                    concealment_episode_start_us_.reset();
+                    if (!recovery_episode_reported_) {
+                        output_.video_recovery(tlvdemux::MseVideoRecoveryEvent{
+                            unit.track_id, *concealment_episode_marker_start_us_,
+                            tlvdemux::MseVideoRecoveryPhase::ObservationStarted,
+                        });
+                        recovery_episode_reported_ = true;
+                    }
+                } else {
+                    flush();
+                }
             } else if (previous_observation == SourceDamageObservation::CandidateGop) {
                 recovery_candidate_rejected_ = true;
             }
@@ -217,6 +256,24 @@ public:
                 scaled(unit.pts.value, unit.pts.timescale, 1000000),
                 tlvdemux::MseVideoRecoveryPhase::StableRapCommitted,
             });
+            if (recorded_seek_concealment_target_us_) {
+                const auto stable_rap_us = scaled(
+                    unit.pts.value, unit.pts.timescale, 1000000);
+                const auto episode_start_us = concealment_episode_start_us_
+                    .value_or(concealment_episode_marker_start_us_
+                        .value_or(stable_rap_us));
+                concealment_pending_stable_rap_ =
+                    *recorded_seek_concealment_target_us_ >= episode_start_us &&
+                    *recorded_seek_concealment_target_us_ < stable_rap_us;
+                if (!concealment_pending_stable_rap_) {
+                    // Delayed only to decide whether this was the target's
+                    // episode; emit the retained picture exactly as ordinary
+                    // recovery would have done at the first marker.
+                    flush();
+                    concealment_episode_marker_start_us_.reset();
+                    concealment_episode_start_us_.reset();
+                }
+            }
         }
         if (requested_switch_boundary && !track_) {
             // Startup switching can reach the fallback configuration before a
@@ -381,8 +438,38 @@ public:
         const auto dts = scaled(unit.dts.value, unit.dts.timescale, track_->timescale) + offset;
         const auto pts = scaled(unit.pts.value, unit.pts.timescale, track_->timescale) + offset;
         if (dts < 0) return;
+        if (concealment_pending_stable_rap_) {
+            if (!has_pending_sample()) {
+                const auto target_pts = scaled(
+                    *recorded_seek_concealment_target_us_, 1000000,
+                    track_->timescale) + offset;
+                const auto composition_offset = pts - dts;
+                const auto target_dts = target_pts - composition_offset;
+                if (target_dts >= 0 && target_dts < dts) {
+                    auto filler = data;
+                    enqueue({std::move(filler), target_dts, target_pts, 0, true});
+                }
+            }
+            // With a retained pre-damage sample, ordinary enqueue seals its
+            // trun duration at this stable decode boundary. With no earlier
+            // sample, the duplicate RAP above is sealed here and the original
+            // RAP remains at its unmodified DTS/PTS.
+            concealment_pending_stable_rap_ = false;
+            recorded_seek_concealment_target_us_.reset();
+            concealment_episode_marker_start_us_.reset();
+            concealment_episode_start_us_.reset();
+        }
         if (enqueue({std::move(data), dts, pts, 0, irap >= 0})) {
             recovery_observation_eligible_ = true;
+        }
+        if (recorded_seek_concealment_target_us_ &&
+            source_damage_observation_ == SourceDamageObservation::None &&
+            scaled(unit.pts.value, unit.pts.timescale, 1000000) >
+                *recorded_seek_concealment_target_us_) {
+            // A normal picture has passed the target without a containing
+            // damage episode. Expire the one-shot so later playback recovery
+            // remains byte-for-byte unchanged.
+            recorded_seek_concealment_target_us_.reset();
         }
     }
 
@@ -553,5 +640,9 @@ private:
         SourceDamageObservation::None;
     bool recovery_candidate_rejected_ = false;
     bool recovery_episode_reported_ = false;
+    std::optional<std::int64_t> recorded_seek_concealment_target_us_;
+    std::optional<std::int64_t> concealment_episode_marker_start_us_;
+    std::optional<std::int64_t> concealment_episode_start_us_;
+    bool concealment_pending_stable_rap_ = false;
     bool configuration_policy_dirty_ = false;
 };

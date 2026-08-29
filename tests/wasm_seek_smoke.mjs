@@ -120,6 +120,7 @@ try {
   for (const targetTimeSeconds of targets) {
     const tracks = new Map();
     const ranges = {video: [], audio: []};
+    const videoRecoveryEvents = [];
     const offsets = {video: -presentationStartUs, audio: -presentationStartUs};
     const queues = new Map([
       ['video', queue(ranges.video)],
@@ -158,6 +159,7 @@ try {
       },
       onMseVideoSplice(splice) { offsets.video = BigInt(splice.timestampOffsetUs ?? 0n); },
       onMseAudioSplice(splice) { offsets.audio = BigInt(splice.timestampOffsetUs ?? 0n); },
+      onMseVideoRecovery(event) { videoRecoveryEvents.push(event); },
       onMseSegment(segment) {
         if (!(segment.type in ranges)) return;
         mergeRange(ranges[segment.type], {
@@ -226,12 +228,38 @@ try {
         `seek ${targetTimeSeconds}s selected a RAP after the target`);
       assert.equal(flowControl.entryCovered(), true,
         `seek ${targetTimeSeconds}s did not form common A/V at the target`);
+      const targetRanges = Object.fromEntries(Object.entries(ranges).map(([type, items]) => [
+        type,
+        items.filter(range => range.start <= targetTimeSeconds + 0.001 &&
+          range.end >= targetTimeSeconds + 0.001),
+      ]));
+      assert.ok(targetRanges.video.length > 0 && targetRanges.audio.length > 0,
+        `seek ${targetTimeSeconds}s did not retain exact per-track target coverage: ` +
+        JSON.stringify(ranges));
+      let damageStartUs = null;
+      let concealed = false;
+      for (const event of videoRecoveryEvents) {
+        if (event.phase === 'observation-started') {
+          damageStartUs = BigInt(event.presentationTimeUs);
+        } else if (event.phase === 'stable-rap-committed' && damageStartUs !== null) {
+          concealed = damageStartUs <= result.sourceTargetUs &&
+            result.sourceTargetUs < BigInt(event.presentationTimeUs);
+          damageStartUs = null;
+        }
+      }
+      if (concealed) {
+        assert.ok(Math.abs(targetRanges.video[0].start - targetTimeSeconds) <= 0.000002,
+          `concealed video did not begin at exact target ${targetTimeSeconds}s`);
+      }
       results.push({
         targetTimeSeconds,
         rapTimeSeconds: Number(result.rapPresentationTimeUs) / 1000000,
         restartOffset: result.restartOffset.toString(),
         nextOffset: result.nextOffset.toString(),
         bytesRead: result.bytesRead.toString(),
+        targetRanges,
+        concealed,
+        videoRecoveryEvents,
       });
     } finally {
       demuxer.delete();
@@ -244,7 +272,7 @@ try {
     presentationStartVideoPacketId: recordingRange.presentationStartVideoPacketId,
     presentationEndVideoPacketId: recordingRange.presentationEndVideoPacketId,
     seeks: results,
-  }, null, 2));
+  }, (_, value) => typeof value === 'bigint' ? value.toString() : value, 2));
 } finally {
   await input.close();
 }

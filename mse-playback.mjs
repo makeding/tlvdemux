@@ -635,7 +635,7 @@ export function createMsePlaybackFlowControl({
   requiredTracks = ['video', 'audio'],
   entryKind = 'startup',
   entryTimeSeconds = entryKind === 'startup' ? 0 : media.currentTime,
-  entryToleranceSeconds = ENTRY_TOLERANCE_SECONDS,
+  entryToleranceSeconds = entryKind === 'seek' ? 0.000002 : ENTRY_TOLERANCE_SECONDS,
   highSeconds = 15,
   lowSeconds = 8,
   startupNoProgressBytes = MSE_SEEK_READ_BUDGET_BYTES,
@@ -649,14 +649,6 @@ export function createMsePlaybackFlowControl({
   let startupBytes = 0;
   let entryCovered = false;
   let currentRequiredTracks = normalizeRequiredTracks(requiredTracks);
-  const initialRanges = new Map();
-  const snapshotInitialRanges = () => {
-    initialRanges.clear();
-    for (const [type, queue] of selectRequiredQueues(queues, currentRequiredTracks)) {
-      initialRanges.set(type, JSON.stringify(queue.bufferedRanges()));
-    }
-  };
-  snapshotInitialRanges();
   const requiredQueues = () => selectRequiredQueues(queues, currentRequiredTracks);
 
   const trim = () => {
@@ -664,26 +656,8 @@ export function createMsePlaybackFlowControl({
       queue.trimBefore(media.currentTime - backBufferSeconds);
     }
   };
-  const perTrackRanges = () => [...requiredQueues().values()].map(queue => queue.bufferedRanges());
   const liveEntryRange = () => commonBufferedRanges(queues, currentRequiredTracks).find(range =>
     range.end > media.currentTime + 0.001) ?? null;
-
-  const classifyUncoveredEntry = () => {
-    const selected = requiredQueues();
-    if (selected.size !== currentRequiredTracks.length) return null;
-    const ranges = perTrackRanges();
-    if (!ranges.every(items => items.length > 0)) return null;
-    if (entryKind === 'startup' || entryKind === 'live') return null;
-    const hasNewSeekMedia = [...selected].every(([type, queue]) =>
-      JSON.stringify(queue.bufferedRanges()) !== initialRanges.get(type));
-    if (!hasNewSeekMedia) return null;
-    const common = commonBufferedRanges(queues, currentRequiredTracks);
-    if (common.some(range => range.start > entryTimeSeconds + entryToleranceSeconds) ||
-        ranges.every(items => items.at(-1).end > entryTimeSeconds + entryToleranceSeconds)) {
-      return new MseRecordedSeekError('no-common-av');
-    }
-    return null;
-  };
 
   const api = {
     entryKind,
@@ -696,7 +670,6 @@ export function createMsePlaybackFlowControl({
       }
       entryCovered = false;
       startupBytes = 0;
-      snapshotInitialRanges();
       return [...currentRequiredTracks];
     },
     entryRange() {
@@ -729,8 +702,6 @@ export function createMsePlaybackFlowControl({
         entryCovered = true;
       } else if (!entryCovered) {
         if (entryKind === 'startup' || entryKind === 'live') startupBytes += byteLength;
-        const error = classifyUncoveredEntry();
-        if (error) throw error;
         if ((entryKind === 'startup' || entryKind === 'live') &&
             startupBytes >= startupNoProgressBytes) {
           throw new MseStartupBufferError(
@@ -811,6 +782,9 @@ export function createMseRecordedSeekSession({
   }
   if (!durationUs || durationUs <= 0n) throw new TypeError('durationUs must be positive.');
   if (!demuxer || typeof demuxer.push !== 'function') throw new TypeError('A demuxer is required.');
+  if (typeof demuxer.setMseRecordedSeekConcealmentTarget !== 'function') {
+    throw new TypeError('The demuxer must support recorded-seek concealment targets.');
+  }
   if (typeof headReady !== 'function') throw new TypeError('headReady must be a function.');
 
   const chunkSize = BigInt(chunkBytes);
@@ -990,6 +964,8 @@ export function createMseRecordedSeekSession({
     phase = 'landing';
     let offset = chosen.restartOffset;
     await demuxer.reposition(offset, true);
+    await demuxer.setMseRecordedSeekConcealmentTarget(
+      requiredTracks.includes('video') ? sourceTargetUs : null);
     await beforeLanding(chosenTrack, chosen);
     await demuxer.setMseOutputEnabled(true);
 

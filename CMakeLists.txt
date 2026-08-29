@@ -298,6 +298,20 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME tlvdemux-mse-remuxer-tests COMMAND tlvdemux-mse-remuxer-tests)
 
+    add_executable(tlvdemux-mse-recorded-seek-concealment-tests
+        tests/mse_recorded_seek_concealment_tests.cpp)
+    target_link_libraries(tlvdemux-mse-recorded-seek-concealment-tests
+        PRIVATE tlvdemux::tlvdemux)
+    if(MSVC)
+        target_compile_options(tlvdemux-mse-recorded-seek-concealment-tests
+            PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(tlvdemux-mse-recorded-seek-concealment-tests
+            PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME tlvdemux-mse-recorded-seek-concealment-tests
+        COMMAND tlvdemux-mse-recorded-seek-concealment-tests)
+
     add_executable(tlvdemux-timestamp-fmp4-tests tests/timestamp_fmp4_tests.cpp)
     target_link_libraries(tlvdemux-timestamp-fmp4-tests PRIVATE tlvdemux::tlvdemux)
     target_include_directories(tlvdemux-timestamp-fmp4-tests PRIVATE

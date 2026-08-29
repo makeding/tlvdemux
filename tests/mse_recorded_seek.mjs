@@ -31,6 +31,8 @@ function fixture({
   const queues = new Map([['video', video], ['audio', audio]]);
   const controller = new AbortController();
   const requests = [];
+  const operations = [];
+  const concealmentTargets = [];
   const source = {
     size: 32n * BigInt(MiB),
     async read(offset, length) {
@@ -50,7 +52,15 @@ function fixture({
     async setIndexDuration(value) { indexCalls.push(['duration', value]); return true; },
     async estimateOffset(value) { indexCalls.push(['target', value]); return 16n * BigInt(MiB); },
     async setMseTimestampOffset(value) { indexCalls.push(['offset', value]); },
-    async reposition(offset) { position = offset; return true; },
+    async reposition(offset) {
+      operations.push(['reposition', session?.phase, offset]);
+      position = offset;
+      return true;
+    },
+    async setMseRecordedSeekConcealmentTarget(target) {
+      operations.push(['concealment-target', session?.phase, target]);
+      concealmentTargets.push(target);
+    },
     async push(data) {
       if (session.phase === 'head') {
         session.observeTrack(track);
@@ -100,11 +110,17 @@ function fixture({
     headReady: () => session?.phase === 'head' && requests.length > 0,
     chunkBytes: MiB,
   });
-  return {session, requests, controller, flowControl, indexCalls};
+  return {
+    session, requests, controller, flowControl, indexCalls, media,
+    operations, concealmentTargets,
+  };
 }
 
 {
-  const {session, requests, flowControl, indexCalls} = fixture();
+  const {
+    session, requests, flowControl, indexCalls, media,
+    operations, concealmentTargets,
+  } = fixture();
   const result = await session.run();
   assert.equal(result.rapPresentationTimeUs, 51000000n,
     'seek did not choose the closest RAP at or before the target');
@@ -118,6 +134,16 @@ function fixture({
   assert.deepEqual(indexCalls.slice(0, 3), [
     ['offset', -2000000n], ['duration', 102000000n], ['target', 52000000n],
   ], 'seek estimate and MSE output did not share the union presentation range');
+  assert.deepEqual(concealmentTargets, [52_000_000n],
+    'formal landing did not arm the original source target exactly once');
+  assert.deepEqual(operations.filter(([name, phase]) =>
+    name === 'reposition' && phase === 'landing').length, 1,
+  'formal landing performed a second reposition');
+  assert.ok(operations.findIndex(([name]) => name === 'concealment-target') >
+    operations.findIndex(([name, phase]) => name === 'reposition' && phase === 'landing'),
+  'concealment target was armed before the final landing reposition reset');
+  assert.equal(media.currentTime, 50,
+    'recorded seek changed the user-requested MediaElement time');
 }
 
 {
@@ -142,6 +168,21 @@ for (const landingRanges of [
   const {session} = fixture({landingRanges});
   await assert.rejects(session.run(), error =>
     error.code === MSE_SEEK_NO_COMMON_AV && error.name !== 'MseStartupBufferError');
+}
+
+{
+  const {session, media} = fixture({
+    landingRanges(push) {
+      return push === 1
+        ? {video: [{start: 51, end: 53}], audio: [{start: 49, end: 53}]}
+        : {video: [{start: 50, end: 53}], audio: [{start: 49, end: 53}]};
+    },
+  });
+  const result = await session.run();
+  assert.equal(result.sourceTargetUs, 52_000_000n,
+    'later-only landing did not complete after target concealment appeared');
+  assert.equal(media.currentTime, 50,
+    'concealed later-only landing replaced the requested time');
 }
 
 {
@@ -179,6 +220,9 @@ for (const landingRanges of [
     async setIndexDuration() { return true; },
     async estimateOffset() { return 16n * BigInt(MiB); },
     async setMseTimestampOffset() {},
+    async setMseRecordedSeekConcealmentTarget(target) {
+      assert.equal(target, null, 'audio-only seek armed video concealment');
+    },
     async reposition(offset) { position = offset; return true; },
     async push(data) {
       session.observeTrack(audioTrack);

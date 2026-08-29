@@ -56,6 +56,7 @@ export interface WorkerDemuxer {
   suspendAutomaticLayerSwitch(preferredVideoTrackId: bigint, preferredAudioTrackId: bigint, fallbackVideoTrackId: bigint, fallbackAudioTrackId: bigint): Promise<void>;
   clearAutomaticLayerSwitch(): Promise<void>;
   setMseTimestampOffset(timestampOffsetUs: bigint): Promise<void>;
+  setMseRecordedSeekConcealmentTarget(presentationTimeUs: bigint | null): Promise<void>;
   setMsePlaybackPosition(presentationTimeUs: bigint): Promise<void>;
   setMseSdrInHlg(videoTrackId: bigint, enabled: boolean): Promise<void>;
   setMseToneMappingMode(mode: createTlvDemuxModule.MseToneMappingMode): Promise<void>;

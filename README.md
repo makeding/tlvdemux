@@ -233,10 +233,22 @@ continues until the common buffered A/V interval covers the requested time,
 then normal 15-second/8-second backpressure resumes. The probe records RAPs only
 through target + 50 ms, stops when observed candidate frontiers pass the target,
 and selects the closest RAP not later than the target without waiting for an
-unobserved layer. Later-only common A/V, disjoint A/V, no RAP, EOF, or budget
-exhaustion fails with `MSE_SEEK_NO_COMMON_AV` and stops reading. It must never be
-reported as `MSE_STARTUP_NO_COMMON_AV`, cause a hidden media-element seek, or
-fall back to scanning the complete recording.
+unobserved layer. At the formal landing, immediately after its sole reposition
+and before any landing input, the session gives the HEVC remuxer the original
+source target as a one-shot recorded-seek concealment target. If that target
+lies in a selected-video source-damage episode, the
+remuxer fills only that hole with a still picture after the existing stable-GOP
+check: it extends the last complete pre-damage sample to the stable RAP decode
+boundary, or, when landing contains no earlier picture, duplicates the stable
+RAP first frame at the target while retaining the original RAP at its original
+DTS/PTS. AAC remains on its original continuous timeline. This fill never moves
+`MediaElement.currentTime`, performs another landing seek, rescans the source,
+or increases the shared 16 MiB budget. Later-only or otherwise disjoint raw A/V
+is therefore valid when the fill creates common coverage at the exact target.
+No usable pre-damage frame and no stable following RAP, no RAP, EOF, remaining
+disjoint A/V, or budget exhaustion fails with `MSE_SEEK_NO_COMMON_AV` and stops
+reading. It must never be reported as `MSE_STARTUP_NO_COMMON_AV`, cause a hidden
+media-element seek, or fall back to scanning the complete recording.
 
 For automatic dual-video recordings, the public recorded timeline is the union
 of the preferred and rainfall video presentation ranges. The recording start is

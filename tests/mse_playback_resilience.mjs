@@ -169,6 +169,38 @@ const damage = {
 }
 
 {
+  const player = media(93.961);
+  const restoreRequests = [];
+  const controller = createMsePlaybackResilienceController({
+    media: player,
+    initialMode: MsePlaybackMode.AUDIO_ONLY,
+    isCurrentLayer: item => item.videoTrackId === 2,
+    seek() {},
+    onVideoRestoreRequested(event) { restoreRequests.push(event.target); },
+  });
+  controller.notifyPlaybackPaused();
+  player.paused = true;
+  controller.observeAccessUnit(rap(95.562112));
+  assert.deepEqual(restoreRequests, [],
+    '95.562112s concealment started restoration while playback was paused at 93.961s');
+  assert.equal(controller.mode, MsePlaybackMode.AUDIO_ONLY,
+    'paused concealment changed the recovery mode');
+  assert.deepEqual(controller.attemptedRaps, [],
+    'paused concealment consumed a recovery attempt');
+  assert.equal(player.playCount, 0,
+    'paused concealment called play()');
+  player.paused = false;
+  controller.notifyPlaybackResumed();
+  controller.observeAccessUnit(rap(95.562112));
+  assert.deepEqual(restoreRequests, [95.562112],
+    'resume did not use the same 95.562112s restoration target exactly once');
+  assert.equal(controller.mode, MsePlaybackMode.RESTORING_VIDEO);
+  assert.equal(player.playCount, 0,
+    'resumed restoration changed visible playback intent');
+  controller.destroy();
+}
+
+{
   const player = media(0.5);
   const seeks = [];
   const audioOnlyRequests = [];

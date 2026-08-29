@@ -1,5 +1,5 @@
 import {promoteMseCandidateMedia}
-  from '../mse-live-transition.mjs?v=recorded-transition-v1';
+  from '../mse-live-transition.mjs?v=recorded-seek-concealment-v1';
 
 export function createMediaElementProxy(getMedia) {
   return {
@@ -105,7 +105,7 @@ export async function commitDemoMseCandidate({
     queue.onUpdateEnd = onQueueUpdate;
     queue.resume();
   }
-  promotedMedia.currentTime = Math.max(target, candidate.flow.entryRange()?.start ?? target);
+  promotedMedia.currentTime = target;
   if (!promotedMedia.paused) {
     gapRecovery.notifyPlaybackResumed();
     for (const manager of transitionManagers) manager?.notifyPlaybackResumed();

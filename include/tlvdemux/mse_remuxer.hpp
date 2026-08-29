@@ -206,6 +206,9 @@ public:
     void clearAutomaticLayerSwitch();
     /** Set the recording-to-MSE timeline offset shared by startup and seeks. */
     void setTimestampOffset(std::int64_t timestamp_offset_us);
+    /** Arm or clear the one-shot source target for recorded-seek concealment. */
+    void setRecordedSeekConcealmentTarget(
+        std::optional<std::int64_t> presentation_time_us);
     /** Report the real media playhead used to authorize rainfall recovery. */
     void setPlaybackPosition(std::int64_t presentation_time_us);
     // Reinterpret an explicitly identified HLG video track as UHD SDR.

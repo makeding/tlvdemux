@@ -1,7 +1,7 @@
 import {
   MsePlaybackMode,
   createMsePlaybackResilienceController,
-} from '../mse-playback.mjs?v=audio-only-resilience-v1';
+} from '../mse-playback.mjs?v=recorded-seek-concealment-v1';
 import {setMseVideoTrackActive}
   from '../mse-output-pipeline.mjs?v=audio-only-resilience-v1';
 

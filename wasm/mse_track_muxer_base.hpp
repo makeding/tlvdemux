@@ -285,6 +285,13 @@ protected:
         emit(true);
     }
 
+    // Emit every duration-complete sample while retaining the final pending
+    // sample. Recorded-seek concealment can then seal that one picture at the
+    // next stable RAP without retaining an unbounded GOP.
+    void emit_ready_keeping_pending() { emit(true); }
+
+    bool has_pending_sample() const noexcept { return pending_.has_value(); }
+
     void emit_init() {
         if (track_) output_.init(type_, *track_);
     }

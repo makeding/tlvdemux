@@ -196,8 +196,17 @@ probe と landing が重なる範囲は再利用し、budget 消費後は source
 前の RAP は正常な preroll であり、共通 A/V buffered 区間が user の要求時刻を覆うまで seek を継続し、
 その後だけ通常の 15 秒停止／8 秒再開 backpressure へ移行します。probe は target + 50 ms までの RAP
 だけを記録し、観測済み候補の解析前縁が target を越えた時点で停止して、未観測 layer を待たず target
-より後でない最も近い RAP を選択します。共通 A/V が target より後だけ、A/V が非交差、RAP なし、
-EOF、または budget 消費の場合は `MSE_SEEK_NO_COMMON_AV` で読み込みを停止します。これを
+より後でない最も近い RAP を選択します。正式 landing では一度だけの reposition の直後、landing input
+を一つも渡す前に、session は元の source target を一回限りの recorded-seek concealment target として
+HEVC remuxer へ渡します。その target が選択映像の
+source-damage episode 内にある場合だけ、既存の stable-GOP 検証後に静止画で穴を埋めます。損傷前の
+完全な最終 sample があればその duration を stable RAP の decode boundary まで延長し、landing 内に
+前画面がなければ stable RAP の先頭 frame を target に複製します。この場合も元の RAP は元の DTS/PTS
+に残し、AAC は元の連続 timeline を維持します。この填補は `MediaElement.currentTime` を変更せず、
+追加 landing seek、source の再 scan、単一 16 MiB budget の増加を行いません。したがって生の共通 A/V
+が target より後だけ、または非交差でも、填補によって exact target の共通 coverage が形成されれば
+正常です。利用可能な損傷前 frame も安定後続 RAP もない場合、RAP なし、EOF、填補後も A/V が非交差、
+または budget 消費の場合は `MSE_SEEK_NO_COMMON_AV` で読み込みを停止します。これを
 `MSE_STARTUP_NO_COMMON_AV` として報告したり、MediaElement の hidden seek や録画全体の scan に
 fallback してはいけません。
 

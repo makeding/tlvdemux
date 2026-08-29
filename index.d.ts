@@ -862,6 +862,7 @@ declare namespace createTlvDemuxModule {
     ): void;
     clearAutomaticLayerSwitch(): void;
     setMseTimestampOffset(timestampOffsetUs: bigint): void;
+    setMseRecordedSeekConcealmentTarget(presentationTimeUs?: bigint | null): void;
     /** Report the unchanged media clock for automatic layer recovery decisions. */
     setMsePlaybackPosition(presentationTimeUs: bigint): void;
     switchAudioTrack(trackId: bigint, earliestPresentationTimeUs: bigint): bigint | null;

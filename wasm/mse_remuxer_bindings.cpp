@@ -325,6 +325,11 @@ void WasmMseRemuxer::setTimestampOffset(const std::int64_t timestamp_offset_us) 
     impl_->remuxer().setTimestampOffset(timestamp_offset_us);
 }
 
+void WasmMseRemuxer::setRecordedSeekConcealmentTarget(
+    const std::optional<std::int64_t> presentation_time_us) {
+    impl_->remuxer().setRecordedSeekConcealmentTarget(presentation_time_us);
+}
+
 void WasmMseRemuxer::setPlaybackPosition(
     const std::int64_t presentation_time_us) {
     impl_->remuxer().setPlaybackPosition(presentation_time_us);

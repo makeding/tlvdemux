@@ -15,27 +15,21 @@ import {
 import { coalesceReadableStream } from '../stream-input.mjs?v=public-stream-v1';
 import {
   commonBufferedRanges,
-  startMsePlayback,
-} from '../mse-playback.mjs?v=audio-only-resilience-v1';
-import {
   createMsePlaybackFlowControl,
   createMseRecordedSeekSession,
-} from '../mse-playback.mjs?v=damage-resume-v4';
+  startMsePlayback,
+} from '../mse-playback.mjs?v=recorded-seek-concealment-v1';
 import { createWorkerTlvDemuxModule } from '../worker-tlvdemux.mjs';
-import {
-  MseAppendQueue,
-} from '../mse-append-queue.mjs?v=gap-recovery-v1';
+import {MseAppendQueue} from '../mse-append-queue.mjs?v=recorded-seek-concealment-v1';
 import {createMseOutputPipeline} from '../mse-output-pipeline.mjs?v=audio-only-resilience-v1';
-import {
-  MsePlaybackMode,
-  createDemoPlaybackResilience,
-} from './playback-resilience.js?v=audio-only-resilience-v1';
-import {createLiveMseTransitionManager}
-  from '../mse-live-transition.mjs?v=audio-only-resilience-v1';
-import {createRecordedMseTransitionManager}
-  from './recorded-mse-transition.js?v=recorded-transition-v1';
+import {MsePlaybackMode, createDemoPlaybackResilience}
+  from './playback-resilience.js?v=recorded-seek-concealment-v1';
+import {createLiveMseTransitionManager} from '../mse-live-transition.mjs?v=recorded-seek-concealment-v1';
+import {createMseVideoRecoveryLogger, createRecordedMseTransitionManager,
+  createRecordedSeekConcealmentLogger}
+  from './recorded-mse-transition.js?v=recorded-seek-concealment-v1';
 import {commitDemoMseCandidate, createMediaElementProxy, formatBytes, openDetachedMseMedia}
-  from './mse-media-transaction.js?v=recorded-transition-v1';
+  from './mse-media-transaction.js?v=recorded-seek-concealment-v1';
 import {
   RangeUnsupportedError,
   createBlobRecordedSource,
@@ -770,10 +764,8 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const reportedDamage = new Set();
   const externalDurationUs = liveMode ? null : BigInt(Math.round(
      durationSeconds(probeResult.duration) * 1000000));
-  const presentationStartUs = liveMode ? 0n : timestampMicroseconds(
-    probeResult.presentationStart);
-  const presentationEndUs = liveMode ? null : timestampMicroseconds(
-    probeResult.presentationEnd);
+  const presentationStartUs = liveMode ? 0n : timestampMicroseconds(probeResult.presentationStart);
+  const presentationEndUs = liveMode ? null : timestampMicroseconds(probeResult.presentationEnd);
   let playbackFlow = createMsePlaybackFlowControl({
     media: playbackMedia,
     queues,
@@ -838,6 +830,14 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     requestLiveTransition: (mode, target) => liveTransitionManager.transition(mode, target),
   });
   activeGapRecovery = gapRecovery;
+  const observeVideoRecovery = createMseVideoRecoveryLogger({
+    gapRecovery,
+    observeConcealment: createRecordedSeekConcealmentLogger({
+      targetSeconds: startTimeSeconds, presentationStartUs,
+      appendLog: message => seekSession?.phase === 'landing' && appendLog(message),
+    }),
+    appendLog,
+  });
 
   const maybeStartPlayback = () => {
     if (generation !== runGeneration ||
@@ -923,14 +923,15 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       async beforeCommit(item, previousMedia) {
         if (liveMode || !item.seekResult) return;
         await withActiveDemux(async () => {
-          const previousOffset = offset;
-          await demuxer.reposition(item.seekResult.nextOffset, true);
           if (previousMedia.paused) {
-            await demuxer.reposition(previousOffset, true);
             throw new DOMException('Transition paused by the user.', 'AbortError');
           }
-          await demuxer.setMseOutputEnabled(true);
-          offset = item.seekResult.nextOffset;
+          const previousDemuxer = demuxer;
+          const adopted = item.adoptDemuxer(demuxCallbacks); demuxer = adopted.demuxer;
+          previousDemuxer.delete();
+          for (const track of adopted.tracks) demuxCallbacks.onTrack?.(track);
+          await demuxer.setMseOutputEnabled(true); offset = item.seekResult.nextOffset;
+          activeDemuxer = demuxer;
         });
       },
       rebind(mediaElement) {
@@ -1222,22 +1223,12 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   };
 
   let demuxer;
-  demuxer = new wasmModule.TlvDemuxer({
+  const demuxCallbacks = {
     mseMaxAudioChannels: MSE_MAX_AUDIO_CHANNELS,
     onMseVideoStart(detail) {
       appendLog(`映像開始 HEVC NAL=${detail.nalType} シグナルRAP=${detail.signalledRandomAccess}`);
     },
-    onMseVideoRecovery(event) {
-      gapRecovery.observeVideoRecoveryEvent(event);
-      const label = {
-        'observation-started': '映像復旧観察開始',
-        'candidate-rejected': '後続損傷で映像復旧候補を否決',
-        'stable-rap-committed': '安定RAPを映像出力へコミット',
-      }[event.phase];
-      if (label) {
-        appendLog(`${label} PTS=${(Number(event.presentationTimeUs) / 1000000).toFixed(6)}s`);
-      }
-    },
+    onMseVideoRecovery: observeVideoRecovery,
     onMseVideoProperties(properties) {
       currentVideoProperties = properties;
       updateVideoColorStatus();
@@ -1469,7 +1460,8 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         if (recoverableErrors++ < 8) appendLog(`分離警告 @${error.inputOffset}: ${error.message}`);
       }
     },
-  });
+  };
+  demuxer = new wasmModule.TlvDemuxer(demuxCallbacks);
   [currentHlgSdrLut, prototypeHlgSdrLut] = await Promise.all([
     demuxer.hlgSdrColorLut(), demuxer.hlgSdrPrototypeColorLut(),
   ]);

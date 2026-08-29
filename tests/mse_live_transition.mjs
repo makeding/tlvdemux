@@ -48,11 +48,11 @@ function probeMedia(presentedTime = null) {
 }
 
 const init = type => ({type, mime: `${type}/mp4`, data: new Uint8Array([1])});
-const segment = type => ({
+const segment = (type, startTimeSeconds = 10, endTimeSeconds = 12) => ({
   type,
   data: new Uint8Array([2]),
-  startTimeUs: 10_000_000n,
-  endTimeUs: 12_000_000n,
+  startTimeUs: BigInt(Math.round(startTimeSeconds * 1_000_000)),
+  endTimeUs: BigInt(Math.round(endTimeSeconds * 1_000_000)),
 });
 
 {
@@ -147,8 +147,8 @@ const segment = type => ({
 
 {
   const commits = [];
-  const visible = {currentTime: 10, paused: true};
-  const candidate = probeMedia(10);
+  const visible = {currentTime: 93.961, paused: true};
+  const candidate = probeMedia(95.562112);
   let opened = 0;
   const manager = createLiveMseTransitionManager({
     MediaSourceClass: class {},
@@ -168,10 +168,10 @@ const segment = type => ({
   });
   manager.observeInit(init('video'));
   manager.observeInit(init('audio'));
-  const completion = manager.transition(MsePlaybackMode.RESTORING_VIDEO, 10);
+  const completion = manager.transition(MsePlaybackMode.RESTORING_VIDEO, 95.562112);
   await Promise.resolve();
-  manager.observeSegment(segment('video'));
-  manager.observeSegment(segment('audio'));
+  manager.observeSegment(segment('video', 95.562112, 97));
+  manager.observeSegment(segment('audio', 93.9, 97));
   await Promise.resolve();
   assert.equal(opened, 0, 'paused ManagedMediaSource candidate opened through hidden play');
   assert.deepEqual(commits, [], 'paused A/V restore candidate committed');
@@ -180,7 +180,8 @@ const segment = type => ({
   manager.notifyPlaybackResumed();
   await completion;
   assert.equal(opened, 1, 'resumed ManagedMediaSource candidate did not continue opening');
-  assert.deepEqual(commits, [10]);
+  assert.deepEqual(commits, [95.562112],
+    '93.961s pause/resume did not commit the filled 95.562112s frame exactly once');
   manager.destroy();
 }
 

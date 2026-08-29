@@ -32,6 +32,23 @@ const queue = ranges => ({
 }
 
 {
+  const media = {currentTime: 50};
+  const video = queue([{start: 50.01, end: 53}]);
+  const audio = queue([{start: 49, end: 53}]);
+  const queues = new Map([['video', video], ['audio', audio]]);
+  const flow = createMsePlaybackFlowControl({
+    media, queues, entryKind: 'seek', entryTimeSeconds: 50,
+  });
+  assert.equal(flow.entryCovered(), false,
+    'recorded seek accepted later-only A/V without exact-target coverage');
+  video.ranges = [{start: 50.000001, end: 53}];
+  assert.equal(flow.entryCovered(), true,
+    'recorded seek rejected a one-tick exact-target rounding boundary');
+  assert.equal(media.currentTime, 50,
+    'recorded seek flow control moved the requested media time');
+}
+
+{
   const media = {
     currentTime: 0,
     playCount: 0,

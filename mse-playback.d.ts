@@ -245,6 +245,7 @@ export interface MseSeekDemuxer {
   push(data: Uint8Array): boolean | Promise<boolean>;
   reposition(offset: bigint, preserveIndex: boolean): unknown | Promise<unknown>;
   setMseOutputEnabled(enabled: boolean): unknown | Promise<unknown>;
+  setMseRecordedSeekConcealmentTarget(presentationTimeUs: bigint | null): unknown | Promise<unknown>;
   setIndexDuration(durationUs: bigint): boolean | Promise<boolean>;
   estimateOffset(targetUs: bigint, sourceSize: bigint): bigint | null | Promise<bigint | null>;
 }

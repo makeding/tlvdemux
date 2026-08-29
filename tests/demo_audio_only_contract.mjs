@@ -39,12 +39,36 @@ assert.match(liveTransition, /MSE detach algorithm/,
   'Live transition can regress to detaching and emptying the proven candidate');
 assert.match(demo, /createRecordedMseTransitionManager/,
   'recorded recovery still has no transactional candidate path');
+assert.ok(demo.indexOf('const gapRecovery = createDemoPlaybackResilience') <
+    demo.indexOf('const observeVideoRecovery = createMseVideoRecoveryLogger'),
+  'demo constructs the video-recovery logger before gapRecovery is initialized');
 assert.doesNotMatch(demo, /stopPlayback\(true, false\);[\s\S]{0,120}loadAndPlay\(target/,
   'recorded recovery still destroys the old MSE before candidate validation');
 assert.match(recordedTransition, /createMseRecordedSeekSession/,
   'recorded candidate does not use the shared 16 MiB seek session');
 assert.match(recordedTransition, /estimateOffset:\s*cachedEstimateOffset/,
   'recorded candidate does not reuse the active recording index estimate');
+assert.match(recordedTransition, /adoptDemuxer/,
+  'recorded candidate cannot continue sequentially from its formal landing');
+assert.doesNotMatch(demo, /reposition\(item\.seekResult\.nextOffset/,
+  'recorded candidate performs a second reposition after formal landing');
+assert.match(mediaTransaction, /promotedMedia\.currentTime\s*=\s*target;/,
+  'recorded candidate does not preserve the exact user-requested time');
+assert.doesNotMatch(mediaTransaction,
+  /promotedMedia\.currentTime\s*=\s*Math\.max/,
+  'recorded candidate still substitutes a later buffered landing time');
+assert.ok(demo.split('\n').length - 1 < 2000,
+  'demo.js was not kept below 2000 lines after recorded-seek extraction');
+const msePlaybackVersions = [demo, adapter, liveTransition, recordedTransition]
+  .flatMap(source => [...source.matchAll(/mse-playback\.mjs\?v=([^'\"]+)/g)]
+    .map(match => match[1]));
+assert.equal(new Set(msePlaybackVersions).size, 1,
+  'the demo page loads multiple versioned instances of mse-playback');
+const liveTransitionVersions = [demo, recordedTransition, mediaTransaction]
+  .flatMap(source => [...source.matchAll(/mse-live-transition\.mjs\?v=([^'\"]+)/g)]
+    .map(match => match[1]));
+assert.equal(new Set(liveTransitionVersions).size, 1,
+  'the demo page loads multiple versioned instances of mse-live-transition');
 assert.match(demo, /setIndexDuration\(presentationEndUs\)/,
   'active recording index does not retain the cached duration for candidate estimates');
 assert.match(demo, /notifyPlaybackPaused/,

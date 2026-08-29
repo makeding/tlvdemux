@@ -104,6 +104,10 @@ await demuxer.suspendAutomaticLayerSwitch(1n, 2n, 3n, 4n);
 assert.equal(fake.messages.some(entry =>
   entry.message.method === 'suspendAutomaticLayerSwitch'), true,
   'worker proxy did not expose automatic-layer suspension');
+await demuxer.setMseRecordedSeekConcealmentTarget(5n);
+assert.deepEqual(fake.messages.find(entry =>
+  entry.message.method === 'setMseRecordedSeekConcealmentTarget')?.message.args, [5n],
+  'worker proxy did not forward the one-shot recorded-seek target');
 assert.equal(await demuxer.switchLayerAtPlaybackEntry(3n, 4n, 0n), true,
   'worker proxy lost the playback-entry layer-switch result');
 await demuxer.push(bytes);

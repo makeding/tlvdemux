@@ -775,6 +775,8 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("clearAutomaticLayerSwitch",
                   &WasmDemuxer::clearAutomaticLayerSwitch)
         .function("setMseTimestampOffset", &WasmDemuxer::setMseTimestampOffset)
+        .function("setMseRecordedSeekConcealmentTarget",
+                  &WasmDemuxer::setMseRecordedSeekConcealmentTarget)
         .function("setMsePlaybackPosition",
                   &WasmDemuxer::setMsePlaybackPosition)
         .function("setMseSdrInHlg", &WasmDemuxer::setMseSdrInHlg)
