@@ -207,6 +207,15 @@ A/V buffered 区間であり、設定した live 起動 buffer が成立した�
 
 録画の明示 seek は別の public playback-entry contract です。head discovery、すべての RAP probe、
 正式な A/V preroll は `createMseRecordedSeekSession()` の単一 16 MiB source-read budget を共有します。
+最初の明示 seek intent から、選択映像と選択音声の exact coverage が append、commit されるまで、
+その seek が demux/MSE transaction を占有します。automatic layer switch は probe、landing、
+append、commit の全区間で fence されます。既存の pending switch は中止し、health／damage
+観測は同じ通常／降雨 tracker を warm できますが、automatic switch の開始、完了、再開は
+できません。automatic mode の再評価は exact target の commit 後に一度だけ行います。seek は
+通常または降雨 layer の RAP と対応 AAC を landing source として直接選べますが、これは明示
+seek の一部であり automatic layer switch ではありません。要求された
+`MediaElement.currentTime`、一度だけの formal landing、共有 16 MiB budget を維持し、0 以外の
+seek を playback entry zero に写像してはいけません。
 probe と landing が重なる範囲は再利用し、budget 消費後は source request を発行しません。head discovery、
 probe、landing は 1 MiB 単位で読み、stable recovery RAP に届く前に一度の粗い read が共有 budget の
 8 分の 1 を消費しないようにします。要求時刻より

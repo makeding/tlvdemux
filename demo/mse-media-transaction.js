@@ -87,25 +87,32 @@ export async function commitDemoMseCandidate({
   transitionManagers,
   onQueueUpdate,
   appendLog,
+  assertCurrent = () => {},
 }) {
+  assertCurrent();
   const target = previousMedia.currentTime;
   if (previousMedia.paused) {
     throw new DOMException('Transition paused by the user.', 'AbortError');
   }
   await beforeCommit(candidate, previousMedia);
+  assertCurrent();
   for (const queue of previousQueues.values()) queue.destroy();
+  assertCurrent();
   previousMedia.pause();
   const promotedMedia = promoteMseCandidateMedia({
     previousMedia, candidateMedia: candidate.probeMedia, rebind,
   });
   createSubtitleRenderer(liveMode);
+  assertCurrent();
   gapRecovery.notifyMediaElementChanged();
   install(candidate);
+  assertCurrent();
   for (const queue of candidate.queues.values()) {
     queue.onUpdateEnd = onQueueUpdate;
     queue.resume();
   }
   promotedMedia.currentTime = target;
+  assertCurrent();
   if (!promotedMedia.paused) {
     gapRecovery.notifyPlaybackResumed();
     for (const manager of transitionManagers) manager?.notifyPlaybackResumed();

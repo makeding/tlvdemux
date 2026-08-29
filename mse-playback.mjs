@@ -687,6 +687,13 @@ export function createMseRecordedSeekSession({
   if (typeof demuxer.setMseRecordedSeekConcealmentTarget !== 'function') {
     throw new TypeError('The demuxer must support recorded-seek concealment targets.');
   }
+  for (const method of [
+    'beginMseRecordedSeek', 'finishMseRecordedSeek', 'cancelMseRecordedSeek',
+  ]) {
+    if (typeof demuxer[method] !== 'function') {
+      throw new TypeError(`The demuxer must support ${method}().`);
+    }
+  }
   if (typeof headReady !== 'function') throw new TypeError('headReady must be a function.');
 
   const chunkSize = BigInt(chunkBytes);
@@ -823,7 +830,7 @@ export function createMseRecordedSeekSession({
     return null;
   };
 
-  const run = async () => {
+  const runTransaction = async () => {
     ensureActive();
     phase = 'head';
     await demuxer.setMseOutputEnabled(false);
@@ -946,6 +953,20 @@ export function createMseRecordedSeekSession({
       bytesRead,
       budgetBytes: budget,
     };
+  };
+
+  const run = async () => {
+    ensureActive();
+    await demuxer.beginMseRecordedSeek();
+    try {
+      const result = await runTransaction();
+      ensureActive();
+      await demuxer.finishMseRecordedSeek(BigInt(targetUs));
+      return result;
+    } catch (error) {
+      await demuxer.cancelMseRecordedSeek();
+      throw error;
+    }
   };
 
   return {

@@ -330,6 +330,19 @@ void WasmMseRemuxer::setRecordedSeekConcealmentTarget(
     impl_->remuxer().setRecordedSeekConcealmentTarget(presentation_time_us);
 }
 
+void WasmMseRemuxer::beginMseRecordedSeek() {
+    impl_->remuxer().beginMseRecordedSeek();
+}
+
+void WasmMseRemuxer::finishMseRecordedSeek(
+    const std::int64_t playback_position_us) {
+    impl_->remuxer().finishMseRecordedSeek(playback_position_us);
+}
+
+void WasmMseRemuxer::cancelMseRecordedSeek() {
+    impl_->remuxer().cancelMseRecordedSeek();
+}
+
 void WasmMseRemuxer::setPlaybackPosition(
     const std::int64_t presentation_time_us) {
     impl_->remuxer().setPlaybackPosition(presentation_time_us);

@@ -45,6 +45,10 @@ void VideoLayerStateMachine::suspend() noexcept {
     enabled_ = false;
 }
 
+void VideoLayerStateMachine::resume() noexcept {
+    enabled_ = pair_.has_value();
+}
+
 void VideoLayerStateMachine::clearConfiguration() noexcept {
     enabled_ = false;
     pair_.reset();

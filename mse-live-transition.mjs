@@ -146,7 +146,7 @@ export function createLiveMseTransitionManager({
         discardCandidate(error);
       }
     },
-    async transition(mode, target) {
+    async transition(mode, target, context = null) {
       if (candidate) discardCandidate(new DOMException('Transition superseded.', 'AbortError'));
       const requiredTracks = mode === MsePlaybackMode.AUDIO_ONLY
         ? ['audio'] : ['video', 'audio'];
@@ -176,6 +176,7 @@ export function createLiveMseTransitionManager({
         pending: [], queues: new Map(), pipeline: null, committing: false,
         frameCallback: null, url: null, cleanup: null, resumeWaiter: null,
         prepared: prepareCandidate === null,
+        context,
       };
       const openingCandidate = candidate;
       let opened;

@@ -37,6 +37,7 @@ class VideoLayerStateMachine {
 public:
     void configure(VideoLayerPair pair);
     void suspend() noexcept;
+    void resume() noexcept;
     void clearConfiguration() noexcept;
     void select(std::optional<std::uint64_t> video_track_id) noexcept;
     void resetObservations() noexcept;
