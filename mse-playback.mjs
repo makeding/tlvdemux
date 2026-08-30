@@ -804,6 +804,7 @@ export function createMseRecordedSeekSession({
   let phase = 'idle';
   let bytesRead = 0n;
   let currentPushOffset = 0n;
+  let headTimelineReady = false;
 
   const active = () => !signal?.aborted && isActive();
   const ensureActive = () => { if (!active()) throw abortError(); };
@@ -819,6 +820,7 @@ export function createMseRecordedSeekSession({
     if (track.kind === 'audio' && unit.codec !== 'aac-latm') return;
     const pts = timestampUs(unit);
     if (pts === null) return;
+    if (phase === 'head') headTimelineReady = true;
     const sample = {
       ptsUs: pts,
       offset: unit.inputOffset === undefined ? currentPushOffset : BigInt(unit.inputOffset),
@@ -924,7 +926,7 @@ export function createMseRecordedSeekSession({
     await demuxer.setMseOutputEnabled(false);
     await demuxer.setMseTimestampOffset?.(-BigInt(presentationStartUs));
     let headOffset = 0n;
-    while (!headReady()) {
+    while (!headReady() || !headTimelineReady) {
       if (headOffset >= source.size) throw new MseRecordedSeekError('source-ended');
       const data = await read(headOffset, chunkSize);
       await push(data, headOffset);

@@ -278,6 +278,13 @@ alone never relaxes exact coverage, so genuinely later-only A/V still fails.
 The `819.749134s` regression in the authoritative recording exercises this
 case: Chromium reports the neighbouring RAP at about `819.752s` while the
 committed coded interval covers the requested clock.
+The 5.1 GiB recording
+`20260731-101-180000_9220c865-bfab-4d4d-8651-824b8e91a9e1.mmts` adds a
+variable-rate sparse-probe boundary at media time `452.985098s`. Its
+`453.647142s` source target must find a real preceding RAP, land exact common
+A/V, and remain within the same 16 MiB budget; repeatedly probing neighbouring
+byte windows whose normalized access units remain near timestamp zero is not
+valid progress.
 The monotonic playback-intent token and its single destructive commit lane are
 owned by the public `tlvdemux/mse-playback` SDK, not by the demo. Integrations
 create tokens for explicit seeks, layer switches, and recovery candidates and
@@ -295,7 +302,10 @@ reset, flush, or discard the in-flight seek landing.
 Overlapping probe and landing ranges are reused, and no source request is issued
 after exhaustion. Head discovery, probes, and landing use 1 MiB reads so a
 single coarse read cannot consume one eighth of that shared budget before the
-stable recovery RAP is reached. A RAP before the requested media time is valid
+stable recovery RAP is reached. Head discovery is not complete merely because
+the track catalogue exists: it must also observe a candidate playback access
+unit with a valid timestamp so later sparse probes retain the recording's real
+normalization origin. A RAP before the requested media time is valid
 preroll: seek continues until the common buffered A/V interval covers the requested time,
 then normal 15-second/8-second backpressure resumes. The probe records RAPs only
 through target + 50 ms. It stops as soon as it observes a RAP not later than

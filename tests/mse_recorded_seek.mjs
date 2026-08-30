@@ -30,6 +30,7 @@ function fixture({
   estimatedOffset = 16n * BigInt(MiB),
   probeRapUs = 51_000_000n,
   coverOnCancel = false,
+  headTimelineOnRead = 1,
 } = {}) {
   const media = {currentTime: 50};
   const video = queue();
@@ -49,6 +50,7 @@ function fixture({
     },
   };
   let position = 0n;
+  let headPushes = 0;
   let landingPushes = 0;
   const indexCalls = [];
   let session;
@@ -81,12 +83,15 @@ function fixture({
     },
     async push(data) {
       if (session.phase === 'head') {
+        headPushes += 1;
         session.observeTrack(track);
         session.observeTrack(audioTrack);
-        session.observeAccessUnit({
-          codec: 'hevc', trackId: 1, ptsValue: 0n, ptsTimescale: 1000000,
-          randomAccess: true, restartOffset: 0n,
-        });
+        if (headPushes >= headTimelineOnRead) {
+          session.observeAccessUnit({
+            codec: 'hevc', trackId: 1, ptsValue: 0n, ptsTimescale: 1000000,
+            randomAccess: true, restartOffset: 0n,
+          });
+        }
       } else if (session.phase === 'probe') {
         if (!noRap) {
           session.observeAccessUnit({
@@ -132,6 +137,15 @@ function fixture({
     session, requests, controller, flowControl, indexCalls, media,
     operations, concealmentTargets, seekLifecycle,
   };
+}
+
+{
+  const {session, requests} = fixture({headTimelineOnRead: 2});
+  await session.run();
+  assert.deepEqual(requests.slice(0, 2).map(request => request.offset), [0n, BigInt(MiB)],
+    'recorded seek left the head before establishing the normalization timeline');
+  assert.notEqual(requests[2].offset, 2n * BigInt(MiB),
+    'recorded seek began a sequential scan instead of its bounded target probe');
 }
 
 {

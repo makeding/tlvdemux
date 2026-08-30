@@ -239,9 +239,10 @@ try {
         }
       },
       onAccessUnit(unit) {
-        if (session?.phase === 'probe' && unit.codec === 'hevc' && probeUnits.length < 32) {
+        if (session?.phase === 'probe' && unit.codec === 'hevc' &&
+            (unit.randomAccess || unit.discontinuity) && probeUnits.length < 64) {
           probeUnits.push(`${unit.trackId}:${unit.ptsValue}/${unit.ptsTimescale}:` +
-            `${unit.randomAccess}:${unit.restartOffset}`);
+            `${unit.randomAccess}:${unit.restartOffset}:${unit.inputOffset}`);
         }
         session?.observeAccessUnit(unit);
       },
