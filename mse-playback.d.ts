@@ -25,13 +25,25 @@ export type MseRecordedSeekFailureReason =
 export declare class MseRecordedSeekError extends Error {
   readonly code: typeof MSE_SEEK_NO_COMMON_AV;
   readonly reason: MseRecordedSeekFailureReason;
+  readonly diagnostics?: MseRecordedSeekDiagnostics;
   constructor(reason?: MseRecordedSeekFailureReason, message?: string | null);
+}
+
+export interface MseRecordedSeekDiagnostics {
+  targetTimeSeconds: number;
+  sourceTargetUs: string;
+  bytesRead: string;
+  budgetBytes: string;
+  tracks: Record<string, {
+    committed: MseBufferedRange[];
+    buffered: MseBufferedRange[];
+  }>;
 }
 
 export interface MseMediaClock { currentTime: number; }
 export type MsePlaybackQueues = Map<string, Pick<
   MseAppendQueue,
-  'bufferedRanges' | 'trimBefore' | 'waitFlowControlled' | 'waitStable'
+  'bufferedRanges' | 'committedRanges' | 'trimBefore' | 'waitFlowControlled' | 'waitStable'
 >>;
 
 export interface MsePlaybackFlowControlOptions {
@@ -41,6 +53,7 @@ export interface MsePlaybackFlowControlOptions {
   entryKind?: 'startup' | 'live' | 'seek';
   entryTimeSeconds?: number;
   entryToleranceSeconds?: number;
+  browserBoundaryToleranceSeconds?: number;
   highSeconds?: number;
   lowSeconds?: number;
   startupNoProgressBytes?: number;
@@ -66,6 +79,9 @@ export interface MsePlaybackFlowControl {
 }
 
 export declare function commonBufferedRanges(
+  queues: MsePlaybackQueues, requiredTracks?: readonly MseRequiredTrack[],
+): MseBufferedRange[];
+export declare function commonCommittedRanges(
   queues: MsePlaybackQueues, requiredTracks?: readonly MseRequiredTrack[],
 ): MseBufferedRange[];
 export declare function commonBufferedAhead(

@@ -17,6 +17,7 @@ class FakeQueue {
   }
   appendInitialization() { this.onUpdateEnd?.(); }
   bufferedRanges() { return this.ranges; }
+  committedRanges() { return this.ranges; }
   setTimestampOffset() {}
   spliceFrom() {}
   waitStable() { return Promise.resolve(); }

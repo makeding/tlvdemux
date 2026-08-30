@@ -7,9 +7,11 @@ import {
   startMsePlayback,
 } from '../mse-playback.mjs';
 
-const queue = ranges => ({
+const queue = (ranges, committed = ranges) => ({
   ranges,
+  committed,
   bufferedRanges() { return this.ranges; },
+  committedRanges() { return this.committed; },
   trimBefore() {},
   waitFlowControlled() { return Promise.resolve(); },
 });
@@ -42,10 +44,39 @@ const queue = ranges => ({
   assert.equal(flow.entryCovered(), false,
     'recorded seek accepted later-only A/V without exact-target coverage');
   video.ranges = [{start: 50.000001, end: 53}];
+  video.committed = [{start: 50.000001, end: 53}];
   assert.equal(flow.entryCovered(), true,
     'recorded seek rejected a one-tick exact-target rounding boundary');
   assert.equal(media.currentTime, 50,
     'recorded seek flow control moved the requested media time');
+}
+
+{
+  const target = 819.749134;
+  const video = queue(
+    [{start: 819.752, end: 822}],
+    [{start: 819.686, end: 822}],
+  );
+  const audio = queue(
+    [{start: 819.7, end: 822}],
+    [{start: 819.68, end: 822}],
+  );
+  const flow = createMsePlaybackFlowControl({
+    media: {currentTime: target},
+    queues: new Map([['video', video], ['audio', audio]]),
+    entryKind: 'seek', entryTimeSeconds: target,
+  });
+  assert.deepEqual(flow.entryRange(), {start: 819.686, end: 822},
+    'Chromium HEVC RAP/leading-picture buffered skew rejected exact coded A/V coverage');
+
+  video.ranges = [{start: target + 0.051, end: 822}];
+  assert.equal(flow.entryRange(), null,
+    'a browser range outside the frame-boundary allowance completed a seek');
+
+  video.ranges = [{start: target, end: 822}];
+  video.committed = [{start: target + 0.000003, end: 822}];
+  assert.equal(flow.entryRange(), null,
+    'browser buffered data relaxed the exact committed-coded target contract');
 }
 
 {

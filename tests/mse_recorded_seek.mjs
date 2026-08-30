@@ -11,8 +11,11 @@ const MiB = 1024 * 1024;
 
 function queue(ranges = []) {
   return {
-    ranges,
-    bufferedRanges() { return this.ranges; },
+    _ranges: ranges,
+    get ranges() { return this._ranges; },
+    set ranges(value) { this._ranges = value; },
+    bufferedRanges() { return this._ranges; },
+    committedRanges() { return this._ranges; },
     trimBefore() {},
     waitFlowControlled() { return Promise.resolve(); },
     waitStable() { return Promise.resolve(); },
@@ -290,8 +293,13 @@ for (const landingRanges of [
   () => ({video: [{start: 48, end: 51}], audio: [{start: 51.1, end: 53}]}),
 ]) {
   const {session, concealmentTargets, seekLifecycle} = fixture({landingRanges});
-  await assert.rejects(session.run(), error =>
-    error.code === MSE_SEEK_NO_COMMON_AV && error.name !== 'MseStartupBufferError');
+  await assert.rejects(session.run(), error => {
+    assert.equal(error.diagnostics.targetTimeSeconds, 50);
+    assert.equal(error.diagnostics.budgetBytes, String(MSE_SEEK_READ_BUDGET_BYTES));
+    assert.deepEqual(error.diagnostics.tracks.video.buffered, landingRanges().video);
+    assert.match(error.message, /Diagnostics:.*targetTimeSeconds/);
+    return error.code === MSE_SEEK_NO_COMMON_AV && error.name !== 'MseStartupBufferError';
+  });
   assert.deepEqual(concealmentTargets, [52_000_000n, null],
     'a failed landing retained its one-shot concealment target');
   assert.deepEqual(seekLifecycle, [['begin'], ['cancel', 'landing']],

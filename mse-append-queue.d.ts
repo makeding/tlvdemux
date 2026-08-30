@@ -30,6 +30,8 @@ export declare class MseAppendQueue {
   readonly queue: Uint8Array[];
   queuedBytes: number;
   currentBytes: number;
+  readonly currentOperation: unknown | null;
+  readonly committedMediaRanges: MseBufferedRange[];
   readonly waiters: unknown[];
   error: Error | null;
   retryTimer: ReturnType<typeof setTimeout> | null;
@@ -53,9 +55,11 @@ export declare class MseAppendQueue {
   setTimestampOffset(offsetSeconds: number): void;
   spliceFrom(time: number, offsetSeconds: number): void;
   replaceFrom(time: number): void;
+  removeRange(start: number, end: number): void;
   pump(): void;
   bufferedAhead(): number;
   bufferedRanges(): MseBufferedRange[];
+  committedRanges(): MseBufferedRange[];
   trimBefore(time: number, force?: boolean): void;
   waitBelow(limit: number): Promise<void>;
   isForwardBlocked(): boolean;

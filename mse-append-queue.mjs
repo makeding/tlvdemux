@@ -11,6 +11,38 @@ function snapshotTimeRanges(ranges) {
   return result;
 }
 
+function mergeTimeRanges(ranges) {
+  const sorted = ranges
+    .filter(range => Number.isFinite(range.start) && Number.isFinite(range.end) &&
+      range.end > range.start)
+    .map(range => ({start: range.start, end: range.end}))
+    .sort((left, right) => left.start - right.start || left.end - right.end);
+  const merged = [];
+  for (const range of sorted) {
+    const previous = merged.at(-1);
+    if (previous && range.start <= previous.end + Number.EPSILON) {
+      previous.end = Math.max(previous.end, range.end);
+    } else {
+      merged.push(range);
+    }
+  }
+  return merged;
+}
+
+function subtractTimeRange(ranges, start, end) {
+  if (!(end > start)) return ranges.map(range => ({...range}));
+  const remaining = [];
+  for (const range of ranges) {
+    if (range.end <= start || range.start >= end) {
+      remaining.push({...range});
+      continue;
+    }
+    if (range.start < start) remaining.push({start: range.start, end: start});
+    if (range.end > end) remaining.push({start: end, end: range.end});
+  }
+  return remaining;
+}
+
 function defaultMediaError(media) {
   if (!media.error) return '';
   return `MediaError code=${media.error.code}`;
@@ -39,6 +71,8 @@ export class MseAppendQueue {
     this.queue = [];
     this.queuedBytes = 0;
     this.currentBytes = 0;
+    this.currentOperation = null;
+    this.committedMediaRanges = [];
     this.waiters = [];
     this.error = null;
     this.retryTimer = null;
@@ -55,6 +89,21 @@ export class MseAppendQueue {
     this.destroyOnSourceClose = options.destroyOnSourceClose ?? true;
 
     this.sourceBuffer.addEventListener('updateend', () => {
+      const operation = this.currentOperation;
+      this.currentOperation = null;
+      if (operation?.kind === 'append' && operation.mime === null &&
+          operation.startTimeSeconds !== null && operation.endTimeSeconds !== null) {
+        this.committedMediaRanges = mergeTimeRanges([
+          ...this.committedMediaRanges,
+          {start: operation.startTimeSeconds, end: operation.endTimeSeconds},
+        ]);
+      } else if (operation?.kind === 'remove') {
+        this.committedMediaRanges = subtractTimeRange(
+          this.committedMediaRanges,
+          operation.startTimeSeconds,
+          operation.endTimeSeconds,
+        );
+      }
       this.currentBytes = 0;
       this.recountQueuedBytes();
       try {
@@ -68,6 +117,7 @@ export class MseAppendQueue {
       }
     });
     this.sourceBuffer.addEventListener('error', () => {
+      this.currentOperation = null;
       this.fail(new Error(this.getMediaError(this.mediaElement) || `SourceBuffer error: ${mime}`));
     });
     this.mediaSource.addEventListener('sourceclose', () => {
@@ -148,6 +198,20 @@ export class MseAppendQueue {
     this.pump();
   }
 
+  removeRange(start, end) {
+    if (!Number.isFinite(start) || start < 0 || !Number.isFinite(end) || end <= start) {
+      throw new TypeError(`invalid remove range ${start}..${end}`);
+    }
+    if (this.error) throw this.error;
+    if (this.state !== 'running') {
+      throw new DOMException(`SourceBuffer queue is ${this.state}`, 'InvalidStateError');
+    }
+    this.enqueueOperation({
+      kind: 'remove', startTimeSeconds: start, endTimeSeconds: end,
+    });
+    this.pump();
+  }
+
   enqueueAppend(item) {
     if (this.error) throw this.error;
     if (this.state !== 'running') {
@@ -185,6 +249,9 @@ export class MseAppendQueue {
       this.forceTrim = false;
       const minimumEnd = force ? start : start + this.trimGranularitySeconds;
       if (removeEnd > minimumEnd) {
+        this.currentOperation = {
+          kind: 'remove', startTimeSeconds: start, endTimeSeconds: removeEnd,
+        };
         this.sourceBuffer.remove(start, removeEnd);
         return;
       }
@@ -204,11 +271,23 @@ export class MseAppendQueue {
       return;
     }
     if (item.kind === 'remove') {
-      const removeEnd = this.bufferedRanges().at(-1)?.end;
+      const bufferedEnd = this.bufferedRanges().at(-1)?.end;
+      const removeEnd = Number.isFinite(item.endTimeSeconds)
+        ? Math.min(item.endTimeSeconds, bufferedEnd ?? item.endTimeSeconds)
+        : bufferedEnd;
       if (Number.isFinite(removeEnd) && removeEnd > item.startTimeSeconds) {
+        this.currentOperation = {
+          kind: 'remove', startTimeSeconds: item.startTimeSeconds,
+          endTimeSeconds: removeEnd,
+        };
         this.sourceBuffer.remove(item.startTimeSeconds, removeEnd);
         return;
       }
+      this.committedMediaRanges = subtractTimeRange(
+        this.committedMediaRanges,
+        item.startTimeSeconds,
+        item.endTimeSeconds ?? Infinity,
+      );
       this.pump();
       return;
     }
@@ -222,8 +301,10 @@ export class MseAppendQueue {
         this.sourceBuffer.changeType(item.mime);
         this.mime = item.mime;
       }
+      this.currentOperation = item;
       this.sourceBuffer.appendBuffer(data);
     } catch (error) {
+      this.currentOperation = null;
       this.queue.unshift(item);
       this.currentBytes = 0;
       this.recountQueuedBytes();
@@ -252,6 +333,10 @@ export class MseAppendQueue {
       if (error?.name !== 'InvalidStateError') throw error;
       return snapshotTimeRanges(this.mediaElement.buffered);
     }
+  }
+
+  committedRanges() {
+    return this.committedMediaRanges.map(range => ({...range}));
   }
 
   trimBefore(time, force = false) {
@@ -358,6 +443,8 @@ export class MseAppendQueue {
     this.queue = [];
     this.queuedBytes = 0;
     this.currentBytes = 0;
+    this.currentOperation = null;
+    this.committedMediaRanges = [];
     this.trimBeforeTime = null;
     this.forceTrim = false;
     this.resolveWaiters();
@@ -428,7 +515,7 @@ export async function finalizeMseMediaSource(mediaSource, queues, options = {}) 
         const ranges = queue.bufferedRanges();
         const bufferedEnd = ranges.at(-1)?.end;
         if (Number.isFinite(bufferedEnd) && bufferedEnd > commonEnd) {
-          queue.sourceBuffer.remove(commonEnd, bufferedEnd);
+          queue.removeRange(commonEnd, bufferedEnd);
         }
       }
       await Promise.all(queues.map(queue => queue.waitIdle()));

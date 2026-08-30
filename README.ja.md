@@ -221,6 +221,15 @@ seek を playback entry zero に写像してはいけません。
 landing の append 中に、それより前の部分的な common range から MediaElement の再生を開始しては
 いけません。固定した要求 `currentTime` は `finishMseRecordedSeek()` 成功後の exact-coverage formal
 commit でのみ設定し、再生開始もその commit 後だけ許可します。
+この commit では、成功した `SourceBuffer.updateend` を append の確認とし、remuxer が出力した mapping
+済み media segment 区間を exact coded coverage の根拠とします。HEVC RAP の PTS が、それに依存する
+leading picture より後の場合、Chromium は `SourceBuffer.buffered` の開始を要求時刻より数 ms 後として
+報告することがあります。commit 済み coded A/V が exact target をともに含み、実際の common
+`buffered` range が同じ commit 済み区間と交差すれば seek は完了です。この browser 境界の誤差だけで
+decode 可能な landing を `MSE_SEEK_NO_COMMON_AV` にしてはいけません。一方、browser `buffered` だけで
+exact coverage を緩和せず、実際に later-only の A/V は失敗させます。authoritative recording の
+`819.749134s` regression では、隣接 RAP が約 `819.752s` と報告されても commit 済み coded 区間が
+要求 clock を覆うことを確認します。
 単調増加する playback-intent token と単一の destructive commit lane は demo ではなく public な
 `tlvdemux/mse-playback` SDK が所有します。integration は明示 seek、layer switch、recovery candidate
 ごとに token を作り、すべての非同期 read／commit の前後で token と固定 demux identity を検証します。
@@ -259,6 +268,9 @@ source-damage episode 内にある場合だけ、既存の stable-GOP 検証後�
 または budget 消費の場合は `MSE_SEEK_NO_COMMON_AV` で読み込みを停止します。これを
 `MSE_STARTUP_NO_COMMON_AV` として報告したり、MediaElement の hidden seek や録画全体の scan に
 fallback してはいけません。
+すべての recorded-seek failure は、要求 target、commit 済み coded A/V ranges、実 browser-buffered
+A/V ranges、共有 budget の消費量を報告し、再度 instrumentation 付きで実行せずに境界を判別できる
+ようにします。
 
 自動の 2 映像 track を持つ録画では、public な録画 timeline は通常映像と降雨映像の
 presentation range の和集合です。録画開始はより早い最初の映像 frame、録画終了はその

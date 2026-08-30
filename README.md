@@ -266,6 +266,18 @@ The MediaElement must not start playback from an earlier partial common range
 while that landing is still being appended. The frozen requested `currentTime`
 is installed only at the formal exact-coverage commit, after
 `finishMseRecordedSeek()` succeeds, and playback may start only after that commit.
+For that commit, successful `SourceBuffer.updateend` events are the append
+acknowledgement, while the remuxer's mapped media-segment intervals are the
+exact coded-coverage evidence. Chromium may report a `SourceBuffer.buffered`
+start a few milliseconds after the requested time when an HEVC RAP has a later
+PTS than a dependent leading picture. A seek is complete when committed coded
+A/V both cover the exact target and the real common `buffered` range intersects
+that same committed interval; the imprecise browser boundary must not turn an
+otherwise decodable landing into `MSE_SEEK_NO_COMMON_AV`. Browser `buffered`
+alone never relaxes exact coverage, so genuinely later-only A/V still fails.
+The `819.749134s` regression in the authoritative recording exercises this
+case: Chromium reports the neighbouring RAP at about `819.752s` while the
+committed coded interval covers the requested clock.
 The monotonic playback-intent token and its single destructive commit lane are
 owned by the public `tlvdemux/mse-playback` SDK, not by the demo. Integrations
 create tokens for explicit seeks, layer switches, and recovery candidates and
@@ -317,6 +329,9 @@ No usable pre-damage frame and no stable following RAP, no RAP, EOF, remaining
 disjoint A/V, or budget exhaustion fails with `MSE_SEEK_NO_COMMON_AV` and stops
 reading. It must never be reported as `MSE_STARTUP_NO_COMMON_AV`, cause a hidden
 media-element seek, or fall back to scanning the complete recording.
+Every recorded-seek failure reports the requested target, committed coded A/V
+ranges, real browser-buffered A/V ranges, and shared-budget consumption so the
+failed boundary can be distinguished without another instrumented rerun.
 
 For automatic dual-video recordings, the public recorded timeline is the union
 of the preferred and rainfall video presentation ranges. The recording start is
