@@ -34,6 +34,19 @@ public:
 
     std::optional<MseLayerSwitchCancelled> select(
         const aribtlv::TrackKind kind, std::optional<std::uint64_t> id) {
+        // Track catalogues are replayed after reposition and worker-backed
+        // integrations can acknowledge the worker's automatic selection with
+        // the same public selectTrack() call. That acknowledgement is not a
+        // new selection: resetting the active muxer here can discard the
+        // recorded-seek landing that is currently forming exact A/V coverage.
+        if (!pending_layer && id.has_value() && kind == aribtlv::TrackKind::Video &&
+            video_id == id) {
+            return std::nullopt;
+        }
+        if (!pending_layer && id.has_value() && kind == aribtlv::TrackKind::Audio &&
+            audio_id == id && active_audio != nullptr) {
+            return std::nullopt;
+        }
         if (kind == aribtlv::TrackKind::Video || kind == aribtlv::TrackKind::Audio) {
             automatic_layers.clearUnrecoveredDamage();
         }
@@ -319,6 +332,9 @@ public:
     }
 
     void begin_recorded_seek() {
+        if (recorded_seek_active) {
+            automatic_layers.discardDeferredDecision();
+        }
         cancel_layer(MseLayerSwitchCancelReason::Reposition);
         recorded_seek_active = true;
         automatic_layers.suspend();
@@ -341,6 +357,10 @@ public:
     void cancel_recorded_seek() {
         if (!recorded_seek_active) return;
         recorded_seek_active = false;
+        // Observations may keep both layer trackers warm during the fence, but
+        // cancelling the transaction must not let its deferred damage vote
+        // become a switch on the first access unit of the next transaction.
+        automatic_layers.discardDeferredDecision();
         if (automatic_requested) automatic_layers.resume();
     }
 

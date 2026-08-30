@@ -42,6 +42,7 @@ public:
     void select(std::optional<std::uint64_t> video_track_id) noexcept;
     void resetObservations() noexcept;
     void clearUnrecoveredDamage() noexcept;
+    void discardDeferredDecision() noexcept;
     void switchCompleted(std::uint64_t video_track_id) noexcept;
     void setSelectedOutputStarted(bool started) noexcept;
     void setPlaybackPosition(std::int64_t presentation_time_us) noexcept;
@@ -89,6 +90,7 @@ private:
     static bool usableForStartup(const LayerTracker& tracker);
     static void markDamaged(LayerTracker& tracker,
                             std::int64_t end_time_us);
+    static void discardDeferredDecision(LayerTracker& tracker) noexcept;
 
     LayerTracker* layerForVideo(std::uint64_t track_id) noexcept;
     const LayerTracker* layerForVideo(std::uint64_t track_id) const noexcept;
