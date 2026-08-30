@@ -233,7 +233,11 @@ exact coverage を緩和せず、実際に later-only の A/V は失敗させま
 単調増加する playback-intent token と単一の destructive commit lane は demo ではなく public な
 `tlvdemux/mse-playback` SDK が所有します。integration は明示 seek、layer switch、recovery candidate
 ごとに token を作り、すべての非同期 read／commit の前後で token と固定 demux identity を検証します。
-demo は browser event を転送し、SDK が許可した結果を install するだけです。
+demo は browser event を転送し、SDK が許可した結果を install するだけです。playback resilience は
+明示 seek fence の全区間で inactive とします。landing 中の recovery 観測は log と一回限りの concealment
+には利用できますが、required track や固定済み seek entry clock を変更してはいけません。
+`758.179369s` regression では、commit 済み video 区間 `758.107362..760.242818s` と audio 区間
+`756.298716..761.162716s` が target を覆うため、A/V として commit しなければなりません。
 worker が `reposition()` 後に track catalogue を再通知した場合、選択済みの non-null video／audio
 track を同じ ID で確認しても idempotent であり、進行中の seek landing を reset、flush、破棄しては
 いけません。
@@ -268,9 +272,9 @@ source-damage episode 内にある場合だけ、既存の stable-GOP 検証後�
 または budget 消費の場合は `MSE_SEEK_NO_COMMON_AV` で読み込みを停止します。これを
 `MSE_STARTUP_NO_COMMON_AV` として報告したり、MediaElement の hidden seek や録画全体の scan に
 fallback してはいけません。
-すべての recorded-seek failure は、要求 target、commit 済み coded A/V ranges、実 browser-buffered
-A/V ranges、共有 budget の消費量を報告し、再度 instrumentation 付きで実行せずに境界を判別できる
-ようにします。
+すべての recorded-seek failure は cancel 前に、要求 target、phase、exact-entry decision、commit 済み
+coded A/V ranges、実 browser-buffered A/V ranges、共有 budget の消費量を snapshot し、再度
+instrumentation 付きで実行せずに境界を判別できるようにします。
 
 自動の 2 映像 track を持つ録画では、public な録画 timeline は通常映像と降雨映像の
 presentation range の和集合です。録画開始はより早い最初の映像 frame、録画終了はその

@@ -80,6 +80,61 @@ const queue = (ranges, committed = ranges) => ({
 }
 
 {
+  const target = 555.818710;
+  const video = queue(
+    [{start: 554.820850, end: 559.508878}],
+    [
+      {start: 554.8208510000001, end: 555.237934},
+      {start: 555.2379400000001, end: 556.3056680000001},
+      {start: 556.3056730000001, end: 557.3734010000001},
+      {start: 557.373406, end: 557.907273},
+      {start: 557.907279, end: 558.975006},
+      {start: 558.975012, end: 559.5088790000001},
+    ],
+  );
+  const audio = queue(
+    [{start: 554.399945, end: 559.263945}],
+    [{start: 554.399945, end: 559.263945}],
+  );
+  const flow = createMsePlaybackFlowControl({
+    media: {currentTime: 0},
+    queues: new Map([['video', video], ['audio', audio]]),
+    entryKind: 'seek', entryTimeSeconds: target,
+  });
+  assert.deepEqual(flow.entryRange(), {
+    start: 555.2379400000001,
+    end: 556.3056680000001,
+  }, 'the reported 555.818710s exact committed A/V coverage was rejected');
+}
+
+{
+  const target = 758.179369;
+  const video = queue(
+    [{start: 756.622539, end: 761.577489}],
+    [
+      {start: 756.6225400000001, end: 757.039623},
+      {start: 757.039629, end: 758.1073560000001},
+      {start: 758.1073620000001, end: 760.242818},
+      {start: 760.242823, end: 761.310551},
+      {start: 761.310556, end: 761.57749},
+    ],
+  );
+  const audio = queue(
+    [{start: 756.298716, end: 761.162715}],
+    [{start: 756.298716, end: 761.162716}],
+  );
+  const flow = createMsePlaybackFlowControl({
+    media: {currentTime: 0},
+    queues: new Map([['video', video], ['audio', audio]]),
+    entryKind: 'seek', entryTimeSeconds: target,
+  });
+  assert.deepEqual(flow.entryRange(), {
+    start: 758.1073620000001,
+    end: 760.242818,
+  }, 'the reported 758.179369s exact committed A/V coverage was rejected');
+}
+
+{
   const media = {
     currentTime: 0,
     playCount: 0,

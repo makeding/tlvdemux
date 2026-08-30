@@ -1053,12 +1053,18 @@ export function createMseRecordedSeekSession({
       phase = 'complete';
       return result;
     } catch (error) {
-      await demuxer.cancelMseRecordedSeek();
-      phase = 'cancelled';
+      const failedPhase = phase;
+      let diagnostics = null;
       if (error instanceof Error && error.name !== 'AbortError') {
-        const diagnostics = {
+        const entryRange = flowControl.entryRange();
+        diagnostics = {
           targetTimeSeconds: Number(targetUs) / 1000000,
           sourceTargetUs: sourceTargetUs.toString(),
+          phase: failedPhase,
+          entryCovered: flowControl.entryCovered(),
+          entryRange,
+          flowEntryTimeSeconds: flowControl.entryTimeSeconds,
+          flowRequiredTracks: flowControl.requiredTracks,
           bytesRead: bytesRead.toString(),
           budgetBytes: budget.toString(),
           tracks: Object.fromEntries(requiredTracks.map(type => {
@@ -1069,6 +1075,10 @@ export function createMseRecordedSeekSession({
             }];
           })),
         };
+      }
+      await demuxer.cancelMseRecordedSeek();
+      phase = 'cancelled';
+      if (diagnostics !== null) {
         error.diagnostics = diagnostics;
         error.message += ` Diagnostics: ${JSON.stringify(diagnostics)}`;
       }

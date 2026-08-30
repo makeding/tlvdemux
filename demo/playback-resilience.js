@@ -1,7 +1,7 @@
 import {
   MsePlaybackMode,
   createMsePlaybackResilienceController,
-} from '../mse-playback.mjs?v=recorded-seek-concealment-v1';
+} from '../mse-playback.mjs?v=recorded-seek-entry-fence-v2';
 import {setMseVideoTrackActive}
   from '../mse-output-pipeline.mjs?v=audio-only-resilience-v1';
 
@@ -17,6 +17,7 @@ export function createDemoPlaybackResilience({
   initialRestoreTarget = null,
   liveMode,
   isActive,
+  playbackEntryLocked = () => false,
   isCurrentLayer,
   switchInFlight,
   seek,
@@ -41,8 +42,10 @@ export function createDemoPlaybackResilience({
       appendLog(`映像復旧を開始しました RAP=${event.target.toFixed(6)}s`);
     } else {
       statusElement.textContent = '';
-      pipeline()?.setRequiredTracks(['video', 'audio']);
-      playbackFlow().setRequiredTracks(['video', 'audio'], media.currentTime);
+      if (!playbackEntryLocked()) {
+        pipeline()?.setRequiredTracks(['video', 'audio']);
+        playbackFlow().setRequiredTracks(['video', 'audio'], media.currentTime);
+      }
       if (event.reason === 'video-restored') {
         playbackStateElement.textContent = liveMode ? 'Live 再生中' : '再生中';
         appendLog(`映像復旧完了 frame=${event.mediaTime.toFixed(6)}s`);

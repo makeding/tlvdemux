@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
+import {createMsePlaybackFlowControl} from '../mse-playback.mjs';
 
 const [html, css, demo, adapter, liveTransition, recordedTransition, mediaTransaction] = await Promise.all([
   readFile(new URL('../demo/index.html', import.meta.url), 'utf8'),
@@ -42,6 +43,15 @@ assert.match(demo, /createRecordedMseTransitionManager/,
 assert.ok(demo.indexOf('const gapRecovery = createDemoPlaybackResilience') <
     demo.indexOf('const observeVideoRecovery = createMseVideoRecoveryLogger'),
   'demo constructs the video-recovery logger before gapRecovery is initialized');
+assert.match(demo,
+  /isActive:\s*\(\)\s*=>[\s\S]{0,160}!seekSession\s*\|\|\s*seekSession\.phase\s*===\s*'complete'/,
+  'playback resilience can rewrite required tracks or the entry clock during an explicit seek');
+assert.match(demo,
+  /playbackEntryLocked:\s*\(\)\s*=>\s*startTimeSeconds\s*>\s*0[\s\S]{0,120}seekSession\.phase\s*!==\s*'complete'/,
+  'demo does not lock the frozen explicit-seek entry before session construction');
+assert.match(adapter,
+  /if \(!playbackEntryLocked\(\)\)\s*\{[\s\S]{0,180}playbackFlow\(\)\.setRequiredTracks/,
+  'playback resilience initial mode can replace a locked explicit-seek clock');
 assert.doesNotMatch(demo, /stopPlayback\(true, false\);[\s\S]{0,120}loadAndPlay\(target/,
   'recorded recovery still destroys the old MSE before candidate validation');
 assert.match(recordedTransition, /createMseRecordedSeekSession/,
@@ -85,5 +95,73 @@ assert.match(demo, /notifyPlaybackPaused/,
   'demo does not freeze resilience and candidate work on user pause');
 assert.match(mediaTransaction, /waitUntilPlaybackResumed\(\)[\s\S]*mediaElement\.play\(\)/,
   'ManagedMediaSource candidate playback bypasses the user-pause gate');
+
+{
+  const executableAdapter = adapter
+    .replace('../mse-playback.mjs?v=recorded-seek-entry-fence-v2',
+      new URL('../mse-playback.mjs', import.meta.url).href)
+    .replace('../mse-output-pipeline.mjs?v=audio-only-resilience-v1',
+      new URL('../mse-output-pipeline.mjs', import.meta.url).href);
+  const adapterModule = await import(
+    `data:text/javascript;base64,${Buffer.from(executableAdapter).toString('base64')}`);
+  const requiredTrackWrites = [];
+  const target = 758.179369;
+  const rangeQueue = (buffered, committed) => ({
+    bufferedRanges: () => buffered,
+    committedRanges: () => committed,
+    trimBefore() {},
+    waitFlowControlled: async () => {},
+  });
+  const lockedFlow = createMsePlaybackFlowControl({
+    media: {currentTime: 0},
+    queues: new Map([
+      ['video', rangeQueue(
+        [{start: 756.622539, end: 761.577489}],
+        [{start: 758.1073620000001, end: 760.242818}],
+      )],
+      ['audio', rangeQueue(
+        [{start: 756.298716, end: 761.162715}],
+        [{start: 756.298716, end: 761.162716}],
+      )],
+    ]),
+    entryKind: 'seek',
+    entryTimeSeconds: target,
+  });
+  const controller = adapterModule.createDemoPlaybackResilience({
+    media: {
+      currentTime: 0, paused: true, seeking: false,
+      videoFrameCallbackSupported: false,
+    },
+    mediaSource: () => null,
+    queues: () => new Map(),
+    playbackFlow: () => lockedFlow,
+    pipeline: () => ({
+      setRequiredTracks(tracks) { requiredTrackWrites.push({owner: 'pipeline', tracks}); },
+    }),
+    presentationStartUs: 0n,
+    generation: 1,
+    initialMode: 'audio-video',
+    liveMode: false,
+    isActive: () => false,
+    playbackEntryLocked: () => true,
+    isCurrentLayer: () => true,
+    switchInFlight: () => false,
+    seek() {},
+    statusElement: {textContent: ''},
+    playbackStateElement: {textContent: ''},
+    appendLog() {},
+    scheduleRecordedRebuild: async () => null,
+    requestLiveTransition: async () => null,
+  });
+  assert.deepEqual(requiredTrackWrites, [],
+    'the resilience initial callback mutated the locked seek pipeline');
+  assert.equal(lockedFlow.entryTimeSeconds, target,
+    'the resilience initial callback replaced the frozen explicit-seek entry clock');
+  assert.deepEqual(lockedFlow.entryRange(), {
+    start: 758.1073620000001,
+    end: 760.242818,
+  }, 'the locked 758.179369s A/V landing no longer commits');
+  controller.destroy();
+}
 
 console.log('demo audio-only contract tests passed');
