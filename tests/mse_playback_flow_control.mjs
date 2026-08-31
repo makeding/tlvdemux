@@ -7,9 +7,10 @@ import {
   startMsePlayback,
 } from '../mse-playback.mjs';
 
-const queue = (ranges, committed = ranges) => ({
+const queue = (ranges, committed = ranges, queuedBytes = 0) => ({
   ranges,
   committed,
+  queuedBytes,
   bufferedRanges() { return this.ranges; },
   committedRanges() { return this.committed; },
   trimBefore() {},
@@ -259,7 +260,7 @@ const queue = (ranges, committed = ranges) => ({
 {
   const media = {currentTime: 0, playbackRate: 2};
   const video = queue([{start: 0, end: 30}]);
-  const audio = queue([{start: 0, end: 1.5}]);
+  const audio = queue([{start: 0, end: 1.5}], undefined, 5 * 1024 * 1024);
   let waits = 0;
   const flow = createMsePlaybackFlowControl({
     media,
@@ -274,7 +275,63 @@ const queue = (ranges, committed = ranges) => ({
   assert.equal(result.commonAhead, 1.5,
     'flow control used one track ahead instead of the common A/V intersection');
   assert.equal(waits, 0,
-    'one track reaching 30 media seconds stopped input while common A/V was starved');
+    'the 4 MiB soft queue limit stopped input while common A/V was starved');
+}
+
+{
+  const media = {currentTime: 0, playbackRate: 2};
+  const video = queue([{start: 0, end: 30}]);
+  const audio = queue(
+    [{start: 0, end: 1.5}], undefined, 33 * 1024 * 1024,
+  );
+  let waits = 0;
+  const flow = createMsePlaybackFlowControl({
+    media,
+    queues: new Map([['video', video], ['audio', audio]]),
+    wait: async () => {
+      waits += 1;
+      audio.queuedBytes = 31 * 1024 * 1024;
+    },
+  });
+  await flow.afterPush(2 * 1024 * 1024);
+  assert.equal(waits, 1,
+    'the 32 MiB hard queue limit did not bound starved sequential input');
+}
+
+{
+  const media = {currentTime: 0, playbackRate: 2};
+  const video = queue([{start: 0, end: 30}]);
+  const audio = queue([{start: 0, end: 1.5}]);
+  audio.error = new Error('audio append failed');
+  const flow = createMsePlaybackFlowControl({
+    media,
+    queues: new Map([['video', video], ['audio', audio]]),
+  });
+  await assert.rejects(flow.afterPush(2 * 1024 * 1024), audio.error,
+    'queue errors were hidden after replacing queue-local waiters');
+}
+
+{
+  const media = {currentTime: 0, playbackRate: 2};
+  const video = queue([{start: 0, end: 30}], undefined, 5 * 1024 * 1024);
+  const audio = queue([{start: 0, end: 30}]);
+  let signalWaitStarted;
+  const waitStarted = new Promise(resolve => { signalWaitStarted = resolve; });
+  const flow = createMsePlaybackFlowControl({
+    media,
+    queues: new Map([['video', video], ['audio', audio]]),
+    wait: () => {
+      signalWaitStarted();
+      return new Promise(() => {});
+    },
+  });
+  const pending = flow.afterPush(2 * 1024 * 1024);
+  await waitStarted;
+  media.currentTime = 15;
+  flow.notifyDemand();
+  const result = await pending;
+  assert.equal(result.commonAhead, 15,
+    'low-common-A/V waiting did not release a reader sleeping at the soft queue limit');
 }
 
 {

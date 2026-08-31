@@ -124,6 +124,12 @@ assert.match(supplyFlow,
 assert.match(supplyFlow,
   /notifyRateChange\(\)[\s\S]{0,100}flow\?\.notifyDemand\(\)[\s\S]{0,100}maybeStart\?\.\(\)/,
   'a playback-rate change does not re-evaluate supply demand and startup');
+assert.match(supplyFlow,
+  /notifyBufferedChange\(\)[\s\S]{0,100}flow\?\.notifyDemand\(\)/,
+  'SourceBuffer updateend does not wake queue-pressure flow control');
+assert.match(demo,
+  /queueHighBytes: SOURCE_QUEUE_HIGH_BYTES,[\s\S]{0,80}queueHardBytes: SOURCE_QUEUE_HARD_BYTES/,
+  'the demo does not install the bounded soft/hard queue pressure contract');
 
 {
   const media = {currentTime: 0, playbackRate: 2};

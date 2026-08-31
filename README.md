@@ -236,9 +236,14 @@ watermarks are multiplied by the current positive `playbackRate`; at 2x they are
 therefore 30 seconds high and 16 seconds low. Those common A/V watermarks are
 the only time-based append/read throttle. An individual audio or video
 SourceBuffer must not stop appending at its own 15-second horizon, because that can strand the other track
-later in the same multiplexed input behind a per-queue byte limit. Per-queue
-limits bound pending append bytes only; they never authorize stopped source
-reads while common A/V ahead is below the rate-adjusted low watermark. Fresh
+later in the same multiplexed input behind a per-queue byte limit. The 4 MiB
+per-queue limit is a soft pending-append watermark: while common A/V ahead is
+below the rate-adjusted low watermark, the sequential reader bypasses that soft
+limit and continues up to a bounded 32 MiB hard limit per required queue. A
+reader already sleeping at the soft limit must re-evaluate immediately when a
+`waiting` event reports low common A/V; it must not wait for that queue to fall
+back below 4 MiB. Per-queue limits therefore bound pending append bytes but
+never authorize stopped source reads while common A/V is starved. Fresh
 recorded playback buffers at least that rate-adjusted common low watermark
 before calling `play()`; selecting or defaulting to 2x must retain 2x and obtain
 the required 16 seconds of common media-time ahead. `waiting` with common A/V

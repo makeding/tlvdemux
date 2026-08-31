@@ -46,10 +46,11 @@ export interface MseRecordedSeekDiagnostics {
 }
 
 export interface MseMediaClock { currentTime: number; playbackRate?: number; }
-export type MsePlaybackQueues = Map<string, Pick<
+export type MsePlaybackQueue = Pick<
   MseAppendQueue,
-  'bufferedRanges' | 'committedRanges' | 'trimBefore' | 'waitFlowControlled' | 'waitStable'
->>;
+  'bufferedRanges' | 'committedRanges' | 'trimBefore' | 'waitStable'
+> & Pick<Partial<MseAppendQueue>, 'queuedBytes' | 'error'>;
+export type MsePlaybackQueues = Map<string, MsePlaybackQueue>;
 
 export interface MsePlaybackFlowControlOptions {
   media: MseMediaClock;
@@ -63,6 +64,7 @@ export interface MsePlaybackFlowControlOptions {
   lowSeconds?: number;
   startupNoProgressBytes?: number;
   queueHighBytes?: number;
+  queueHardBytes?: number;
   backBufferSeconds?: number;
   wait?: (milliseconds: number) => Promise<void>;
 }
@@ -81,6 +83,12 @@ export interface MsePlaybackFlowControl {
   commonAhead(): number;
   highWatermarkSeconds(): number;
   lowWatermarkSeconds(): number;
+  queuePressure(): {
+    softLimitBytes: number;
+    hardLimitBytes: number;
+    limitBytes: number;
+    tracks: Record<string, number>;
+  };
   notifyDemand(): void;
   afterPush(byteLength: number, isActive?: () => boolean): Promise<{
     commonAhead: number;
