@@ -790,6 +790,8 @@ export function createMseRecordedSeekSession({
   const sourceEndUs = BigInt(presentationEndUs);
   const toleranceUs = BigInt(Math.round(ENTRY_TOLERANCE_SECONDS * 1000000));
   const probePrerollUs = BigInt(Math.round(probePrerollSeconds * 1000000));
+  const minimumLandingPrerollUs = requiredTracks.includes('video') &&
+    requiredTracks.includes('audio') ? 1000000n : 0n;
   const tracks = new Map();
   const cachedRanges = [];
   const probeFrontiers = new Map();
@@ -891,15 +893,16 @@ export function createMseRecordedSeekSession({
       frontier > sourceTargetUs + toleranceUs);
   };
 
-  const bestRap = () => [...probeRaps.values()]
-    .filter(rap => rap.ptsUs <= sourceTargetUs && tracks.has(rap.trackId))
+  const bestRap = (minimumPrerollUs = 0n) => [...probeRaps.values()]
+    .filter(rap => rap.ptsUs <= sourceTargetUs - minimumPrerollUs &&
+      tracks.has(rap.trackId))
     .sort((left, right) => {
       if (left.ptsUs !== right.ptsUs) return left.ptsUs > right.ptsUs ? -1 : 1;
       return videoTrackPriority(tracks.get(left.trackId)) - videoTrackPriority(tracks.get(right.trackId));
     })[0] ?? null;
 
   const hasNearbyRap = () => {
-    const rap = bestRap();
+    const rap = bestRap(minimumLandingPrerollUs);
     return rap !== null && rap.ptsUs + probePrerollUs >= sourceTargetUs;
   };
 
@@ -978,9 +981,21 @@ export function createMseRecordedSeekSession({
         await push(data, offset);
         offset += BigInt(data.byteLength);
       }
-      chosen = bestRap();
+      const landingRap = bestRap(minimumLandingPrerollUs);
+      chosen = landingRap && landingRap.ptsUs + probePrerollUs >= sourceTargetUs
+        ? landingRap : bestRap();
       const chosenPrerollUs = chosen === null ? null : sourceTargetUs - chosen.ptsUs;
-      if (chosen && (chosenPrerollUs <= probePrerollUs || candidate === 0n)) break;
+      if (chosen && ((chosenPrerollUs >= minimumLandingPrerollUs &&
+          chosenPrerollUs <= probePrerollUs) || candidate === 0n)) break;
+      if (chosen && chosenPrerollUs < minimumLandingPrerollUs) {
+        initialProbe = false;
+        forwardProbe = false;
+        const earlierCandidate = chosen.restartOffset > window
+          ? chosen.restartOffset - window : 0n;
+        candidate = earlierCandidate < candidate
+          ? earlierCandidate : candidate > window ? candidate - window : 0n;
+        continue;
+      }
       if (initialProbe) {
         initialProbe = false;
         forwardProbe = true;
