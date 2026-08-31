@@ -29,6 +29,9 @@ class FakeWorker {
         const value = delivered.method === 'switchAudioTrack' ? null
           : delivered.method === 'getMseRecordedSeekLandingEvidence'
             ? {landingMode: 'held-frame', heldFrameTimeUs: 5n, recoveryTimeUs: 7n}
+            : delivered.method === 'previousSync'
+              ? {presentationTimeUs: 3n, signallingOffset: 4n, randomAccessOffset: 5n,
+                videoTrackId: 6n, bootstrapId: 7n}
             : true;
         this.onmessage?.({data: {type: protocol.result, requestId: delivered.requestId, value}});
       } else {
@@ -114,6 +117,10 @@ assert.deepEqual(fake.messages.find(entry =>
 assert.deepEqual(await demuxer.getMseRecordedSeekLandingEvidence(), {
   landingMode: 'held-frame', heldFrameTimeUs: 5n, recoveryTimeUs: 7n,
 }, 'worker proxy did not return recorded-seek landing evidence');
+assert.deepEqual(await demuxer.previousSync(8n), {
+  presentationTimeUs: 3n, signallingOffset: 4n, randomAccessOffset: 5n,
+  videoTrackId: 6n, bootstrapId: 7n,
+}, 'worker proxy did not return the native RecordingIndex preceding sync point');
 await demuxer.beginMseRecordedSeek();
 await demuxer.finishMseRecordedSeek(6n);
 await demuxer.cancelMseRecordedSeek();

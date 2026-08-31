@@ -76,6 +76,7 @@ export interface WorkerDemuxer {
   finalizeIndex(): Promise<boolean>;
   setIndexDuration(durationUs: bigint): Promise<boolean>;
   estimateOffset(targetUs: bigint, sourceSize: bigint): Promise<bigint | null>;
+  previousSync(targetUs: bigint): Promise<createTlvDemuxModule.SeekPoint | null>;
   seekPointCount(): Promise<number>;
   indexState(): Promise<createTlvDemuxModule.IndexState>;
   applicationEntry(contextId: number): string | null;

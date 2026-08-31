@@ -199,9 +199,11 @@ try {
     const tracks = new Map();
     const ranges = {video: [], audio: []};
     const declaredRanges = {video: [], audio: []};
+    const rawSegments = {video: [], audio: []};
     const timescales = {video: null, audio: null};
     const splices = {video: [], audio: []};
     const videoRecoveryEvents = [];
+    const landingVideoUnits = [];
     const offsets = {video: -presentationStartUs, audio: -presentationStartUs};
     const queues = new Map([
       ['video', queue(ranges.video)],
@@ -216,6 +218,7 @@ try {
     const probeClocks = [];
     const repositionCalls = [];
     const concealmentTargets = [];
+    const previousSyncCalls = [];
     let readAttemptedAfterBudget = false;
     let session;
     let demuxer;
@@ -250,9 +253,27 @@ try {
         }
       },
       onAccessUnit(unit) {
-        if (session?.phase === 'probe' && unit.codec === 'hevc' && probeUnits.length < 64) {
+        if ((session?.phase === 'probe' || session?.phase === 'backward-plan') &&
+            unit.codec === 'hevc' && probeUnits.length < 64) {
           probeUnits.push(`${unit.trackId}:${unit.ptsValue}/${unit.ptsTimescale}:` +
-            `${unit.randomAccess}:${unit.restartOffset}:${unit.inputOffset}`);
+            `${unit.randomAccess}:${unit.restartOffset}:${unit.inputOffset}:` +
+            `${session.bytesRead}`);
+        }
+        if (session?.phase === 'single-landing' && unit.codec === 'hevc' &&
+            landingVideoUnits.length < 64) {
+          landingVideoUnits.push({
+            trackId: unit.trackId,
+            ptsValue: unit.ptsValue,
+            ptsTimescale: unit.ptsTimescale,
+            dtsValue: unit.dtsValue ?? null,
+            dtsTimescale: unit.dtsTimescale ?? null,
+            randomAccess: unit.randomAccess,
+            discontinuity: unit.discontinuity ?? null,
+            discontinuityReason: unit.discontinuityReason ?? unit.reason ?? null,
+            inputOffset: unit.inputOffset,
+            restartOffset: unit.restartOffset,
+            bytesRead: session.bytesRead,
+          });
         }
         session?.observeAccessUnit(unit);
       },
@@ -266,9 +287,10 @@ try {
       },
       onMseVideoRecovery(event) { videoRecoveryEvents.push(event); },
       onBroadcastClock(clock) {
-        if (session?.phase === 'probe' && probeClocks.length < 64) {
+        if ((session?.phase === 'probe' || session?.phase === 'backward-plan') &&
+            probeClocks.length < 64) {
           probeClocks.push(`${clock.mediaTimeValue}/${clock.mediaTimeTimescale}:` +
-            `${clock.inputOffset}`);
+            `${clock.inputOffset}:${session.bytesRead}`);
         }
       },
       onMseInit(init) {
@@ -276,6 +298,9 @@ try {
       },
       onMseSegment(segment) {
         if (!(segment.type in ranges)) return;
+        rawSegments[segment.type].push({
+          startTimeUs: BigInt(segment.startTimeUs), endTimeUs: BigInt(segment.endTimeUs),
+        });
         assert.ok(timescales[segment.type], `${segment.type} media preceded its init`);
         mergeRange(declaredRanges[segment.type], {
           start: Number(BigInt(segment.startTimeUs) + offsets[segment.type]) / 1000000,
@@ -299,6 +324,14 @@ try {
       concealmentTargets.push(target);
       return setConcealmentTarget(target);
     };
+    if (typeof demuxer.previousSync === 'function') {
+      const previousSync = demuxer.previousSync.bind(demuxer);
+      demuxer.previousSync = async target => {
+        const point = await previousSync(target);
+        previousSyncCalls.push({phase: session?.phase ?? 'bootstrap', target, point});
+        return point;
+      };
+    }
     demuxer.startIndex(false);
     const media = {currentTime: targetTimeSeconds};
     const flowControl = createMsePlaybackFlowControl({
@@ -358,8 +391,18 @@ try {
               (_, value) => typeof value === 'bigint' ? value.toString() : value)} ` +
           `declaredRanges=${JSON.stringify(declaredRanges)} units=${probeUnits.join(',')} ` +
           `clocks=${probeClocks.join(',')} presentationStartUs=${presentationStartUs} ` +
+          `repositions=${JSON.stringify(repositionCalls,
+            (_, value) => typeof value === 'bigint' ? value.toString() : value)} ` +
+          `rawSegments=${JSON.stringify(rawSegments,
+            (_, value) => typeof value === 'bigint' ? value.toString() : value)} ` +
+          `splices=${JSON.stringify(splices,
+            (_, value) => typeof value === 'bigint' ? value.toString() : value)} ` +
+          `landingVideoUnits=${JSON.stringify(landingVideoUnits,
+            (_, value) => typeof value === 'bigint' ? value.toString() : value)} ` +
           `concealmentTargets=${concealmentTargets.join(',')} landingEvidence=${JSON.stringify(
-            landingEvidence, (_, value) => typeof value === 'bigint' ? value.toString() : value)}`;
+            landingEvidence, (_, value) => typeof value === 'bigint' ? value.toString() : value)} ` +
+          `previousSync=${JSON.stringify(previousSyncCalls,
+            (_, value) => typeof value === 'bigint' ? value.toString() : value)}`;
         throw error;
       }
       const requested = requests.reduce((sum, request) => sum + request.length, 0n);
@@ -450,6 +493,10 @@ try {
         })),
         readAttemptedAfterBudget,
         probeClocks,
+        previousSyncCalls,
+        splices,
+        rawSegments,
+        landingVideoUnits,
         requests: requests.map(request => ({
           phase: request.phase,
           offset: request.offset.toString(),

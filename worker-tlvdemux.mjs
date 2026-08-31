@@ -296,6 +296,7 @@ class WorkerDemuxer extends WorkerObject {
   estimateOffset(target, sourceSize) {
     return this.call('estimateOffset', [target, sourceSize]);
   }
+  previousSync(target) { return this.call('previousSync', [target]); }
   seekPointCount() { return this.call('seekPointCount'); }
   indexState() { return this.call('indexState'); }
   applicationEntry(contextId) {

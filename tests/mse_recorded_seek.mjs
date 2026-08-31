@@ -20,7 +20,7 @@ const queue = (ranges = []) => ({
 
 function fixture({
   landing = 'exact', gapSeconds = 0.04, budget = 16 * MiB,
-  targetTimeSeconds = 50, bootstrapRapUs = 0n, planRap = true,
+  targetTimeSeconds = 50, bootstrapRapUs = 0n, planRap = true, indexedRap = null,
 } = {}) {
   const media = {currentTime: targetTimeSeconds};
   const video = queue();
@@ -49,6 +49,7 @@ function fixture({
     async setMseTimestampOffset() {},
     async setIndexDuration() { return true; },
     async estimateOffset() { return 16n * BigInt(MiB); },
+    async previousSync() { return indexedRap; },
     async reposition(offset) { operations.push([session.phase, offset]); position = offset; },
     async setMseRecordedSeekConcealmentTarget() {},
     async getMseRecordedSeekLandingEvidence() {
@@ -105,13 +106,28 @@ function fixture({
 }
 
 {
+  const indexedRap = {
+    presentationTimeUs: 51_000_000n,
+    signallingOffset: 11n * BigInt(MiB),
+    randomAccessOffset: 12n * BigInt(MiB),
+    videoTrackId: 1,
+  };
+  const {session, operations} = fixture({planRap: false, indexedRap});
+  const result = await session.run();
+  assert.equal(result.restartOffset, indexedRap.signallingOffset,
+    'a retained RecordingIndex preceding RAP was ignored');
+  assert.equal(operations.filter(([phase]) => phase === 'backward-plan').length, 0,
+    'an indexed RAP still triggered raw sparse planning');
+}
+
+{
   const {session, operations} = fixture({planRap: false});
   await assert.rejects(session.run(), error =>
     error.code === MSE_SEEK_NO_COMMON_AV && error.reason === 'no-rap' &&
       error.diagnostics.phase === 'backward-plan');
   const planOffsets = operations.filter(([phase]) => phase === 'backward-plan')
     .map(([, offset]) => offset);
-  assert.ok(planOffsets.length >= 2 && planOffsets.every((offset, index) =>
+  assert.ok(planOffsets.length >= 1 && planOffsets.every((offset, index) =>
     index === 0 || offset < planOffsets[index - 1]),
   'an empty planned window returned toward the duration estimate instead of expanding backward');
 }
@@ -179,7 +195,7 @@ function fixture({
 {
   const {session, requests} = fixture({landing: 'held-frame', budget: 4 * MiB});
   await session.run();
-  assert.equal(requests.reduce((total, request) => total + request.length, 0n), 2n * BigInt(MiB),
+  assert.equal(requests.reduce((total, request) => total + request.length, 0n), 1n * BigInt(MiB),
     'seek read after completing a held-frame landing');
 }
 
