@@ -1,7 +1,6 @@
 export interface MseAppendQueueOptions {
   retryDelayMilliseconds?: number;
   backBufferSeconds?: number;
-  forwardBufferHighSeconds?: number;
   trimGranularitySeconds?: number;
   getMediaError?: (media: HTMLMediaElement) => string;
   destroyOnSourceClose?: boolean;
@@ -62,7 +61,6 @@ export declare class MseAppendQueue {
   committedRanges(): MseBufferedRange[];
   trimBefore(time: number, force?: boolean): void;
   waitBelow(limit: number): Promise<void>;
-  isForwardBlocked(): boolean;
   isStable(): boolean;
   waitStable(): Promise<void>;
   isFlowControlled(limit: number): boolean;

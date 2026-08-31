@@ -1,6 +1,5 @@
 const DEFAULT_RETRY_DELAY_MILLISECONDS = 250;
 const DEFAULT_BACK_BUFFER_SECONDS = 8;
-const DEFAULT_FORWARD_BUFFER_HIGH_SECONDS = 15;
 const DEFAULT_TRIM_GRANULARITY_SECONDS = 2;
 
 function snapshotTimeRanges(ranges) {
@@ -83,7 +82,6 @@ export class MseAppendQueue {
     this.scheduledTimestampOffsetSeconds = this.sourceBuffer.timestampOffset || 0;
     this.retryDelayMilliseconds = options.retryDelayMilliseconds ?? DEFAULT_RETRY_DELAY_MILLISECONDS;
     this.backBufferSeconds = options.backBufferSeconds ?? DEFAULT_BACK_BUFFER_SECONDS;
-    this.forwardBufferHighSeconds = options.forwardBufferHighSeconds ?? DEFAULT_FORWARD_BUFFER_HIGH_SECONDS;
     this.trimGranularitySeconds = options.trimGranularitySeconds ?? DEFAULT_TRIM_GRANULARITY_SECONDS;
     this.getMediaError = options.getMediaError ?? defaultMediaError;
     this.destroyOnSourceClose = options.destroyOnSourceClose ?? true;
@@ -257,13 +255,6 @@ export class MseAppendQueue {
       }
     }
     if (!this.queue.length) return;
-    const next = this.queue[0];
-    if (next.kind === 'append' &&
-        this.bufferedAhead() >= this.forwardBufferHighSeconds) {
-      this.scheduleRetry();
-      return;
-    }
-
     const item = this.queue.shift();
     if (item.kind === 'timestamp-offset') {
       this.sourceBuffer.timestampOffset = item.offsetSeconds;
@@ -368,14 +359,8 @@ export class MseAppendQueue {
     return new Promise((resolve, reject) => this.waiters.push({ limit, idle: false, resolve, reject }));
   }
 
-  isForwardBlocked() {
-    return !this.sourceBuffer.updating && this.queue.length > 0 &&
-      this.queue[0].kind === 'append' &&
-      this.bufferedAhead() >= this.forwardBufferHighSeconds;
-  }
-
   isStable() {
-    return this.isIdle() || this.isForwardBlocked();
+    return this.isIdle();
   }
 
   waitStable() {
@@ -386,7 +371,7 @@ export class MseAppendQueue {
   }
 
   isFlowControlled(limit) {
-    return this.queuedBytes <= limit && (this.isIdle() || this.isForwardBlocked());
+    return this.queuedBytes <= limit;
   }
 
   waitFlowControlled(limit) {

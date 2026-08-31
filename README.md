@@ -230,8 +230,21 @@ splice retains the RAP's source presentation time and carries a negative MSE
 timestamp offset that maps the replacement A/V output onto timestamp zero. The
 demo applies that offset in the same SourceBuffer mutation queue before the
 replacement init and media. It applies input backpressure from the common A/V
-buffered interval, not parser progress: requests stop at 15 seconds ahead and
-resume below 8 seconds. Before any common interval covers the playback entry,
+buffered interval, not parser progress: requests stop at 15 seconds of wall-clock
+playback reserve and resume below 8 seconds. The corresponding media-time
+watermarks are multiplied by the current positive `playbackRate`; at 2x they are
+therefore 30 seconds high and 16 seconds low. Those common A/V watermarks are
+the only time-based append/read throttle. An individual audio or video
+SourceBuffer must not stop appending at its own 15-second horizon, because that can strand the other track
+later in the same multiplexed input behind a per-queue byte limit. Per-queue
+limits bound pending append bytes only; they never authorize stopped source
+reads while common A/V ahead is below the rate-adjusted low watermark. Fresh
+recorded playback buffers at least that rate-adjusted common low watermark
+before calling `play()`; selecting or defaulting to 2x must retain 2x and obtain
+the required 16 seconds of common media-time ahead. `waiting` with common A/V
+below the rate-adjusted low watermark is a supply failure and immediately resumes
+the same sequential source-read loop instead of waiting for a queue-local
+timer. Before any common interval covers the playback entry,
 at most 16 MiB of playback input may be read without progress; exhaustion fails
 with `MSE_STARTUP_NO_COMMON_AV` instead of fetching the recording to EOF.
 
@@ -278,9 +291,10 @@ unavailable, a held-frame landing is also successful if the remuxer proves a
 complete decodable sample strictly before the target and extends that sample to
 the next stable RAP, matching natural playback through damaged input. The media
 clock stays at the requested target; the held frame is a picture source, not a
-replacement landing time. A selected AAC tail ending no more than one 250 ms mux
-fragment before the target may commit in this degraded mode and must resume from
-normal sequential input without timestamp remapping. Browser `buffered` alone
+replacement landing time. A selected AAC tail ending no more than two 256 ms
+mux fragments before the target may commit in this degraded mode and must
+resume from normal sequential input without
+timestamp remapping. Browser `buffered` alone
 never authorizes either exact or degraded coverage.
 The `819.749134s` regression in the authoritative recording exercises this
 case: Chromium reports the neighbouring RAP at about `819.752s` while the

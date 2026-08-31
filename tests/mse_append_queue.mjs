@@ -71,9 +71,7 @@ const {
   const sourceBuffer = new FakeSourceBuffer([[0, 20]]);
   const mediaSource = new FakeMediaSource(sourceBuffer);
   const media = {currentTime: 0, error: null, buffered: sourceBuffer.buffered};
-  const queue = new MseAppendQueue(mediaSource, media, 'video/mp4', null, {
-    forwardBufferHighSeconds: Infinity,
-  });
+  const queue = new MseAppendQueue(mediaSource, media, 'video/mp4');
   queue.append(new Uint8Array([1]), {startTimeSeconds: 0, endTimeSeconds: 5});
   queue.spliceFrom(0, -0.821944);
   queue.appendInitialization(new Uint8Array([2]), 'video/mp4; codecs="hvc1.2.4.L123"', true);
@@ -119,9 +117,7 @@ async function tick() {
   const sourceBuffer = new FakeSourceBuffer([[0, 20]]);
   const mediaSource = new FakeMediaSource(sourceBuffer);
   const media = {currentTime: 1, error: null, buffered: sourceBuffer.buffered};
-  const queue = new MseAppendQueue(mediaSource, media, 'audio/mp4; codecs="mp4a.40.2"', null, {
-    forwardBufferHighSeconds: Infinity,
-  });
+  const queue = new MseAppendQueue(mediaSource, media, 'audio/mp4; codecs="mp4a.40.2"');
   queue.append(new Uint8Array([1]), {startTimeSeconds: 0, endTimeSeconds: 5});
   queue.append(new Uint8Array([2]), {startTimeSeconds: 5, endTimeSeconds: 10});
   queue.append(new Uint8Array([3]), {startTimeSeconds: 10, endTimeSeconds: 15});
@@ -151,9 +147,7 @@ async function tick() {
   const sourceBuffer = new FakeSourceBuffer();
   const mediaSource = new FakeMediaSource(sourceBuffer);
   const media = {currentTime: 0, error: null, buffered: sourceBuffer.buffered};
-  const queue = new MseAppendQueue(mediaSource, media, 'video/mp4', null, {
-    forwardBufferHighSeconds: Infinity,
-  });
+  const queue = new MseAppendQueue(mediaSource, media, 'video/mp4');
   queue.setTimestampOffset(819.686);
   queue.append(new Uint8Array([1]), {startTimeSeconds: 0, endTimeSeconds: 2});
   assert.deepEqual(queue.committedRanges(), [],
@@ -168,9 +162,7 @@ async function tick() {
   const sourceBuffer = new FakeSourceBuffer();
   const mediaSource = new FakeMediaSource(sourceBuffer);
   const media = {currentTime: 0, error: null, buffered: new FakeTimeRanges()};
-  const queue = new MseAppendQueue(mediaSource, media, 'audio/mp4; codecs="mp4a.40.2"', null, {
-    forwardBufferHighSeconds: Infinity,
-  });
+  const queue = new MseAppendQueue(mediaSource, media, 'audio/mp4; codecs="mp4a.40.2"');
   queue.append(new Uint8Array([1]));
   queue.appendInitialization(new Uint8Array([2]), 'audio/mp4; codecs="mp4a.40.5"');
   queue.append(new Uint8Array([3]));
@@ -197,9 +189,7 @@ for (const mime of [
   const sourceBuffer = new FakeSourceBuffer([[0, 20]]);
   const mediaSource = new FakeMediaSource(sourceBuffer);
   const media = {currentTime: 0, error: null, buffered: sourceBuffer.buffered};
-  const queue = new MseAppendQueue(mediaSource, media, mime, null, {
-    forwardBufferHighSeconds: Infinity,
-  });
+  const queue = new MseAppendQueue(mediaSource, media, mime);
   queue.append(new Uint8Array([1]));
   const audio = mime.startsWith('audio/');
   if (audio) queue.setTimestampOffset(-0.650638);
@@ -227,9 +217,7 @@ for (const mime of [
   const sourceBuffer = new FakeSourceBuffer();
   const mediaSource = new FakeMediaSource(sourceBuffer);
   const media = {currentTime: 0, error: null, buffered: new FakeTimeRanges()};
-  const queue = new MseAppendQueue(mediaSource, media, 'video/mp4', null, {
-    forwardBufferHighSeconds: Infinity,
-  });
+  const queue = new MseAppendQueue(mediaSource, media, 'video/mp4');
   queue.append(new Uint8Array(5 * 1024 * 1024));
   const unblocked = queue.waitBelow(4 * 1024 * 1024);
 
@@ -246,9 +234,7 @@ for (const mime of [
   const sourceBuffer = new FakeSourceBuffer([[0, 20]]);
   const mediaSource = new FakeMediaSource(sourceBuffer);
   const media = {currentTime: 0, error: null, buffered: sourceBuffer.buffered};
-  const queue = new MseAppendQueue(mediaSource, media, 'video/mp4', null, {
-    forwardBufferHighSeconds: 15,
-  });
+  const queue = new MseAppendQueue(mediaSource, media, 'video/mp4');
   queue.append(new Uint8Array(5 * 1024 * 1024), {
     startTimeSeconds: 20,
     endTimeSeconds: 21,
@@ -259,14 +245,14 @@ for (const mime of [
   });
   await tick();
   assert.equal(resolved, false,
-    'time-based forward blocking bypassed the queued-byte high-water mark');
+    'queued-byte high-water mark resolved while the 5 MiB append was in flight');
+  assert.deepEqual(sourceBuffer.operations, [['append', 0]],
+    'a queue-local 15-second media horizon blocked append progress');
 
-  queue.queue[0].data = new Uint8Array(3 * 1024 * 1024);
-  queue.recountQueuedBytes();
-  queue.resolveWaiters();
+  sourceBuffer.complete();
   await controlled;
   assert.equal(resolved, true);
-  queue.stop();
+  await queue.waitIdle();
 }
 
 {
@@ -276,7 +262,6 @@ for (const mime of [
   const media = {currentTime: 17.73278, error: null, buffered: sourceBuffer.buffered};
   const queue = new MseAppendQueue(mediaSource, media, 'video/mp4', null, {
     backBufferSeconds: 8,
-    forwardBufferHighSeconds: Infinity,
     retryDelayMilliseconds: 0,
   });
 

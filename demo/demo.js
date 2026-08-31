@@ -11,7 +11,6 @@ import {
   shouldRenderSubtitleTrack,
   subtitleTrackKind,
 } from '../track-selection.mjs?v=public-selection-v1';
-import { coalesceReadableStream } from '../stream-input.mjs?v=public-stream-v1';
 import {
   commonBufferedRanges,
   createMsePlaybackIntentCoordinator,
@@ -28,16 +27,17 @@ import {createLiveMseTransitionManager} from '../mse-live-transition.mjs?v=recor
 import {createMseVideoRecoveryLogger, createRecordedMseTransitionManager,
   createRecordedSeekConcealmentLogger, describeRecordedSeekLanding}
   from './recorded-mse-transition.js?v=recorded-seek-entry-fence-v2';
-import {commitDemoMseCandidate, createMediaElementProxy, formatBytes, openDetachedMseMedia}
+import {commitDemoMseCandidate, createMediaElementProxy, formatBytes, onceMediaEvent, openDetachedMseMedia}
   from './mse-media-transaction.js?v=recorded-seek-entry-fence-v2';
+import {createMseSupplyCoordinator, describeRecordedSupplyStart}
+  from './mse-supply-flow.js?v=common-av-supply-v1';
 import {MSE_MAX_AUDIO_CHANNELS, createDemoTrackControls}
   from './track-controls.js?v=recorded-seek-fence-v1';
 import {
-  RangeUnsupportedError,
-  createBlobRecordedSource,
-  openHttpRecordedSource,
-  probeRecordedDuration,
-} from '../recorded-source.mjs?v=public-source-v1';
+  RangeUnsupportedError, createDemoRecordedSource, durationSeconds, formatDuration,
+  probeDemoRecordedDuration, timestampMicroseconds,
+} from './recorded-source-ui.js?v=recorded-source-ui-v1';
+import {bufferedAhead, monitorDemoPlaybackQuality} from './playback-quality.js?v=playback-quality-v1';
 
 const b62RendererClass = import('/aribb62.js/dist/aribb62.js')
   .then(module => module.B62TTMLRenderer)
@@ -126,6 +126,7 @@ let activeSubtitleRenderer = null;
 let activeGapRecovery = null;
 let activeLiveTransitionManager = null;
 let activeRecordedTransitionManager = null;
+const supplyCoordinator = createMseSupplyCoordinator();
 let subtitleRendererRequest = 0;
 let selectedAudioPacketId = null;
 let selectedAudioGroupId = null;
@@ -143,7 +144,7 @@ let selectedSubtitlePacketId = null;
 let preferredSubtitlePacketId = null;
 let knownSubtitleTracks = new Map();
 let knownTtmlTracks = new Map();
-let playbackQualityTimer = null;
+let stopPlaybackQualityMonitor = null;
 let playbackMediaEventAbort = null;
 
 elements.video.defaultPlaybackRate = DEFAULT_PLAYBACK_RATE;
@@ -277,24 +278,6 @@ function mediaErrorMessage(error = elements.video.error) {
   return `MediaError ${names[error.code] || error.code}${error.message ? `: ${error.message}` : ''}`;
 }
 
-function durationSeconds(duration) { return Number(duration.value) / duration.timescale; }
-
-function timestampMicroseconds(timestamp) {
-  return BigInt(timestamp.value) * 1000000n / BigInt(timestamp.timescale);
-}
-
-function formatDuration(duration) {
-  const seconds = durationSeconds(duration);
-  const whole = Math.max(0, Math.floor(seconds));
-  const hours = Math.floor(whole / 3600);
-  const minutes = Math.floor((whole % 3600) / 60);
-  const rest = whole % 60;
-  const clock = hours > 0
-    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}`
-    : `${minutes}:${String(rest).padStart(2, '0')}`;
-  return `${clock} (${seconds.toFixed(6)}s)`;
-}
-
 function parsePacketId() {
   const text = elements.videoPacketId.value.trim();
   if (!text) return undefined;
@@ -303,56 +286,6 @@ function parsePacketId() {
     throw new Error('映像 packet_id は 0..0xffff で指定してください');
   }
   return value;
-}
-
-function localSource(file) {
-  return createBlobRecordedSource(file);
-}
-
-async function remoteSource(rawUrl, signal) {
-  const url = new URL(rawUrl, window.location.href).href;
-  return openHttpRecordedSource({url, signal});
-}
-
-function liveRemoteSource(rawUrl, signal) {
-  const url = new URL(rawUrl, window.location.href).href;
-  return {
-    identity: `live:${url}`,
-    label: url,
-    size: null,
-    async *stream() {
-      const response = await fetch(url, { signal });
-      if (!response.ok || !response.body) {
-        throw new Error(`Live HTTP リクエストに失敗しました: ${response.status}`);
-      }
-      const reader = response.body.getReader();
-      yield* coalesceReadableStream(reader, {
-        targetBytes: LIVE_PUSH_TARGET_BYTES,
-        maxDelayMilliseconds: LIVE_PUSH_MAX_DELAY_MS,
-      });
-    },
-  };
-}
-
-async function selectedSource(signal, liveMode) {
-  const file = elements.fileInput.files[0];
-  if (file) return localSource(file);
-  const url = elements.urlInput.value.trim();
-  if (url) return liveMode ? liveRemoteSource(url, signal) : remoteSource(url, signal);
-  throw new Error('ローカル MMTS ファイルまたは HTTP URL を指定してください');
-}
-
-function once(target, event) {
-  return new Promise((resolve, reject) => {
-    const done = () => { cleanup(); resolve(); };
-    const failed = () => { cleanup(); reject(new Error(`${event} に失敗しました`)); };
-    const cleanup = () => {
-      target.removeEventListener(event, done);
-      target.removeEventListener('error', failed);
-    };
-    target.addEventListener(event, done, { once: true });
-    target.addEventListener('error', failed, { once: true });
-  });
 }
 
 function setRunning(running) {
@@ -400,9 +333,10 @@ function timestampMilliseconds(value, timescale) {
 function releaseMedia() {
   playbackIntents.invalidate();
   bufferedSeekFence = null;
+  supplyCoordinator.release();
   subtitleRendererRequest += 1;
-  if (playbackQualityTimer !== null) clearInterval(playbackQualityTimer);
-  playbackQualityTimer = null;
+  stopPlaybackQualityMonitor?.();
+  stopPlaybackQualityMonitor = null;
   activeMediaSource = null;
   activeAudioSwitch = null;
   activeVideoSwitch = null;
@@ -431,6 +365,7 @@ function releaseMedia() {
 function stopPlayback(quiet = false, preserveMedia = false) {
   playbackIntents.invalidate();
   bufferedSeekFence = null;
+  supplyCoordinator.release();
   runGeneration += 1;
   activeController?.abort();
   void activeProbe?.cancel();
@@ -460,81 +395,6 @@ function stopPlayback(quiet = false, preserveMedia = false) {
     elements.mediaInfo.textContent = '停止しました';
     appendLog('停止しました');
   }
-}
-
-async function probeDuration(source, generation) {
-  const initialRangeSize = BigInt(elements.initialRange.value) * MiB;
-  const maxRangeSize = BigInt(elements.maxRange.value) * MiB;
-  if (maxRangeSize < initialRangeSize) throw new Error('最大 Range は初期 Range 以上にしてください');
-  const options = { initialRangeSize, maxRangeSize };
-  const videoPacketId = parsePacketId();
-  if (videoPacketId !== undefined) options.videoPacketId = videoPacketId;
-  const probe = new wasmModule.DurationProbe();
-  activeProbe = probe;
-  try {
-    const probed = await probeRecordedDuration({
-      source,
-      probe,
-      options,
-      isActive: () => generation === runGeneration,
-      onRange: request => {
-        const end = request.offset + request.length - 1n;
-        elements.probeState.textContent = `Range 検出 ${request.number}`;
-        appendLog(`検出 #${request.number} bytes=${request.offset}-${end} ` +
-          `(${formatBytes(request.length)})`);
-      },
-      onProgress: progress => {
-        if (progress.transferredBytes !== null) {
-          elements.transferred.textContent = formatBytes(progress.transferredBytes);
-        }
-      },
-    });
-    if (generation !== runGeneration) return null;
-    return {
-      duration: probed.duration,
-      presentationStart: probed.presentationStart,
-      presentationEnd: probed.presentationEnd,
-      videoPacketId: probed.selectedVideoPacketId,
-      presentationEndVideoPacketId: probed.presentationEndVideoPacketId,
-      transferred: probed.transferredBytes,
-    };
-  } finally {
-    if (activeProbe === probe) activeProbe = null;
-  }
-}
-
-function bufferedAhead() {
-  const ranges = elements.video.buffered;
-  if (!ranges.length) return 0;
-  for (let index = 0; index < ranges.length; index += 1) {
-    if (ranges.start(index) <= elements.video.currentTime + 0.1 &&
-        ranges.end(index) >= elements.video.currentTime) {
-      return ranges.end(index) - elements.video.currentTime;
-    }
-  }
-  return 0;
-}
-
-function monitorPlaybackQuality(generation) {
-  if (playbackQualityTimer !== null) clearInterval(playbackQualityTimer);
-  if (typeof elements.video.getVideoPlaybackQuality !== 'function') return;
-  let previous = elements.video.getVideoPlaybackQuality();
-  playbackQualityTimer = setInterval(() => {
-    if (generation !== runGeneration) {
-      clearInterval(playbackQualityTimer);
-      playbackQualityTimer = null;
-      return;
-    }
-    const current = elements.video.getVideoPlaybackQuality();
-    const dropped = current.droppedVideoFrames - previous.droppedVideoFrames;
-    const total = current.totalVideoFrames - previous.totalVideoFrames;
-    if (dropped > 0) {
-      const ahead = bufferedAhead();
-      const cause = ahead < 0.5 ? 'MSE 供給不足' : 'デコード/描画負荷';
-      appendLog(`映像品質 ${cause}: 5秒で ${dropped}/${total} フレーム落ち、バッファ=${ahead.toFixed(1)}s`);
-    }
-    previous = current;
-  }, 5000);
 }
 
 function isTimeBuffered(time) {
@@ -569,7 +429,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     // while load()/play() is running, before code after those calls resumes.
     const opened = fresh.readyState === 'open'
       ? Promise.resolve()
-      : once(fresh, 'sourceopen');
+      : onceMediaEvent(fresh, 'sourceopen');
     fresh.tlvdemuxQueues = activeQueueByType;
     activeMediaSource = fresh;
     activeObjectUrl = URL.createObjectURL(fresh);
@@ -674,7 +534,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     backBufferSeconds: BACK_BUFFER_SECONDS,
     queueHighBytes: SOURCE_QUEUE_HIGH_BYTES,
   });
-
+  supplyCoordinator.install(playbackFlow);
   let msePipeline = null;
   let liveTransitionManager = null;
   let recordedTransitionManager = null;
@@ -766,6 +626,9 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         playbackFlow.requiredTracks.some(type => !queues.has(type))) return;
     if (seekSession && seekSession.phase !== 'complete') return;
     if (played) return;
+    if (!supplyCoordinator.canStartFreshRecorded({
+      liveMode, startTimeSeconds, reuseMedia, playbackFlow,
+    })) return;
     const started = startMsePlayback({
       media: elements.video,
       queues,
@@ -779,9 +642,19 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       appendLog(`再生開始を共通バッファ先頭 ${started.range.start.toFixed(6)}s に合わせます`);
     }
     played = true;
-    monitorPlaybackQuality(generation);
+    stopPlaybackQualityMonitor?.();
+    stopPlaybackQualityMonitor = monitorDemoPlaybackQuality({
+      media: elements.video,
+      isActive: () => generation === runGeneration,
+      onDroppedFrames: ({dropped, total, ahead}) => {
+        const cause = ahead < 0.5 ? 'MSE 供給不足' : 'デコード/描画負荷';
+        appendLog(`映像品質 ${cause}: 5秒で ${dropped}/${total} フレーム落ち、バッファ=${ahead.toFixed(1)}s`);
+      },
+    });
     elements.probeState.textContent = liveMode ? 'Live 再生中' : '再生中';
     if (liveMode) appendLog(`Live 共通バッファ ${started.commonAhead.toFixed(1)}s で再生開始 (1×)`);
+    else appendLog(describeRecordedSupplyStart(
+      started.commonAhead, elements.video.playbackRate, playbackFlow.lowWatermarkSeconds()));
     started.playResult.catch(() => {
       appendLog('自動再生がブロックされました。再生ボタンを押してください');
     });
@@ -790,8 +663,8 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     gapRecovery.notifyBufferedChange();
     maybeStartPlayback();
   };
+  supplyCoordinator.install(playbackFlow, maybeStartPlayback);
   for (const queue of activeQueues) queue.onUpdateEnd = onMseUpdateEnd;
-
   msePipeline = createMseOutputPipeline({
     mediaSource,
     media: elements.video,
@@ -800,7 +673,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     onUpdateEnd: onMseUpdateEnd,
     queueOptions: {
       backBufferSeconds: BACK_BUFFER_SECONDS,
-      forwardBufferHighSeconds: FORWARD_BUFFER_HIGH_SECONDS,
       getMediaError: media => mediaErrorMessage(media.error),
     },
     queueFactory(type, init, update, options) {
@@ -875,6 +747,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         mediaSource = activeMediaSource = item.mediaSource;
         queues = item.queues;
         playbackFlow = item.flow;
+        supplyCoordinator.install(playbackFlow, maybeStartPlayback);
         msePipeline = item.pipeline;
         mediaSource.tlvdemuxQueues = queues;
         activeObjectUrl = item.url;
@@ -893,7 +766,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       media: playbackMedia,
       queueOptions: {
         backBufferSeconds: BACK_BUFFER_SECONDS,
-        forwardBufferHighSeconds: FORWARD_BUFFER_HIGH_SECONDS,
         getMediaError: media => mediaErrorMessage(media.error),
       },
       isActive: () => generation === runGeneration,
@@ -914,7 +786,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       media: playbackMedia,
       queueOptions: {
         backBufferSeconds: BACK_BUFFER_SECONDS,
-        forwardBufferHighSeconds: FORWARD_BUFFER_HIGH_SECONDS,
         getMediaError: mediaElement => mediaErrorMessage(mediaElement.error),
       },
       isActive: () => generation === runGeneration,
@@ -1774,14 +1645,22 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false,
     if (liveMode && startTimeSeconds > 0) throw new Error('Live mode ではシークできません');
     let source;
     try {
-      source = await selectedSource(controller.signal, liveMode);
+      source = await createDemoRecordedSource({
+        file: elements.fileInput.files[0], rawUrl: elements.urlInput.value.trim(),
+        baseUrl: window.location.href, liveMode, signal: controller.signal,
+        livePushTargetBytes: LIVE_PUSH_TARGET_BYTES, livePushMaxDelayMilliseconds: LIVE_PUSH_MAX_DELAY_MS,
+      });
     } catch (error) {
       if (!(error instanceof RangeUnsupportedError) || liveMode || elements.fileInput.files[0]) throw error;
       liveMode = true;
       currentLiveMode = true;
       elements.liveMode.checked = true;
       appendLog('Range 非対応のため Live mode に切り替えました');
-      source = await selectedSource(controller.signal, true);
+      source = await createDemoRecordedSource({
+        file: elements.fileInput.files[0], rawUrl: elements.urlInput.value.trim(),
+        baseUrl: window.location.href, liveMode: true, signal: controller.signal,
+        livePushTargetBytes: LIVE_PUSH_TARGET_BYTES, livePushMaxDelayMilliseconds: LIVE_PUSH_MAX_DELAY_MS,
+      });
     }
     if (generation !== runGeneration) return;
     elements.sourceSize.textContent = liveMode && source.size === null
@@ -1796,7 +1675,26 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false,
       probeResult = cachedProbe.result;
       appendLog(`再生時間キャッシュ ${durationSeconds(probeResult.duration).toFixed(6)}s`);
     } else {
-      probeResult = await probeDuration(source, generation);
+      const probed = await probeDemoRecordedDuration({
+        wasmModule, source, initialRangeSize: BigInt(elements.initialRange.value) * MiB,
+        maxRangeSize: BigInt(elements.maxRange.value) * MiB, videoPacketId: parsePacketId(),
+        isActive: () => generation === runGeneration,
+        onProbe: probe => { activeProbe = probe; },
+        onProbeDone: probe => { if (activeProbe === probe) activeProbe = null; },
+        onRange: request => {
+          const end = request.offset + request.length - 1n;
+          elements.probeState.textContent = `Range 検出 ${request.number}`;
+          appendLog(`検出 #${request.number} bytes=${request.offset}-${end} (${formatBytes(request.length)})`);
+        },
+        onProgress: progress => {
+          if (progress.transferredBytes !== null) elements.transferred.textContent = formatBytes(progress.transferredBytes);
+        },
+      });
+      probeResult = generation === runGeneration ? {
+        duration: probed.duration, presentationStart: probed.presentationStart,
+        presentationEnd: probed.presentationEnd, videoPacketId: probed.selectedVideoPacketId,
+        presentationEndVideoPacketId: probed.presentationEndVideoPacketId, transferred: probed.transferredBytes,
+      } : null;
       if (probeResult) cachedProbe = { identity: source.identity, size: source.size, result: probeResult };
     }
     if (!probeResult || generation !== runGeneration) return;
@@ -1899,9 +1797,12 @@ function bindPlaybackMediaEvents(media) {
     activeController?.abort();
   }, options);
   media.addEventListener('waiting', () => {
-    appendLog(`MediaElement waiting ${media.currentTime.toFixed(3)}s`);
+    const supply = supplyCoordinator.notifyWaiting();
+    appendLog(`MediaElement waiting ${media.currentTime.toFixed(3)}s` +
+      (supply ? ` (共通A/V=${supply.ahead.toFixed(1)}s, low=${supply.low.toFixed(1)}s)` : ''));
     activeGapRecovery?.notifyWaiting();
   }, options);
+  media.addEventListener('ratechange', () => supplyCoordinator.notifyRateChange(), options);
   media.addEventListener('pause', () => {
     activeGapRecovery?.notifyPlaybackPaused();
     activeLiveTransitionManager?.notifyPlaybackPaused();

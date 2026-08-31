@@ -3,10 +3,11 @@ import {MSE_SEEK_READ_BUDGET_BYTES, MseRecordedSeekError} from './mse-playback-c
 import {createMsePlaybackFlowControl} from './mse-playback-flow-control.mjs';
 
 const DEFAULT_CHUNK_BYTES = 1024 * 1024;
-const DEFAULT_LANDING_RESERVE_BYTES = 7 * 1024 * 1024;
 const PLANNER_WINDOW_BYTES = 6n * 1024n * 1024n;
+const NEAR_ESTIMATE_PREROLL_BYTES = 10n * 1024n * 1024n;
+const NEAR_ESTIMATE_WINDOW_BYTES = 7n * 1024n * 1024n;
 const INITIAL_PLANNER_PREROLL_BYTES = 16n * 1024n * 1024n;
-const MAX_PLANNER_WINDOWS = 1;
+const MAX_PLANNER_WINDOWS = 2;
 
 function abortError() {
   if (typeof DOMException === 'function') return new DOMException('The seek was superseded.', 'AbortError');
@@ -64,8 +65,6 @@ export function createMseRecordedSeekSession({
   checkError = () => {},
   chunkBytes = DEFAULT_CHUNK_BYTES,
   readBudgetBytes = MSE_SEEK_READ_BUDGET_BYTES,
-  landingReserveBytes = DEFAULT_LANDING_RESERVE_BYTES,
-  probePrerollSeconds = 2,
   onProgress = () => {},
 }) {
   if (!source || typeof source.read !== 'function' || typeof source.size !== 'bigint') {
@@ -88,19 +87,13 @@ export function createMseRecordedSeekSession({
 
   const chunkSize = BigInt(chunkBytes);
   const budget = BigInt(readBudgetBytes);
-  const landingReserve = BigInt(landingReserveBytes);
-  if (chunkSize <= 0n || landingReserve < chunkSize || landingReserve >= budget) {
-    throw new RangeError('The recorded seek landing reserve must fit inside the read budget.');
-  }
+  if (chunkSize <= 0n) throw new RangeError('The recorded seek chunk size must be positive.');
   const sourceTargetUs = BigInt(presentationStartUs) + BigInt(targetUs);
   const sourceEndUs = BigInt(presentationEndUs);
   const toleranceUs = BigInt(Math.round(ENTRY_TOLERANCE_SECONDS * 1000000));
   const tracks = new Map();
   const cachedRanges = [];
   const plannedRaps = new Map();
-  const planFrontiers = new Map();
-  let anchorBefore = {ptsUs: BigInt(presentationStartUs), offset: 0n};
-  let anchorAfter = null;
   let phase = 'idle';
   let bytesRead = 0n;
   let currentPushOffset = 0n;
@@ -122,16 +115,6 @@ export function createMseRecordedSeekSession({
     const ptsUs = timestampUs(unit);
     if (ptsUs === null) return;
     if (phase === 'bootstrap') bootstrapTimelineReady = true;
-    if (phase === 'backward-plan') {
-      const priorFrontier = planFrontiers.get(unit.trackId);
-      if (priorFrontier === undefined || ptsUs > priorFrontier) planFrontiers.set(unit.trackId, ptsUs);
-      const offset = unit.inputOffset === undefined ? currentPushOffset : BigInt(unit.inputOffset);
-      const anchor = {ptsUs, offset};
-      if (ptsUs <= sourceTargetUs && ptsUs > anchorBefore.ptsUs) anchorBefore = anchor;
-      if (ptsUs > sourceTargetUs && (!anchorAfter || ptsUs < anchorAfter.ptsUs)) {
-        anchorAfter = anchor;
-      }
-    }
     if ((track.kind === 'video' && !unit.randomAccess) || ptsUs > sourceTargetUs + toleranceUs) return;
     plannedRaps.set(`${unit.trackId}:${ptsUs}`, {
       trackId: unit.trackId,
@@ -181,19 +164,6 @@ export function createMseRecordedSeekSession({
     if (!accepted) {
       throw new MseRecordedSeekError('demux-failed', `The demuxer rejected input at byte ${offset}.`);
     }
-    if (phase === 'backward-plan' && typeof demuxer.broadcastClock === 'function') {
-      const clock = await demuxer.broadcastClock();
-      if (clock?.mediaTimeValue !== undefined && clock.mediaTimeTimescale &&
-          clock.inputOffset !== undefined) {
-        const ptsUs = BigInt(clock.mediaTimeValue) * 1000000n /
-          BigInt(clock.mediaTimeTimescale);
-        const anchor = {ptsUs, offset: BigInt(clock.inputOffset)};
-        if (ptsUs <= sourceTargetUs && ptsUs > anchorBefore.ptsUs) anchorBefore = anchor;
-        if (ptsUs > sourceTargetUs && (!anchorAfter || ptsUs < anchorAfter.ptsUs)) {
-          anchorAfter = anchor;
-        }
-      }
-    }
   };
   const bestRap = ({allowBootstrap = false} = {}) => [...plannedRaps.values()]
     .filter(rap => rap.ptsUs <= sourceTargetUs && tracks.has(rap.trackId) &&
@@ -202,18 +172,6 @@ export function createMseRecordedSeekSession({
       if (left.ptsUs !== right.ptsUs) return left.ptsUs > right.ptsUs ? -1 : 1;
       return videoTrackPriority(tracks.get(left.trackId)) - videoTrackPriority(tracks.get(right.trackId));
     })[0] ?? null;
-  const planPastTarget = () => {
-    const eligible = new Set(candidates().map(track => track.trackId));
-    const observed = [...planFrontiers].filter(([trackId]) => eligible.has(trackId));
-    return observed.length > 0 && observed.every(([, frontier]) => frontier > sourceTargetUs + toleranceUs);
-  };
-  const projectedTargetOffset = () => {
-    if (!anchorAfter || anchorAfter.ptsUs <= anchorBefore.ptsUs ||
-        anchorAfter.offset <= anchorBefore.offset) return null;
-    return anchorBefore.offset + (anchorAfter.offset - anchorBefore.offset) *
-      (sourceTargetUs - anchorBefore.ptsUs) / (anchorAfter.ptsUs - anchorBefore.ptsUs);
-  };
-
   const bootstrap = async () => {
     phase = 'bootstrap';
     await demuxer.setMseOutputEnabled(false);
@@ -266,56 +224,30 @@ export function createMseRecordedSeekSession({
     if (presentationStartRap && sourceTargetUs - presentationStartRap.ptsUs <= 2_000_000n) {
       return {chosen: presentationStartRap, estimate};
     }
-    const estimatedWindow = source.size * 2_000_000n / BigInt(durationUs);
-    const planStep = clampBigInt(estimatedWindow, chunkSize, 3n * chunkSize);
     const maximumCandidate = source.size > chunkSize ? source.size - chunkSize : 0n;
-    let candidate = clampBigInt(estimate > INITIAL_PLANNER_PREROLL_BYTES
+    const nearEstimateCandidate = clampBigInt(estimate > NEAR_ESTIMATE_PREROLL_BYTES
+      ? estimate - NEAR_ESTIMATE_PREROLL_BYTES : 0n, 0n, maximumCandidate);
+    const conservativeCandidate = clampBigInt(estimate > INITIAL_PLANNER_PREROLL_BYTES
       ? estimate - INITIAL_PLANNER_PREROLL_BYTES : 0n, 0n, maximumCandidate);
-    const visited = new Set();
-    let backwardStride = planStep;
-    let windows = 0;
-    while (windows < MAX_PLANNER_WINDOWS && bytesRead < budget - landingReserve) {
+    const windows = [
+      {candidate: nearEstimateCandidate, span: NEAR_ESTIMATE_WINDOW_BYTES},
+      {candidate: conservativeCandidate, span: PLANNER_WINDOW_BYTES},
+    ].filter((window, index, all) =>
+      index === 0 || !all.slice(0, index).some(previous => previous.candidate === window.candidate));
+    for (const {candidate, span} of windows.slice(0, MAX_PLANNER_WINDOWS)) {
       ensureActive();
-      if (visited.has(candidate)) break;
-      visited.add(candidate);
-      windows += 1;
-      planFrontiers.clear();
       await demuxer.reposition(candidate, true);
-      const remainingPlan = budget - landingReserve - bytesRead;
-      const activeSpan = remainingPlan < PLANNER_WINDOW_BYTES ? remainingPlan : PLANNER_WINDOW_BYTES;
+      const remainingPlan = budget - bytesRead;
+      const activeSpan = remainingPlan < span ? remainingPlan : span;
       const locateEnd = candidate + activeSpan < source.size ? candidate + activeSpan : source.size;
       let offset = candidate;
-      // A usable preceding RAP is the only planning result needed.  Reading
-      // on to a later clock frontier cannot strengthen that restart, while it
-      // would take bytes from the one formal landing that proves coverage.
       while (offset < locateEnd && !bestRap()) {
         const data = await read(offset, locateEnd - offset < chunkSize ? locateEnd - offset : chunkSize);
         await push(data, offset);
         offset += BigInt(data.byteLength);
       }
       const chosen = bestRap();
-      // Formal landing, not a probe frontier, is the proof of exact or
-      // natural-playback coverage. A real preceding RAP is therefore enough
-      // to spend the preserved landing budget.
       if (chosen) return {chosen, estimate};
-      if (candidate === 0n) break;
-      const projected = projectedTargetOffset();
-      const projectedCandidate = projected === null ? null : clampBigInt(
-        projected > PLANNER_WINDOW_BYTES ? projected - PLANNER_WINDOW_BYTES : 0n,
-        0n, maximumCandidate,
-      );
-      if (projectedCandidate !== null && projectedCandidate < candidate &&
-          !visited.has(projectedCandidate)) {
-        candidate = projectedCandidate;
-        backwardStride = planStep;
-      } else {
-        // Empty parser windows have no timestamp meaning. Move the *next
-        // locate start* behind both this window and an exponentially growing
-        // safety distance, never back toward the duration-linear estimate.
-        const nextDistance = backwardStride + 8n * chunkSize;
-        candidate = candidate > nextDistance ? candidate - nextDistance : 0n;
-        backwardStride = backwardStride * 2n;
-      }
     }
     const chosen = bestRap();
     if (chosen) return {chosen, estimate};

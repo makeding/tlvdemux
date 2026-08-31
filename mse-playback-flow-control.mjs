@@ -13,6 +13,8 @@ import {
   MseStartupBufferError,
 } from './mse-playback-contract.mjs';
 
+const HELD_FRAME_AUDIO_TAIL_SECONDS = 0.512;
+
 export function createMsePlaybackFlowControl({
   media,
   queues,
@@ -34,7 +36,26 @@ export function createMsePlaybackFlowControl({
   let startupBytes = 0;
   let entryCovered = false;
   let currentRequiredTracks = normalizeRequiredTracks(requiredTracks);
+  const demandWaiters = new Set();
   const requiredQueues = () => selectRequiredQueues(queues, currentRequiredTracks);
+  const playbackRate = () => Number.isFinite(media.playbackRate) && media.playbackRate > 0
+    ? media.playbackRate : 1;
+  const highWatermarkSeconds = () => highSeconds * playbackRate();
+  const lowWatermarkSeconds = () => lowSeconds * playbackRate();
+  const waitForDemandOrDelay = milliseconds => new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      demandWaiters.delete(finish);
+      resolve();
+    };
+    demandWaiters.add(finish);
+    Promise.resolve(wait(milliseconds)).then(finish, error => {
+      demandWaiters.delete(finish);
+      reject(error);
+    });
+  });
 
   const trim = () => {
     for (const queue of requiredQueues().values()) {
@@ -77,7 +98,7 @@ export function createMsePlaybackFlowControl({
     if (!videoBuffered) return null;
     const audioTail = (audio.committedRanges?.() ?? []).find(range =>
       range.start <= entryTimeSeconds && range.end < entryTimeSeconds &&
-      range.end >= entryTimeSeconds - 0.25);
+      range.end >= entryTimeSeconds - HELD_FRAME_AUDIO_TAIL_SECONDS);
     if (!audioTail) return null;
     const audioBuffered = (audio.bufferedRanges?.() ?? []).find(range =>
       range.start < audioTail.end && range.end > audioTail.start);
@@ -88,6 +109,13 @@ export function createMsePlaybackFlowControl({
     entryKind,
     get entryTimeSeconds() { return entryTimeSeconds; },
     get requiredTracks() { return [...currentRequiredTracks]; },
+    highWatermarkSeconds,
+    lowWatermarkSeconds,
+    notifyDemand() {
+      const pending = [...demandWaiters];
+      demandWaiters.clear();
+      for (const resolve of pending) resolve();
+    },
     setRequiredTracks(nextRequiredTracks, nextEntryTimeSeconds = media.currentTime) {
       currentRequiredTracks = normalizeRequiredTracks(nextRequiredTracks);
       if (Number.isFinite(nextEntryTimeSeconds) && nextEntryTimeSeconds >= 0) {
@@ -141,11 +169,19 @@ export function createMsePlaybackFlowControl({
       }
 
       let ahead = api.commonAhead();
-      if (!entryCovered || ahead < highSeconds) return {commonAhead: ahead, entryCovered};
-      while (isActive() && ahead > lowSeconds) {
+      if (!entryCovered || ahead < highWatermarkSeconds()) {
+        return {commonAhead: ahead, entryCovered};
+      }
+      let throttledPlaybackRate = playbackRate();
+      while (isActive() && ahead >= lowWatermarkSeconds()) {
         trim();
-        await wait(250);
+        await waitForDemandOrDelay(250);
         ahead = api.commonAhead();
+        const currentPlaybackRate = playbackRate();
+        if (currentPlaybackRate !== throttledPlaybackRate) {
+          throttledPlaybackRate = currentPlaybackRate;
+          if (ahead < highWatermarkSeconds()) break;
+        }
       }
       return {commonAhead: ahead, entryCovered};
     },

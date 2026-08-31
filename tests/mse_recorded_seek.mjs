@@ -21,7 +21,7 @@ const queue = (ranges = []) => ({
 function fixture({
   landing = 'exact', gapSeconds = 0.04, budget = 16 * MiB,
   targetTimeSeconds = 50, bootstrapRapUs = 0n, planRap = true, indexedRap = null,
-  estimateOffsetBytes = 16 * MiB,
+  estimateOffsetBytes = 16 * MiB, planRapOffsets = null,
 } = {}) {
   const media = {currentTime: targetTimeSeconds};
   const video = queue();
@@ -66,7 +66,8 @@ function fixture({
           codec: 'hevc', trackId: 1, ptsValue: bootstrapRapUs, ptsTimescale: 1_000_000,
           randomAccess: true, restartOffset: 0n,
         });
-      } else if (session.phase === 'backward-plan' && planRap) {
+      } else if (session.phase === 'backward-plan' && planRap &&
+                 (planRapOffsets === null || planRapOffsets.some(offset => BigInt(offset) === position))) {
         session.observeAccessUnit({
           codec: 'hevc', trackId: 1, ptsValue: 51_000_000n, ptsTimescale: 1_000_000,
           randomAccess: true, restartOffset: position,
@@ -141,13 +142,30 @@ function fixture({
 }
 
 {
-  const {session, requests} = fixture({estimateOffsetBytes: 20 * MiB});
+  const {session, requests, operations} = fixture({
+    estimateOffsetBytes: 20 * MiB,
+    planRapOffsets: [4n * BigInt(MiB)],
+  });
   await session.run();
   const plannerReads = requests.filter(request => request.phase === 'backward-plan');
-  assert.equal(plannerReads.length, 1,
-    'backward planning kept reading after it found a usable preceding RAP');
-  assert.equal(plannerReads[0].offset, 4n * BigInt(MiB),
-    'planner did not start from the conservative pre-estimate window');
+  assert.deepEqual(plannerReads.map(request => request.offset), [
+    10n * BigInt(MiB), 11n * BigInt(MiB), 12n * BigInt(MiB),
+    13n * BigInt(MiB), 14n * BigInt(MiB), 15n * BigInt(MiB),
+    16n * BigInt(MiB), 4n * BigInt(MiB),
+  ], 'planner did not perform the bounded near-estimate observation before fallback');
+  assert.deepEqual(operations.filter(([phase]) => phase === 'backward-plan').map(([, offset]) => offset), [
+    10n * BigInt(MiB), 4n * BigInt(MiB),
+  ], 'planner did not move from the near estimate to the conservative backward restart');
+}
+
+{
+  const {session, requests, operations} = fixture({estimateOffsetBytes: 20 * MiB});
+  await session.run();
+  const plannerReads = requests.filter(request => request.phase === 'backward-plan');
+  assert.deepEqual(plannerReads.map(request => request.offset), [10n * BigInt(MiB)],
+    'a usable near-estimate RAP did not preserve the remaining ledger for landing');
+  assert.equal(operations.filter(([phase]) => phase === 'backward-plan').length, 1,
+    'a usable near-estimate RAP still invoked a backward fallback');
 }
 
 {
@@ -192,14 +210,24 @@ function fixture({
 }
 
 {
-  const {session} = fixture({landing: 'held-frame', gapSeconds: 0.251});
+  const {session, media} = fixture({landing: 'held-frame', gapSeconds: 0.377});
+  const result = await session.run();
+  assert.equal(result.landingMode, 'held-frame',
+    'a bounded two-fragment AAC tail was rejected');
+  assert.equal(media.currentTime, 50);
+}
+
+{
+  const {session} = fixture({landing: 'held-frame', gapSeconds: 0.513});
   await assert.rejects(session.run(), error =>
     error.code === MSE_SEEK_NO_COMMON_AV && error.reason === 'budget-exhausted' &&
       error.diagnostics.phase === 'single-landing');
 }
 
 {
-  const {session, requests} = fixture({landing: 'held-frame', budget: 4 * MiB});
+  const {session, requests} = fixture({
+    landing: 'held-frame', budget: 4 * MiB, estimateOffsetBytes: 0,
+  });
   await session.run();
   assert.equal(requests.reduce((total, request) => total + request.length, 0n), 1n * BigInt(MiB),
     'seek read after completing a held-frame landing');
