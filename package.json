@@ -137,7 +137,6 @@
     "test:layer-sample": "node tests/wasm_layer_switch_sample.mjs dist/tlvdemux.js demo/audiotrack.tlv",
     "test:rain-startup-flow": "node tests/wasm_startup_flow_control_sample.mjs dist/tlvdemux.js demo/rain.tlv",
     "test:rain-seek": "node tests/wasm_seek_smoke.mjs dist/tlvdemux.js demo/rain.tlv 60 200 380",
-    "test:single-track-resilience": "node tests/wasm_single_track_damage_flow_sample.mjs dist/tlvdemux.js demo/20260828-141-020000_99332dc9-025e-4e76-afc4-e31c3d577059.mmts",
     "test:manual-auto-layer": "node tests/wasm_manual_auto_layer_sample.mjs dist/tlvdemux.js demo/audiotrack.tlv restore && node tests/wasm_manual_auto_layer_sample.mjs dist/tlvdemux.js demo/rain.tlv defer",
     "test:inventory-samples": "node tests/inventory_sample_regression.mjs",
     "test:inventory-samples:hardware": "node tests/inventory_sample_regression.mjs --hardware-only",

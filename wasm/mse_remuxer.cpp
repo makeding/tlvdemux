@@ -257,6 +257,15 @@ public:
             iterator->second.push(unit, active,
                                   active && enabled && video.audio_output_ready(),
                                   video.timeline_offset_us());
+            if (recorded_seek_active && active && enabled &&
+                video.audio_output_ready()) {
+                // A formal Recorded transaction only needs the locked AAC
+                // window to become observable before the sequential feeder
+                // resumes.  Seal that short landing prefix immediately rather
+                // than spending the remaining 16 MiB budget waiting for the
+                // normal quarter-second fragment threshold.
+                iterator->second.flush();
+            }
             const auto automatic = automatic_layers.observe(unit);
             if (!recorded_seek_active && !pending_layer && automatic.playback_damage) {
                 sink.onPlaybackDamage(*automatic.playback_damage);
@@ -525,11 +534,23 @@ void tlvdemux::MseRemuxer::setTimestampOffset(
     const std::int64_t timestamp_offset_us) {
     impl_->mse_timestamp_offset_us = timestamp_offset_us;
     impl_->synchronize_audio_timestamp_offsets();
+    if (impl_->enabled && impl_->recorded_seek_active) {
+        // A Recorded landing maps the locked AAC window to the unchanged
+        // requested MediaElement clock.  Publish the same SourceBuffer offset
+        // for both tracks as one transaction; merely updating the muxer's
+        // internal AAC accounting leaves the browser on the startup offset.
+        impl_->output.video_splice(0, timestamp_offset_us);
+        impl_->output.audio_splice(0, timestamp_offset_us);
+    }
 }
 
 bool tlvdemux::MseRemuxer::repeatLastClosedVideoWindow(
     const std::int64_t start_time_us, const std::int64_t end_time_us) {
     return impl_->repeat_last_closed_video_window(start_time_us, end_time_us);
+}
+
+void tlvdemux::MseRemuxer::clearLastClosedVideoPicture() {
+    impl_->video.clear_last_closed_picture();
 }
 
 void tlvdemux::MseRemuxer::setRecordedSeekConcealmentTarget(

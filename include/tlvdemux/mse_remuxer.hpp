@@ -210,6 +210,8 @@ public:
     void setTimestampOffset(std::int64_t timestamp_offset_us);
     bool repeatLastClosedVideoWindow(std::int64_t start_time_us,
                                      std::int64_t end_time_us);
+    /** Prevent a prior playback position from supplying a future frozen frame. */
+    void clearLastClosedVideoPicture();
     /** Arm or clear the one-shot source target for recorded-seek concealment. */
     void setRecordedSeekConcealmentTarget(
         std::optional<std::int64_t> presentation_time_us);

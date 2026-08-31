@@ -258,6 +258,7 @@ class WorkerDemuxer extends WorkerObject {
   repeatLastClosedVideoWindow(startTimeUs, endTimeUs) {
     return this.call('repeatLastClosedVideoWindow', [startTimeUs, endTimeUs]);
   }
+  clearLastClosedVideoPicture() { return this.call('clearLastClosedVideoPicture'); }
   setMseRecordedSeekConcealmentTarget(presentationTimeUs) {
     return this.call('setMseRecordedSeekConcealmentTarget', [presentationTimeUs]);
   }

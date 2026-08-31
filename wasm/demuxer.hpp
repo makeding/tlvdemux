@@ -192,6 +192,9 @@ public:
                                      const std::int64_t end_time_us) {
         return mse_remuxer_.repeatLastClosedVideoWindow(start_time_us, end_time_us);
     }
+    void clearLastClosedVideoPicture() {
+        mse_remuxer_.clearLastClosedVideoPicture();
+    }
 
     void setMseRecordedSeekConcealmentTarget(
         const val& presentation_time_us) {

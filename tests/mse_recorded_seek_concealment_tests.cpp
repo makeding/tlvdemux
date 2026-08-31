@@ -295,6 +295,39 @@ void test_closed_picture_repeats_over_audio_window() {
           "frozen samples are not byte-identical copies of the prior closed picture");
 }
 
+void test_cra_picture_survives_reposition_for_exact_audio_window() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.push(hevc_unit(
+        2, 1'000'000, 1'010'000, std::vector<unsigned>{21}, true));
+
+    // A Recorded byte landing resets the active HEVC muxer and its Mp4Track.
+    // The retained CRA must carry enough configuration to become the prior
+    // usable picture for the AAC-first transaction after that reposition.
+    remuxer.reposition();
+    check(remuxer.repeatLastClosedVideoWindow(2'000'000, 2'100'000),
+          "a decodable CRA did not survive Recorded reposition");
+    remuxer.flush();
+
+    const auto video = segments_of(sink.segments, "video");
+    check(composition_timestamps(video) == std::vector<std::int64_t>{
+              2'000'000, 2'033'367, 2'066'734},
+          "the repositioned CRA did not map exactly over the AAC window");
+    check(!video.empty() && video.front().tfdt == 1'990'000,
+          "the repeated CRA lost its original composition offset");
+}
+
+void test_closed_picture_is_cleared_before_a_new_audio_window_probe() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.push(hevc_unit(2, 10'000'000, 10'000'000, true, true));
+    remuxer.clearLastClosedVideoPicture();
+    check(!remuxer.repeatLastClosedVideoWindow(2'000'000, 2'100'000),
+          "a future closed picture survived into an earlier AAC-window transaction");
+}
+
 } // namespace
 
 int main() {
@@ -302,5 +335,7 @@ int main() {
     test_stable_rap_fill_without_previous_frame();
     test_target_outside_damage_is_unchanged();
     test_closed_picture_repeats_over_audio_window();
+    test_cra_picture_survives_reposition_for_exact_audio_window();
+    test_closed_picture_is_cleared_before_a_new_audio_window_probe();
     std::cout << "MSE Recorded frozen-window tests passed\n";
 }

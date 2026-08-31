@@ -129,7 +129,7 @@ input offset で識別した AAC window を最初に確定し、その同じ aud
 
 1. decode 可能な通常／preferred の closed GOP
 2. 同じ AAC window を覆う decode 可能な降雨／fallback の closed GOP
-3. window より前にある最後の利用可能な closed IDR/BLA 画面を、元の AAC を一切
+3. window より前にある最後の利用可能な decode 可能 IRAP 画面を、元の AAC を一切
    変更せず、単調な映像 DTS/PTS で繰り返す frozen mode
 
 未来の frame を過去へ複製してはいけません。source damage による降雨 fallback は
@@ -145,6 +145,9 @@ atomic A/V commit であり、両 queue の `updateend` 成功前に次の windo
 いけません。録画の forward reserve は wall clock 2 秒、refill low は 1 秒で、
 playback rate はその media duration だけを比例させます（2x は 4/2 media 秒）。
 15 秒／30 秒の startup gate はありません。
+preferred reserve に達する前に browser が quota ceiling を報告した場合、entry に
+wall clock 0.5 秒以上の共通 A/V があれば controller が直ちに消費を開始します。
+この quota-limited startup の所有者は demo ではなく controller です。
 
 quota pressure では source read を停止し、失敗した元の window を保持します。
 compositor が最後に提示した境界より前の完全な history window だけを remove し、
@@ -157,7 +160,7 @@ transaction budget を共有します。seek は選択 AAC target window を先�
 preferred／rainfall／frozen 映像を解決して一度だけ formal A/V commit します。
 probe 中は要求 `currentTime` を変更せず、明示 seek の commit 後にだけ設定します。
 後続 seek は古い source stream と transaction を cancel します。error は AAC anchor
-未発見、budget 内に preferred／rainfall／過去の closed frame がない場合、source
+未発見、budget 内に preferred／rainfall／過去の decode 可能 frame がない場合、source
 failure、atomic commit failure に限定し、完全な state snapshot を添付します。
 
 Blob と strict-Range HTTP recording は `stream(offset, {signal})` を公開します。

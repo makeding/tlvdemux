@@ -1,9 +1,7 @@
 import { DataBroadcastController } from './data-broadcast.js?v=webkit-canvas-plane-v4';
 import { HlgSdrRenderer } from '../hlg-sdr-renderer.mjs?v=cpp-color-lut-v1';
 import {
-  automaticLayerSwitchEnabled,
   audioTrackChoices,
-  configureAutomaticLayerPair as configureSdkAutomaticLayerPair,
   correspondingAudioTrack,
   resolveLayerPair,
   sameVideoLayerGroup,
@@ -20,12 +18,11 @@ import {
 import {
   createMseRecordedPlaybackController,
   createMseRecordedWindowLocator,
-} from '../mse-recorded-playback.mjs?v=recorded-audio-window-v1';
+} from '../mse-recorded-playback.mjs?v=recorded-audio-window-v3';
 import { createWorkerTlvDemuxModule } from '../worker-tlvdemux.mjs';
 import {MseAppendQueue} from '../mse-append-queue.mjs?v=recorded-seek-entry-fence-v2';
 import {createMseOutputPipeline} from '../mse-output-pipeline.mjs?v=audio-only-resilience-v1';
-import {createLiveMseTransitionManager} from '../mse-live-transition.mjs?v=recorded-seek-entry-fence-v2';
-import {commitDemoMseCandidate, createMediaElementProxy, formatBytes, openDetachedMseMedia}
+import {createMediaElementProxy, formatBytes}
   from './mse-media-transaction.js?v=recorded-seek-entry-fence-v2';
 import {MSE_MAX_AUDIO_CHANNELS, createDemoTrackControls}
   from './track-controls.js?v=recorded-seek-fence-v1';
@@ -44,11 +41,7 @@ const b62RendererClass = import('/aribb62.js/dist/aribb62.js')
   });
 
 const MiB = 1024n * 1024n;
-const FORWARD_BUFFER_HIGH_SECONDS = 2;
-const FORWARD_BUFFER_LOW_SECONDS = 1;
 const LIVE_STARTUP_BUFFER_SECONDS = 0.5;
-const BACK_BUFFER_SECONDS = 8;
-const SOURCE_QUEUE_HIGH_BYTES = 4 * 1024 * 1024;
 const LIVE_PUSH_TARGET_BYTES = 512 * 1024;
 const LIVE_PUSH_MAX_DELAY_MS = 25;
 const DEFAULT_PLAYBACK_RATE = 2;
@@ -117,7 +110,6 @@ let activeVideoSelectionMode = null;
 let activeAudioSwitch = null;
 let activeSubtitleSwitch = null;
 let activeSubtitleRenderer = null;
-let activeLiveTransitionManager = null;
 let activeRecordedPlaybackController = null;
 let subtitleRendererRequest = 0;
 let selectedAudioPacketId = null;
@@ -399,8 +391,6 @@ function releaseMedia() {
   activeVideoSwitch = null;
   activeVideoSelectionMode = null;
   activeSubtitleSwitch = null;
-  activeLiveTransitionManager?.destroy();
-  activeLiveTransitionManager = null;
   void activeRecordedPlaybackController?.stop();
   activeRecordedPlaybackController = null;
   activeSubtitleRenderer?.destroy();
@@ -430,8 +420,6 @@ function stopPlayback(quiet = false, preserveMedia = false) {
   activeVideoSwitch = null;
   activeVideoSelectionMode = null;
   activeSubtitleSwitch = null;
-  activeLiveTransitionManager?.destroy();
-  activeLiveTransitionManager = null;
   void activeRecordedPlaybackController?.stop();
   activeRecordedPlaybackController = null;
   activeSubtitleRenderer?.reset();
@@ -716,9 +704,15 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     },
     onTrackRemoved(track) {
       tracks.delete(track.trackId);
-      if (track.trackId === selectedVideo) selectedVideo = null;
-      if (track.trackId === selectedAudio) selectedAudio = null;
-      if (track.trackId === selectedSubtitle) selectedSubtitle = null;
+      // Recorded byte reposition rebuilds the transient catalogue.  Keep the
+      // transaction-owned track identities stable until the same tracks are
+      // announced again; clearing them here lets callback order silently pick
+      // another AAC track midway through an audio-first locate/landing.
+      if (liveMode) {
+        if (track.trackId === selectedVideo) selectedVideo = null;
+        if (track.trackId === selectedAudio) selectedAudio = null;
+        if (track.trackId === selectedSubtitle) selectedSubtitle = null;
+      }
       knownVideoTracks.delete(track.packetId);
       knownAudioTracks.delete(track.packetId);
       knownSubtitleTracks.delete(track.packetId);
@@ -791,6 +785,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     locator = createMseRecordedWindowLocator({
       source, demuxer, queues,
       presentationStartUs: timestampMicroseconds(probeResult.presentationStart),
+      presentationEndUs: timestampMicroseconds(probeResult.presentationEnd),
       selectedAudioTrack: () => selectedAudio,
       preferredVideoTrack: () => layerPair?.preferred.video ?? selectedVideo,
       rainfallVideoTrack: () => layerPair?.fallback?.video ?? null,
@@ -1026,10 +1021,8 @@ function bindPlaybackMediaEvents(media) {
     appendLog(`MediaElement waiting ${media.currentTime.toFixed(3)}s`);
   }, options);
   media.addEventListener('pause', () => {
-    activeLiveTransitionManager?.notifyPlaybackPaused();
   }, options);
   media.addEventListener('play', () => {
-    activeLiveTransitionManager?.notifyPlaybackResumed();
   }, options);
   media.addEventListener('seeking', () => {
     if (currentLiveMode || !activeRecordedPlaybackController) return;

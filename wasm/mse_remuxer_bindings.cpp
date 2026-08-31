@@ -330,6 +330,10 @@ bool WasmMseRemuxer::repeatLastClosedVideoWindow(
     return impl_->remuxer().repeatLastClosedVideoWindow(start_time_us, end_time_us);
 }
 
+void WasmMseRemuxer::clearLastClosedVideoPicture() {
+    impl_->remuxer().clearLastClosedVideoPicture();
+}
+
 void WasmMseRemuxer::setRecordedSeekConcealmentTarget(
     const std::optional<std::int64_t> presentation_time_us) {
     impl_->remuxer().setRecordedSeekConcealmentTarget(presentation_time_us);

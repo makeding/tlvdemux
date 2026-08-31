@@ -878,6 +878,7 @@ declare namespace createTlvDemuxModule {
     clearAutomaticLayerSwitch(): void;
     setMseTimestampOffset(timestampOffsetUs: bigint): void;
     repeatLastClosedVideoWindow(startTimeUs: bigint, endTimeUs: bigint): boolean;
+    clearLastClosedVideoPicture(): void;
     setMseRecordedSeekConcealmentTarget(presentationTimeUs?: bigint | null): void;
     beginMseRecordedSeek(): void;
     finishMseRecordedSeek(playbackPositionUs: bigint): void;

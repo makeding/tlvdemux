@@ -15,7 +15,6 @@ export function createLiveMseTransitionManager({
   openMediaSource,
   commit,
   appendLog,
-  liveMode = true,
   duration = Infinity,
   prepareCandidate = null,
   createProbeMedia = () => document.createElement('video'),
@@ -221,7 +220,7 @@ export function createLiveMseTransitionManager({
           media: probeMedia,
           queues,
           requiredTracks,
-          entryKind: liveMode ? 'live' : 'seek',
+          entryKind: 'live',
           entryTimeSeconds: target,
         });
         const pipeline = createMseOutputPipeline({
@@ -250,7 +249,7 @@ export function createLiveMseTransitionManager({
           else if (item.kind === 'splice-video') pipeline.onMseVideoSplice(item.value);
           else if (item.kind === 'splice-audio') pipeline.onMseAudioSplice(item.value);
         }
-        appendLog(`${liveMode ? 'Live' : '録画'} ${mode === MsePlaybackMode.AUDIO_ONLY ? '純音声' : 'A/V'} ` +
+        appendLog(`Live ${mode === MsePlaybackMode.AUDIO_ONLY ? '純音声' : 'A/V'} ` +
           '候補 MediaSource を有界に準備します');
         if (prepareCandidate) {
           void Promise.resolve(prepareCandidate(current)).then(() => {

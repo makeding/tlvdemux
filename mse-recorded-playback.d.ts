@@ -41,12 +41,14 @@ export declare function createMseRecordedWindowLocator(options: {
   demuxer: Record<string, (...args: any[]) => any>;
   queues: Map<string, Pick<MseAppendQueue, 'waitStable' | 'waitIdle' | 'committedRanges'>>;
   presentationStartUs?: bigint;
+  presentationEndUs?: bigint | null;
   selectedAudioTrack: () => bigint | {trackId: bigint} | null;
   preferredVideoTrack: () => bigint | {trackId: bigint} | null;
   rainfallVideoTrack?: () => bigint | {trackId: bigint} | null;
   activateVideoTrack?: (mode: MseRecordedVideoMode, video: MseRecordedVideoWindow) => unknown;
   onProgress?: (progress: {bytesRead: bigint; budgetBytes: bigint; offset: bigint}) => void;
   chunkBytes?: number;
+  audioWindowSeconds?: number;
 }): {
   locate(options: Record<string, unknown>): Promise<Record<string, unknown>>;
   observeAccessUnit(unit: Record<string, unknown>): void;
