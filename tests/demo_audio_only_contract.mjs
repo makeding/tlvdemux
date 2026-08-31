@@ -113,11 +113,11 @@ assert.match(demo, /const supplyCoordinator = createMseSupplyCoordinator\(\);/,
 assert.doesNotMatch(demo, /forwardBufferHighSeconds/,
   'demo still gives an individual SourceBuffer ownership of the time watermark');
 assert.match(supplyFlow,
-  /startTimeSeconds !== 0 \|\| reuseMedia \|\|[\s\S]{0,100}playbackFlow\.commonAhead\(\) >= playbackFlow\.lowWatermarkSeconds\(\)/,
-  'fresh recorded supply coordinator ignores its rate-adjusted common low watermark');
+  /startTimeSeconds !== 0 \|\| reuseMedia \|\|[\s\S]{0,100}playbackFlow\.commonAhead\(\) >= playbackFlow\.highWatermarkSeconds\(\)/,
+  'fresh recorded supply coordinator ignores its rate-adjusted common high watermark');
 assert.match(demo,
   /supplyCoordinator\.canStartFreshRecorded\([\s\S]{0,180}startMsePlayback/,
-  'fresh recorded playback can start before its rate-adjusted common low watermark');
+  'fresh recorded playback bypasses its rate-adjusted common high watermark');
 assert.match(supplyFlow,
   /notifyWaiting\(\)[\s\S]{0,220}ahead < low\) flow\.notifyDemand\(\)/,
   'low-common-A/V waiting does not wake the sequential supply loop');
@@ -130,6 +130,24 @@ assert.match(supplyFlow,
 assert.match(demo,
   /queueHighBytes: SOURCE_QUEUE_HIGH_BYTES,[\s\S]{0,80}queueHardBytes: SOURCE_QUEUE_HARD_BYTES/,
   'the demo does not install the bounded soft/hard queue pressure contract');
+
+{
+  const supplyModule = await import(
+    `data:text/javascript;base64,${Buffer.from(supplyFlow).toString('base64')}`);
+  const coordinator = supplyModule.createMseSupplyCoordinator();
+  const playbackFlow = {
+    commonAhead: () => 16,
+    lowWatermarkSeconds: () => 16,
+    highWatermarkSeconds: () => 30,
+  };
+  assert.equal(coordinator.canStartFreshRecorded({
+    liveMode: false, startTimeSeconds: 0, reuseMedia: false, playbackFlow,
+  }), false, '2x fresh playback started from the 16-second low watermark');
+  playbackFlow.commonAhead = () => 30;
+  assert.equal(coordinator.canStartFreshRecorded({
+    liveMode: false, startTimeSeconds: 0, reuseMedia: false, playbackFlow,
+  }), true, '2x fresh playback did not start at the 30-second high watermark');
+}
 
 {
   const media = {currentTime: 0, playbackRate: 2};

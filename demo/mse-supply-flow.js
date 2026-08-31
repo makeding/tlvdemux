@@ -18,7 +18,7 @@ export function createMseSupplyCoordinator() {
     },
     canStartFreshRecorded({liveMode, startTimeSeconds, reuseMedia, playbackFlow}) {
       return liveMode || startTimeSeconds !== 0 || reuseMedia ||
-        playbackFlow.commonAhead() >= playbackFlow.lowWatermarkSeconds();
+        playbackFlow.commonAhead() >= playbackFlow.highWatermarkSeconds();
     },
     notifyWaiting() {
       if (!flow) return null;
@@ -38,7 +38,7 @@ export function createMseSupplyCoordinator() {
   };
 }
 
-export function describeRecordedSupplyStart(commonAhead, playbackRate, lowWatermarkSeconds) {
+export function describeRecordedSupplyStart(commonAhead, playbackRate, startupWatermarkSeconds) {
   return `録画共通バッファ ${commonAhead.toFixed(1)}s で再生開始 ` +
-    `(${playbackRate}×, low=${lowWatermarkSeconds.toFixed(1)}s)`;
+    `(${playbackRate}×, startup high=${startupWatermarkSeconds.toFixed(1)}s)`;
 }

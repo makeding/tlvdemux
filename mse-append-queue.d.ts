@@ -2,6 +2,7 @@ export interface MseAppendQueueOptions {
   retryDelayMilliseconds?: number;
   backBufferSeconds?: number;
   trimGranularitySeconds?: number;
+  maximumAppendBatchBytes?: number;
   getMediaError?: (media: HTMLMediaElement) => string;
   destroyOnSourceClose?: boolean;
 }
@@ -30,6 +31,9 @@ export declare class MseAppendQueue {
   queuedBytes: number;
   currentBytes: number;
   readonly currentOperation: unknown | null;
+  updateEndCount: number;
+  lastAppendStartedAtMilliseconds: number | null;
+  lastUpdateEndAtMilliseconds: number | null;
   readonly committedMediaRanges: MseBufferedRange[];
   readonly waiters: unknown[];
   error: Error | null;
@@ -39,6 +43,7 @@ export declare class MseAppendQueue {
   state: 'running' | 'quiescing' | 'idle' | 'destroyed';
   onUpdateEnd: (() => void) | null;
   scheduledTimestampOffsetSeconds: number;
+  maximumAppendBatchBytes: number;
   destroyOnSourceClose: boolean;
 
   constructor(
@@ -59,6 +64,16 @@ export declare class MseAppendQueue {
   bufferedAhead(): number;
   bufferedRanges(): MseBufferedRange[];
   committedRanges(): MseBufferedRange[];
+  diagnostics(nowMilliseconds?: number): {
+    queuedBytes: number;
+    currentBytes: number;
+    pendingOperations: number;
+    updating: boolean;
+    currentOperation: string | null;
+    updateEndCount: number;
+    millisecondsSinceAppendStarted: number | null;
+    millisecondsSinceUpdateEnd: number | null;
+  };
   trimBefore(time: number, force?: boolean): void;
   waitBelow(limit: number): Promise<void>;
   isStable(): boolean;

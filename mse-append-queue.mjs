@@ -1,6 +1,7 @@
 const DEFAULT_RETRY_DELAY_MILLISECONDS = 250;
 const DEFAULT_BACK_BUFFER_SECONDS = 8;
 const DEFAULT_TRIM_GRANULARITY_SECONDS = 2;
+const DEFAULT_MAXIMUM_APPEND_BATCH_BYTES = 8 * 1024 * 1024;
 
 function snapshotTimeRanges(ranges) {
   const result = [];
@@ -71,6 +72,9 @@ export class MseAppendQueue {
     this.queuedBytes = 0;
     this.currentBytes = 0;
     this.currentOperation = null;
+    this.updateEndCount = 0;
+    this.lastAppendStartedAtMilliseconds = null;
+    this.lastUpdateEndAtMilliseconds = null;
     this.committedMediaRanges = [];
     this.waiters = [];
     this.error = null;
@@ -83,17 +87,24 @@ export class MseAppendQueue {
     this.retryDelayMilliseconds = options.retryDelayMilliseconds ?? DEFAULT_RETRY_DELAY_MILLISECONDS;
     this.backBufferSeconds = options.backBufferSeconds ?? DEFAULT_BACK_BUFFER_SECONDS;
     this.trimGranularitySeconds = options.trimGranularitySeconds ?? DEFAULT_TRIM_GRANULARITY_SECONDS;
+    this.maximumAppendBatchBytes = options.maximumAppendBatchBytes ??
+      DEFAULT_MAXIMUM_APPEND_BATCH_BYTES;
     this.getMediaError = options.getMediaError ?? defaultMediaError;
     this.destroyOnSourceClose = options.destroyOnSourceClose ?? true;
 
     this.sourceBuffer.addEventListener('updateend', () => {
+      this.updateEndCount += 1;
+      this.lastUpdateEndAtMilliseconds = Date.now();
       const operation = this.currentOperation;
       this.currentOperation = null;
-      if (operation?.kind === 'append' && operation.mime === null &&
-          operation.startTimeSeconds !== null && operation.endTimeSeconds !== null) {
+      if (operation?.kind === 'append' && operation.mime === null) {
+        const ranges = operation.mediaRanges ?? (
+          operation.startTimeSeconds !== null && operation.endTimeSeconds !== null
+            ? [{start: operation.startTimeSeconds, end: operation.endTimeSeconds}]
+            : []
+        );
         this.committedMediaRanges = mergeTimeRanges([
-          ...this.committedMediaRanges,
-          {start: operation.startTimeSeconds, end: operation.endTimeSeconds},
+          ...this.committedMediaRanges, ...ranges,
         ]);
       } else if (operation?.kind === 'remove') {
         this.committedMediaRanges = subtractTimeRange(
@@ -255,7 +266,7 @@ export class MseAppendQueue {
       }
     }
     if (!this.queue.length) return;
-    const item = this.queue.shift();
+    let item = this.queue.shift();
     if (item.kind === 'timestamp-offset') {
       this.sourceBuffer.timestampOffset = item.offsetSeconds;
       this.pump();
@@ -282,7 +293,37 @@ export class MseAppendQueue {
       this.pump();
       return;
     }
-    const data = item.data;
+    const batchItems = [item];
+    let data = item.data;
+    if (item.mime === null && item.startTimeSeconds !== null &&
+        item.endTimeSeconds !== null) {
+      let batchBytes = data.byteLength;
+      while (this.queue.length) {
+        const next = this.queue[0];
+        if (next.kind !== 'append' || next.mime !== null ||
+            next.startTimeSeconds === null || next.endTimeSeconds === null ||
+            batchBytes + next.data.byteLength > this.maximumAppendBatchBytes) break;
+        batchItems.push(this.queue.shift());
+        batchBytes += next.data.byteLength;
+      }
+      if (batchItems.length > 1) {
+        data = new Uint8Array(batchBytes);
+        let offset = 0;
+        for (const part of batchItems) {
+          data.set(part.data, offset);
+          offset += part.data.byteLength;
+        }
+        item = {
+          ...item,
+          data,
+          endTimeSeconds: batchItems.at(-1).endTimeSeconds,
+          mediaRanges: batchItems.map(part => ({
+            start: part.startTimeSeconds,
+            end: part.endTimeSeconds,
+          })),
+        };
+      }
+    }
     this.currentBytes = data.byteLength;
     try {
       if (item.mime !== null && (item.forceChangeType || item.mime !== this.mime)) {
@@ -293,10 +334,11 @@ export class MseAppendQueue {
         this.mime = item.mime;
       }
       this.currentOperation = item;
+      this.lastAppendStartedAtMilliseconds = Date.now();
       this.sourceBuffer.appendBuffer(data);
     } catch (error) {
       this.currentOperation = null;
-      this.queue.unshift(item);
+      this.queue.unshift(...batchItems);
       this.currentBytes = 0;
       this.recountQueuedBytes();
       if (error?.name === 'QuotaExceededError') {
@@ -328,6 +370,21 @@ export class MseAppendQueue {
 
   committedRanges() {
     return this.committedMediaRanges.map(range => ({...range}));
+  }
+
+  diagnostics(nowMilliseconds = Date.now()) {
+    return {
+      queuedBytes: this.queuedBytes,
+      currentBytes: this.currentBytes,
+      pendingOperations: this.queue.length,
+      updating: this.sourceBuffer.updating,
+      currentOperation: this.currentOperation?.kind ?? null,
+      updateEndCount: this.updateEndCount,
+      millisecondsSinceAppendStarted: this.lastAppendStartedAtMilliseconds === null
+        ? null : Math.max(0, nowMilliseconds - this.lastAppendStartedAtMilliseconds),
+      millisecondsSinceUpdateEnd: this.lastUpdateEndAtMilliseconds === null
+        ? null : Math.max(0, nowMilliseconds - this.lastUpdateEndAtMilliseconds),
+    };
   }
 
   trimBefore(time, force = false) {
