@@ -9,6 +9,8 @@
 
 #include "mse_remuxer.hpp"
 #include "mse/presentation_policy.hpp"
+#include "mse/recorded_audio_window_index.hpp"
+#include "mse/hevc_parser.hpp"
 
 #include <cmath>
 #include <cstddef>
@@ -775,6 +777,8 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("clearAutomaticLayerSwitch",
                   &WasmDemuxer::clearAutomaticLayerSwitch)
         .function("setMseTimestampOffset", &WasmDemuxer::setMseTimestampOffset)
+        .function("repeatLastClosedVideoWindow",
+                  &WasmDemuxer::repeatLastClosedVideoWindow)
         .function("setMseRecordedSeekConcealmentTarget",
                   &WasmDemuxer::setMseRecordedSeekConcealmentTarget)
         .function("beginMseRecordedSeek", &WasmDemuxer::beginMseRecordedSeek)
@@ -805,6 +809,9 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("previousSync", &WasmDemuxer::previousSync)
         .function("seekPointsFor", &WasmDemuxer::seekPointsFor)
         .function("estimateOffset", &WasmDemuxer::estimateOffset)
+        .function("recordedAudioWindowFor", &WasmDemuxer::recordedAudioWindowFor)
+        .function("estimateRecordedAudioOffset",
+                  &WasmDemuxer::estimateRecordedAudioOffset)
         .function("applicationResources", &WasmDemuxer::applicationResources)
         .function("applicationResource", &WasmDemuxer::applicationResource)
         .function("applicationEntry", &WasmDemuxer::applicationEntry)

@@ -298,6 +298,12 @@ public:
         if (active_audio) active_audio->flush();
     }
 
+    bool repeat_last_closed_video_window(const std::int64_t start_time_us,
+                                         const std::int64_t end_time_us) {
+        if (pending_layer) return false;
+        return video.repeat_last_closed_picture(start_time_us, end_time_us);
+    }
+
     std::optional<MseLayerSwitchCancelled> end_of_stream() {
         flush();
         // Flushing can turn the final pending video sample into the staged
@@ -519,6 +525,11 @@ void tlvdemux::MseRemuxer::setTimestampOffset(
     const std::int64_t timestamp_offset_us) {
     impl_->mse_timestamp_offset_us = timestamp_offset_us;
     impl_->synchronize_audio_timestamp_offsets();
+}
+
+bool tlvdemux::MseRemuxer::repeatLastClosedVideoWindow(
+    const std::int64_t start_time_us, const std::int64_t end_time_us) {
+    return impl_->repeat_last_closed_video_window(start_time_us, end_time_us);
 }
 
 void tlvdemux::MseRemuxer::setRecordedSeekConcealmentTarget(

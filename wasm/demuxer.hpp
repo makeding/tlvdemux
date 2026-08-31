@@ -42,6 +42,8 @@ public:
         presentation_policy_.clear_programme_hint();
         const auto cancelled = mse_enabled_ ? mse_remuxer_.reset() : std::nullopt;
         demuxer_.reset();
+        recorded_audio_index_.reset();
+        recorded_audio_index_.selectTrack(selected_audio_track_);
         restoreLayerSelection(cancelled);
         if (index_active_) recording_index_.begin(index_growing_);
     }
@@ -91,6 +93,9 @@ public:
         if (mse_enabled_) mse_remuxer_.selectTrack(*parsed_kind, selected);
         if (*parsed_kind == aribtlv::TrackKind::Video) selected_video_track_ = selected;
         if (*parsed_kind == aribtlv::TrackKind::Audio) selected_audio_track_ = selected;
+        if (*parsed_kind == aribtlv::TrackKind::Audio && index_active_) {
+            recorded_audio_index_.selectTrack(selected);
+        }
         if (*parsed_kind == aribtlv::TrackKind::Video && index_active_ &&
             recording_index_.state() == aribtlv::IndexState::Building) {
             recording_index_.selectVideoTrack(selected);
@@ -181,6 +186,11 @@ public:
 
     void setMseTimestampOffset(const std::int64_t timestamp_offset_us) {
         mse_remuxer_.setTimestampOffset(timestamp_offset_us);
+    }
+
+    bool repeatLastClosedVideoWindow(const std::int64_t start_time_us,
+                                     const std::int64_t end_time_us) {
+        return mse_remuxer_.repeatLastClosedVideoWindow(start_time_us, end_time_us);
     }
 
     void setMseRecordedSeekConcealmentTarget(
@@ -292,6 +302,8 @@ public:
 
     void startIndex(const bool growing) {
         recording_index_.begin(growing);
+        recorded_audio_index_.reset();
+        recorded_audio_index_.selectTrack(selected_audio_track_);
         index_active_ = true;
         index_growing_ = growing;
     }
@@ -341,6 +353,29 @@ public:
         const auto offset = recording_index_.estimateOffset(
             aribtlv::Timestamp{target_us, 1000000}, source_size);
         return offset.has_value() ? val(*offset) : val::null();
+    }
+
+    val recordedAudioWindowFor(const std::int64_t target_us) const {
+        const auto window = recorded_audio_index_.windowFor(target_us);
+        if (!window) return val::null();
+        const auto anchor = [](const tlvdemux::detail::mse::RecordedAudioAnchor& value) {
+            auto result = val::object();
+            result.set("trackId", value.track_id);
+            result.set("presentationTimeUs", value.presentation_time_us);
+            result.set("restartOffset", value.restart_offset);
+            result.set("inputOffset", value.input_offset);
+            return result;
+        };
+        auto result = val::object();
+        result.set("first", anchor(window->first));
+        result.set("second", window->second ? anchor(*window->second) : val::null());
+        return result;
+    }
+
+    val estimateRecordedAudioOffset(const std::int64_t target_us,
+                                    const std::uint64_t source_size) const {
+        const auto offset = recorded_audio_index_.estimateOffset(target_us, source_size);
+        return offset ? val(*offset) : val::null();
     }
 
     val applicationResources(const val& context_id) const {
@@ -604,6 +639,7 @@ public:
 
     void onAccessUnit(aribtlv::AccessUnit&& unit) override {
         if (index_active_) recording_index_.observe(unit);
+        if (index_active_) recorded_audio_index_.observe(unit);
         if (mse_enabled_) {
             const auto automatic = mse_remuxer_.push(unit);
             if (automatic) synchronizeAcceptedLayerSwitch(*automatic);
@@ -614,7 +650,9 @@ public:
         const bool playback_event = unit.codec == aribtlv::Codec::Ttml ||
             (unit.codec == aribtlv::Codec::Hevc &&
              (unit.random_access || unit.discontinuity)) ||
-            (unit.codec == aribtlv::Codec::AacLatm && unit.discontinuity);
+            (unit.codec == aribtlv::Codec::AacLatm &&
+             selected_audio_track_.has_value() &&
+             unit.track_id == *selected_audio_track_);
         if (has_callback("onPlaybackAccessUnitView") && playback_event &&
             valid_playback_timestamp) {
             const auto data = unit.codec == aribtlv::Codec::Ttml
@@ -861,6 +899,16 @@ private:
         event.set("restartOffset", unit.restart_offset);
         event.set("inputOffset", unit.input_offset);
         event.set("randomAccess", unit.random_access);
+        bool closed_random_access = false;
+        if (unit.codec == aribtlv::Codec::Hevc) {
+            for (const auto& nalu : tlvdemux::detail::mse::annex_b_views(unit.data)) {
+                if (nalu.type >= 16 && nalu.type <= 20) {
+                    closed_random_access = true;
+                    break;
+                }
+            }
+        }
+        event.set("closedRandomAccess", closed_random_access);
         event.set("discontinuity", unit.discontinuity);
         event.set("discontinuityReasons",
                   static_cast<std::uint32_t>(unit.discontinuity_reasons));
@@ -1034,6 +1082,7 @@ private:
         selected_audio_track_ = cancelled.previous_audio_track_id == 0
             ? std::nullopt
             : std::optional<std::uint64_t>{cancelled.previous_audio_track_id};
+        if (index_active_) recorded_audio_index_.selectTrack(selected_audio_track_);
         if (index_active_ && recording_index_.state() == aribtlv::IndexState::Building) {
             recording_index_.selectVideoTrack(selected_video_track_);
         }
@@ -1046,6 +1095,7 @@ private:
     aribtlv::ApplicationResourceStore application_resources_;
     WasmMseRemuxer mse_remuxer_;
     aribtlv::RecordingIndex recording_index_;
+    tlvdemux::detail::mse::RecordedAudioWindowIndex recorded_audio_index_;
     bool index_active_ = false;
     bool index_growing_ = false;
     bool mse_enabled_ = false;

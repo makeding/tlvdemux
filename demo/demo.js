@@ -14,20 +14,17 @@ import {
 import { coalesceReadableStream } from '../stream-input.mjs?v=public-stream-v1';
 import {
   commonBufferedRanges,
-  createMsePlaybackIntentCoordinator,
   createMsePlaybackFlowControl,
-  createMseRecordedSeekSession,
   startMsePlayback,
-} from '../mse-playback.mjs?v=recorded-seek-entry-fence-v2';
+} from '../mse-playback.mjs?v=recorded-audio-window-v1';
+import {
+  createMseRecordedPlaybackController,
+  createMseRecordedWindowLocator,
+} from '../mse-recorded-playback.mjs?v=recorded-audio-window-v1';
 import { createWorkerTlvDemuxModule } from '../worker-tlvdemux.mjs';
 import {MseAppendQueue} from '../mse-append-queue.mjs?v=recorded-seek-entry-fence-v2';
 import {createMseOutputPipeline} from '../mse-output-pipeline.mjs?v=audio-only-resilience-v1';
-import {MsePlaybackMode, createDemoPlaybackResilience}
-  from './playback-resilience.js?v=recorded-seek-entry-fence-v2';
 import {createLiveMseTransitionManager} from '../mse-live-transition.mjs?v=recorded-seek-entry-fence-v2';
-import {createMseVideoRecoveryLogger, createRecordedMseTransitionManager,
-  createRecordedSeekConcealmentLogger}
-  from './recorded-mse-transition.js?v=recorded-seek-entry-fence-v2';
 import {commitDemoMseCandidate, createMediaElementProxy, formatBytes, openDetachedMseMedia}
   from './mse-media-transaction.js?v=recorded-seek-entry-fence-v2';
 import {MSE_MAX_AUDIO_CHANNELS, createDemoTrackControls}
@@ -47,9 +44,8 @@ const b62RendererClass = import('/aribb62.js/dist/aribb62.js')
   });
 
 const MiB = 1024n * 1024n;
-const PLAYBACK_CHUNK = 2n * MiB;
-const FORWARD_BUFFER_HIGH_SECONDS = 15;
-const FORWARD_BUFFER_LOW_SECONDS = 8;
+const FORWARD_BUFFER_HIGH_SECONDS = 2;
+const FORWARD_BUFFER_LOW_SECONDS = 1;
 const LIVE_STARTUP_BUFFER_SECONDS = 0.5;
 const BACK_BUFFER_SECONDS = 8;
 const SOURCE_QUEUE_HIGH_BYTES = 4 * 1024 * 1024;
@@ -113,9 +109,7 @@ let activeQueues = [];
 let activeQueueByType = new Map();
 let runGeneration = 0;
 let cachedProbe = null;
-const playbackIntents = createMsePlaybackIntentCoordinator();
 let activeDemuxIdentity = null;
-let bufferedSeekFence = null;
 let internalSeekTarget = null;
 let currentLiveMode = false;
 let activeVideoSwitch = null;
@@ -123,9 +117,8 @@ let activeVideoSelectionMode = null;
 let activeAudioSwitch = null;
 let activeSubtitleSwitch = null;
 let activeSubtitleRenderer = null;
-let activeGapRecovery = null;
 let activeLiveTransitionManager = null;
-let activeRecordedTransitionManager = null;
+let activeRecordedPlaybackController = null;
 let subtitleRendererRequest = 0;
 let selectedAudioPacketId = null;
 let selectedAudioGroupId = null;
@@ -398,8 +391,6 @@ function timestampMilliseconds(value, timescale) {
 }
 
 function releaseMedia() {
-  playbackIntents.invalidate();
-  bufferedSeekFence = null;
   subtitleRendererRequest += 1;
   if (playbackQualityTimer !== null) clearInterval(playbackQualityTimer);
   playbackQualityTimer = null;
@@ -408,12 +399,10 @@ function releaseMedia() {
   activeVideoSwitch = null;
   activeVideoSelectionMode = null;
   activeSubtitleSwitch = null;
-  activeGapRecovery?.destroy();
-  activeGapRecovery = null;
   activeLiveTransitionManager?.destroy();
   activeLiveTransitionManager = null;
-  activeRecordedTransitionManager?.destroy();
-  activeRecordedTransitionManager = null;
+  void activeRecordedPlaybackController?.stop();
+  activeRecordedPlaybackController = null;
   activeSubtitleRenderer?.destroy();
   activeSubtitleRenderer = null;
   internalSeekTarget = null;
@@ -429,8 +418,6 @@ function releaseMedia() {
 }
 
 function stopPlayback(quiet = false, preserveMedia = false) {
-  playbackIntents.invalidate();
-  bufferedSeekFence = null;
   runGeneration += 1;
   activeController?.abort();
   void activeProbe?.cancel();
@@ -443,12 +430,10 @@ function stopPlayback(quiet = false, preserveMedia = false) {
   activeVideoSwitch = null;
   activeVideoSelectionMode = null;
   activeSubtitleSwitch = null;
-  activeGapRecovery?.destroy();
-  activeGapRecovery = null;
   activeLiveTransitionManager?.destroy();
   activeLiveTransitionManager = null;
-  activeRecordedTransitionManager?.destroy();
-  activeRecordedTransitionManager = null;
+  void activeRecordedPlaybackController?.stop();
+  activeRecordedPlaybackController = null;
   activeSubtitleRenderer?.reset();
   currentVideoPresentationHint = null;
   currentVideoProperties = null;
@@ -528,6 +513,9 @@ function monitorPlaybackQuality(generation) {
     const current = elements.video.getVideoPlaybackQuality();
     const dropped = current.droppedVideoFrames - previous.droppedVideoFrames;
     const total = current.totalVideoFrames - previous.totalVideoFrames;
+    activeRecordedPlaybackController?.reportPlaybackQuality({
+      droppedFrames: dropped, totalFrames: total, durationSeconds: 5,
+    });
     if (dropped > 0) {
       const ahead = bufferedAhead();
       const cause = ahead < 0.5 ? 'MSE 供給不足' : 'デコード/描画負荷';
@@ -546,1196 +534,323 @@ function isTimeBuffered(time) {
 }
 
 async function playSource(source, probeResult, generation, startTimeSeconds = 0,
-                          liveMode = false, reuseMedia = false,
-                          initialPlaybackMode = MsePlaybackMode.AUDIO_VIDEO) {
-  const recordingDurationSeconds = liveMode ? Infinity : durationSeconds(probeResult.duration);
-  const playbackRate = liveMode || recordingDurationSeconds < SHORT_RECORDING_THRESHOLD_SECONDS
-    ? LIVE_PLAYBACK_RATE
-    : DEFAULT_PLAYBACK_RATE;
+                          liveMode = false) {
+  const mediaDuration = liveMode ? Infinity : durationSeconds(probeResult.duration);
+  const playbackRate = liveMode || mediaDuration < SHORT_RECORDING_THRESHOLD_SECONDS
+    ? LIVE_PLAYBACK_RATE : DEFAULT_PLAYBACK_RATE;
   elements.video.defaultPlaybackRate = playbackRate;
   elements.video.playbackRate = playbackRate;
-  if (!liveMode && playbackRate === LIVE_PLAYBACK_RATE) {
-    appendLog(`60 秒未満の録画は ${LIVE_PLAYBACK_RATE}× で再生します`);
-  }
-  let mediaSource;
-  const openFreshMediaSource = async () => {
-    if (!BrowserMediaSource) {
-      throw new Error('このブラウザーは Media Source Extensions に対応していません');
-    }
-    activeQueueByType = new Map();
-    if (EXPOSE_DEBUG_QUEUES) globalThis.__tlvdemuxDebugQueues = activeQueueByType;
-    const fresh = new BrowserMediaSource();
-    // Register before attaching the object URL. WebKit may transition to open
-    // while load()/play() is running, before code after those calls resumes.
-    const opened = fresh.readyState === 'open'
-      ? Promise.resolve()
-      : once(fresh, 'sourceopen');
-    fresh.tlvdemuxQueues = activeQueueByType;
-    activeMediaSource = fresh;
-    activeObjectUrl = URL.createObjectURL(fresh);
-    elements.video.replaceChildren();
-    if (typeof globalThis.ManagedMediaSource === 'function' &&
-        fresh instanceof globalThis.ManagedMediaSource) {
-      // WebKit only activates ManagedMediaSource when an AirPlay fallback is
-      // present or remote playback is explicitly disabled. The raw TLV demo
-      // has no native AirPlay source, so opt out before attaching the blob URL.
-      elements.video.disableRemotePlayback = true;
-      appendLog('ManagedMediaSource: Remote Playback を無効化しました');
-    }
-    elements.video.src = activeObjectUrl;
-    elements.video.load();
-    if (typeof globalThis.ManagedMediaSource === 'function' &&
-        fresh instanceof globalThis.ManagedMediaSource) {
-      // iOS starts a ManagedMediaSource only after the media element enters
-      // playback. The element is muted/playsinline, so this is autoplay-safe.
-      elements.video.play().catch(() => {});
-    }
-    await opened;
-    appendLog(`${typeof globalThis.ManagedMediaSource === 'function' &&
-      fresh instanceof globalThis.ManagedMediaSource
-      ? 'ManagedMediaSource' : 'MediaSource'} を使用します`);
-    return fresh;
-  };
-  if (reuseMedia && (!activeMediaSource || !activeObjectUrl)) reuseMedia = false;
-  if (reuseMedia) {
-    mediaSource = activeMediaSource;
-    const registry = mediaSource.tlvdemuxQueues;
-    if (mediaSource.readyState !== 'open' || !(registry instanceof Map) ||
-        registry.size !== mediaSource.sourceBuffers.length) {
-      appendLog(`MediaSource を再構築します (状態=${mediaSource.readyState})`);
-      releaseMedia();
-      reuseMedia = false;
-    } else {
-      activeQueueByType = registry;
-      activeQueues = [...registry.values()];
-      await Promise.all(activeQueues.map(queue => queue.quiesce()));
-    }
-  }
-  if (!reuseMedia) {
-    mediaSource = await openFreshMediaSource();
-  }
-  if (generation !== runGeneration) return;
-  if (mediaSource.readyState !== 'open') {
-    appendLog(`シーク準備中に MediaSource が ${mediaSource.readyState} になったため再構築します`);
-    if (mediaSource === activeMediaSource) releaseMedia();
-    reuseMedia = false;
-    mediaSource = await openFreshMediaSource();
-    if (generation !== runGeneration) return;
-  }
-  const mediaDuration = liveMode ? Infinity : durationSeconds(probeResult.duration);
-  try {
-    mediaSource.duration = mediaDuration;
-  } catch (error) {
-    if (error.name !== 'InvalidStateError') throw error;
-    appendLog(`MediaSource 設定競合 (${error.message}) のため再構築します`);
-    if (mediaSource === activeMediaSource) releaseMedia();
-    reuseMedia = false;
-    mediaSource = await openFreshMediaSource();
-    if (generation !== runGeneration) return;
-    mediaSource.duration = mediaDuration;
-  }
-  for (const queue of activeQueues) queue.resume();
-  createSubtitleRenderer(liveMode);
 
-  let queues = reuseMedia ? new Map(activeQueueByType) : new Map();
-  const requiredTracks = initialPlaybackMode === MsePlaybackMode.AUDIO_ONLY
-    ? ['audio'] : ['video', 'audio'];
+  if (!BrowserMediaSource) {
+    throw new Error('このブラウザーは Media Source Extensions に対応していません');
+  }
+  const mediaSource = new BrowserMediaSource();
+  const opened = mediaSource.readyState === 'open'
+    ? Promise.resolve() : once(mediaSource, 'sourceopen');
+  activeMediaSource = mediaSource;
+  activeObjectUrl = URL.createObjectURL(mediaSource);
+  elements.video.replaceChildren();
+  elements.video.src = activeObjectUrl;
+  elements.video.load();
+  await opened;
+  if (generation !== runGeneration) return;
+  mediaSource.duration = mediaDuration;
+
+  const queues = new Map();
+  activeQueueByType = queues;
+  activeQueues = [];
+  mediaSource.tlvdemuxQueues = queues;
   const tracks = new Map();
   let selectedVideo = null;
-  let selectedVideoTrack = null;
-  let pendingLayerSwitch = null;
-  let switchInFlight = false;
-  let automaticLayerPairSignature = null;
-  let automaticLayerPairUpdate = Promise.resolve();
   let selectedAudio = null;
   let selectedSubtitle = null;
-  let subtitleEventCount = 0;
-  let videoDiscontinuityCount = 0;
-  let audioDiscontinuityCount = 0;
+  let selectedVideoTrack = null;
+  let layerPair = null;
+  let locator = null;
+  let recorded = null;
   let callbackError = null;
-  let recoverableErrors = 0;
-  let incompleteInputTail = false;
-  let played = startTimeSeconds === 0 && reuseMedia && !elements.video.paused;
-  let suppressOutput = startTimeSeconds > 0;
-  let seekSession = null;
-  const reportedDamage = new Set();
-  const externalDurationUs = liveMode ? null : BigInt(Math.round(
-     durationSeconds(probeResult.duration) * 1000000));
-  const presentationStartUs = liveMode ? 0n : timestampMicroseconds(probeResult.presentationStart);
-  const presentationEndUs = liveMode ? null : timestampMicroseconds(probeResult.presentationEnd);
-  let playbackFlow = createMsePlaybackFlowControl({
-    media: playbackMedia,
-    queues,
-    requiredTracks,
-    entryKind: liveMode ? 'live' : startTimeSeconds > 0 ? 'seek' : 'startup',
-    entryTimeSeconds: startTimeSeconds,
-    highSeconds: FORWARD_BUFFER_HIGH_SECONDS,
-    lowSeconds: FORWARD_BUFFER_LOW_SECONDS,
-    backBufferSeconds: BACK_BUFFER_SECONDS,
-    queueHighBytes: SOURCE_QUEUE_HIGH_BYTES,
-  });
+  let played = false;
+  let demuxer = null;
 
-  let msePipeline = null;
-  let liveTransitionManager = null;
-  let recordedTransitionManager = null;
-  let demuxIdentity = null;
-  const resumePlaybackIntent = (target = elements.video.currentTime) =>
-    playbackIntents.begin({generation, demuxIdentity, kind: 'playback', target});
-  let activeDemuxOperation = Promise.resolve();
-  const withActiveDemux = operation => {
-    const pending = activeDemuxOperation.then(operation);
-    activeDemuxOperation = pending.catch(() => {});
-    return pending;
+  const commonAhead = () => {
+    const range = commonBufferedRanges(queues).find(item =>
+      item.start <= elements.video.currentTime + 0.05 &&
+      item.end > elements.video.currentTime + 0.001);
+    return range ? range.end - elements.video.currentTime : 0;
   };
-  const scheduleRecordedRebuild = (mode, target) => {
-    if (liveMode || generation !== runGeneration || !recordedTransitionManager) return null;
-    const token = playbackIntents.begin({
-      generation, demuxIdentity, kind: 'recovery-candidate', target,
-    });
-    appendLog(`${mode === MsePlaybackMode.AUDIO_ONLY ? '純音声' : 'A/V'} candidate を ` +
-      `${target.toFixed(3)}s から準備します（旧 MSE 維持、seek 上限 16 MiB）`);
-    return recordedTransitionManager.transition(mode, target, {token, demuxIdentity}).then(result => {
-      if (playbackIntents.isCurrent(token)) resumePlaybackIntent(target);
-      return result;
-    }).catch(error => {
-      if (error.name !== 'AbortError') {
-        appendLog(`録画 candidate を破棄しました: ${error.message || error}`);
-      }
-      if (playbackIntents.isCurrent(token)) resumePlaybackIntent();
-      throw error;
-    });
-  };
-  const gapRecovery = createDemoPlaybackResilience({
-    media: playbackMedia,
-    mediaSource: () => mediaSource,
-    queues: () => queues,
-    playbackFlow: () => playbackFlow,
-    pipeline: () => msePipeline,
-    presentationStartUs,
-    generation,
-    initialMode: initialPlaybackMode,
-    initialRestoreTarget: initialPlaybackMode === MsePlaybackMode.RESTORING_VIDEO
-      ? startTimeSeconds : null,
-    liveMode,
-    isActive: () => generation === runGeneration && !suppressOutput &&
-      (!seekSession || seekSession.phase === 'complete'),
-    playbackEntryLocked: () => startTimeSeconds > 0 &&
-      (!seekSession || seekSession.phase !== 'complete'),
-    isCurrentLayer: damage => damage.videoTrackId === selectedVideo,
-    switchInFlight: () => switchInFlight,
-    seek: (target, previousTime, detail) => {
-      internalSeekTarget = target;
-      elements.video.currentTime = target;
-      const presented = detail?.lastPresentedTime === null ||
-        detail?.lastPresentedTime === undefined
-        ? '不明' : `${detail.lastPresentedTime.toFixed(3)}s`;
-      appendLog(`${liveMode ? 'Live 復帰' : '再生不能区間をスキップ'} ` +
-        `${previousTime.toFixed(3)}s -> ${target.toFixed(6)}s ` +
-          `(提示済み映像=${presented}, 最初の復旧RAP=${detail.firstRecoveryTime.toFixed(6)}s)`);
-    },
-    statusElement: elements.videoRecoveryStatus,
-    playbackStateElement: elements.probeState,
-    appendLog,
-    scheduleRecordedRebuild,
-    requestLiveTransition: (mode, target) => {
-      const token = playbackIntents.begin({
-        generation, demuxIdentity, kind: 'recovery-candidate', target,
-      });
-      return liveTransitionManager.transition(mode, target, {token, demuxIdentity})
-        .then(result => {
-          if (playbackIntents.isCurrent(token)) resumePlaybackIntent(target);
-          return result;
-        }, error => {
-          if (playbackIntents.isCurrent(token)) resumePlaybackIntent();
-          throw error;
-        });
-    },
-  });
-  activeGapRecovery = gapRecovery;
-  const observeVideoRecovery = createMseVideoRecoveryLogger({
-    gapRecovery,
-    observeConcealment: createRecordedSeekConcealmentLogger({
-      targetSeconds: startTimeSeconds, presentationStartUs,
-      appendLog: message => seekSession?.phase === 'landing' && appendLog(message),
-    }),
-    appendLog,
-  });
-
-  const maybeStartPlayback = () => {
-    if (generation !== runGeneration ||
-        playbackFlow.requiredTracks.some(type => !queues.has(type))) return;
-    if (seekSession && seekSession.phase !== 'complete') return;
-    if (played) return;
+  const maybeStartLivePlayback = () => {
+    if (played || generation !== runGeneration ||
+        !liveMode || !queues.has('video') || !queues.has('audio')) return;
     const started = startMsePlayback({
-      media: elements.video,
-      queues,
-      liveMode,
+      media: elements.video, queues, liveMode: true,
       minimumLiveBufferSeconds: LIVE_STARTUP_BUFFER_SECONDS,
-      requiredTracks: playbackFlow.requiredTracks,
     });
     if (!started) return;
-    if (started.aligned) {
-      internalSeekTarget = started.range.start;
-      appendLog(`再生開始を共通バッファ先頭 ${started.range.start.toFixed(6)}s に合わせます`);
-    }
     played = true;
     monitorPlaybackQuality(generation);
-    elements.probeState.textContent = liveMode ? 'Live 再生中' : '再生中';
-    if (liveMode) appendLog(`Live 共通バッファ ${started.commonAhead.toFixed(1)}s で再生開始 (1×)`);
+    elements.probeState.textContent = 'Live 再生中';
     started.playResult.catch(() => {
       appendLog('自動再生がブロックされました。再生ボタンを押してください');
     });
   };
-  const onMseUpdateEnd = () => {
-    gapRecovery.notifyBufferedChange();
-    maybeStartPlayback();
+  const onUpdateEnd = () => {
+    recorded?.notifyConsumption();
+    maybeStartLivePlayback();
   };
-  for (const queue of activeQueues) queue.onUpdateEnd = onMseUpdateEnd;
-
-  msePipeline = createMseOutputPipeline({
+  const pipeline = createMseOutputPipeline({
     mediaSource,
     media: elements.video,
     queues,
-    requiredTracks,
-    onUpdateEnd: onMseUpdateEnd,
+    requiredTracks: ['video', 'audio'],
+    onUpdateEnd,
     queueOptions: {
-      backBufferSeconds: BACK_BUFFER_SECONDS,
-      forwardBufferHighSeconds: FORWARD_BUFFER_HIGH_SECONDS,
-      getMediaError: media => mediaErrorMessage(media.error),
+      backBufferSeconds: 3,
+      getMediaError: mediaElement => mediaErrorMessage(mediaElement.error),
     },
-    queueFactory(type, init, update, options) {
-      let queue = activeQueueByType.get(type);
-      if (queue && queue.mime !== init.mime) {
-        throw new Error(`シーク中に ${type} codec が変化しました: ${queue.mime} -> ${init.mime}`);
-      }
-      if (!queue) queue = new MseAppendQueue(mediaSource, elements.video, init.mime, update, options);
-      return queue;
-    },
+    queueFactory: (type, init, update, options) =>
+      new MseAppendQueue(mediaSource, elements.video, init.mime, update, options),
     onQueueCreated(type, queue) {
       activeQueueByType.set(type, queue);
       if (!activeQueues.includes(queue)) activeQueues.push(queue);
     },
-    freshRecordedEntryAlignment: !liveMode && startTimeSeconds === 0 && !reuseMedia,
-    recordedPresentationStartUs: liveMode ? null : presentationStartUs,
+    freshRecordedEntryAlignment: !liveMode,
+    recordedPresentationStartUs: liveMode
+      ? null : timestampMicroseconds(probeResult.presentationStart),
     onInitObserved: init => appendLog(`${init.type} 初期化 ${init.mime}`),
-    onInitInstalled(init, _queue, reconfigured) {
+    onInitInstalled(init) {
       const details = init.type === 'video'
         ? `${init.width}x${init.height}`
         : `${init.sampleRate}Hz ${init.channels}ch`;
-      if (reconfigured) {
-        const expression = init.type === 'video' ? / · video [^·]+/ : / · audio [^·]+$/;
-        elements.mediaInfo.textContent = elements.mediaInfo.textContent.replace(
-          expression, ` · ${init.type} ${details}`);
-      } else {
-        elements.mediaInfo.textContent += ` · ${init.type} ${details}`;
-      }
+      elements.mediaInfo.textContent += ` · ${init.type} ${details}`;
     },
     onFirstSegment: type => appendLog(`${type} media segment 開始`),
-    onSplice: splice => appendLog(
-      `${splice.type === 'video' ? '映像' : '音声'}バッファ切替 ` +
-      `source=${splice.sourceBoundarySeconds.toFixed(6)}s ` +
-      `output=${splice.outputBoundarySeconds.toFixed(6)}s`),
   });
-  const commitMseCandidate = async (candidate, sourceLabel) => {
-    const token = candidate.context?.token;
-    if (generation !== runGeneration || !token ||
-        candidate.context.demuxIdentity !== demuxIdentity ||
-        !playbackIntents.isCurrent(token)) {
-      throw new DOMException('Transition superseded.', 'AbortError');
-    }
-    candidate.intentTarget = token.target;
-    await playbackIntents.runCommit(token, async assertCurrent => commitDemoMseCandidate({
-      candidate, sourceLabel, previousMedia: elements.video, previousUrl: activeObjectUrl,
-      previousQueues: queues, liveMode,
-      async beforeCommit(item, previousMedia) {
-        if (liveMode || !item.seekResult) return;
-        await withActiveDemux(async () => {
-          assertCurrent();
-          if (previousMedia.paused) {
-            throw new DOMException('Transition paused by the user.', 'AbortError');
-          }
-          const previousDemuxer = demuxer;
-          const adopted = item.adoptDemuxer(demuxCallbacks); demuxer = adopted.demuxer;
-          assertCurrent();
-          previousDemuxer.delete();
-          for (const track of adopted.tracks) demuxCallbacks.onTrack?.(track);
-          await demuxer.setMseOutputEnabled(true); offset = item.seekResult.nextOffset;
-          demuxIdentity = Object.freeze({generation, demuxer, sourceIdentity: source.identity});
-          activeDemuxIdentity = demuxIdentity;
-          activeDemuxer = demuxer;
-        });
-      },
-      rebind(mediaElement) {
-        elements.video = mediaElement;
-        bindPlaybackMediaEvents(mediaElement);
-        dataBroadcast.setVideoElement(mediaElement);
-        hlgSdrRenderer.setVideoElement(mediaElement);
-      },
-      install(item) {
-        mediaSource = activeMediaSource = item.mediaSource;
-        queues = item.queues;
-        playbackFlow = item.flow;
-        msePipeline = item.pipeline;
-        mediaSource.tlvdemuxQueues = queues;
-        activeObjectUrl = item.url;
-        activeQueueByType = new Map(queues);
-        activeQueues = [...queues.values()];
-      },
-      createSubtitleRenderer, gapRecovery,
-      transitionManagers: [liveTransitionManager, recordedTransitionManager],
-      onQueueUpdate: onMseUpdateEnd, appendLog,
-      assertCurrent,
-    }));
-  };
-  if (liveMode) {
-    liveTransitionManager = createLiveMseTransitionManager({
-      MediaSourceClass: BrowserMediaSource,
-      media: playbackMedia,
-      queueOptions: {
-        backBufferSeconds: BACK_BUFFER_SECONDS,
-        forwardBufferHighSeconds: FORWARD_BUFFER_HIGH_SECONDS,
-        getMediaError: media => mediaErrorMessage(media.error),
-      },
-      isActive: () => generation === runGeneration,
-      openMediaSource: openDetachedMseMedia,
-      commit: candidate => commitMseCandidate(candidate, 'Live'),
-      appendLog,
-    });
-    activeLiveTransitionManager = liveTransitionManager;
-  } else {
-    recordedTransitionManager = createRecordedMseTransitionManager({
-      wasmModule,
-      MediaSourceClass: BrowserMediaSource,
-      source,
-      durationSeconds: mediaDuration,
-      durationUs: externalDurationUs,
-      presentationStartUs,
-      presentationEndUs,
-      media: playbackMedia,
-      queueOptions: {
-        backBufferSeconds: BACK_BUFFER_SECONDS,
-        forwardBufferHighSeconds: FORWARD_BUFFER_HIGH_SECONDS,
-        getMediaError: mediaElement => mediaErrorMessage(mediaElement.error),
-      },
-      isActive: () => generation === runGeneration,
-      openMediaSource: openDetachedMseMedia,
-      commit: candidate => commitMseCandidate(candidate, '録画'),
-      appendLog,
-      selectedVideoPacketId: () => selectedVideoPacketId,
-      selectedAudioPacketId: () => selectedAudioPacketId,
-      toneMappingMode: () => effectiveToneMappingMode(),
-      cachedEstimateOffset: (targetUs, sourceSize) =>
-        demuxer.estimateOffset(targetUs, sourceSize),
-      mseMaxAudioChannels: MSE_MAX_AUDIO_CHANNELS,
-    });
-    activeRecordedTransitionManager = recordedTransitionManager;
-  }
-  const onMseInit = init => {
-    try {
-      if (!playbackIntents.isCurrentDemux(demuxIdentity)) return;
-      liveTransitionManager?.observeInit(init);
-      msePipeline.onMseInit(init);
-    }
-    catch (error) { callbackError = error; }
-  };
-  const onMseSegment = segment => {
-    try {
-      if (!playbackIntents.isCurrentDemux(demuxIdentity)) return;
-      liveTransitionManager?.observeSegment(segment);
-      msePipeline.onMseSegment(segment);
-    }
-    catch (error) { callbackError = error; }
-  };
-  const onMseAudioSplice = splice => {
-    try {
-      if (!playbackIntents.isCurrentDemux(demuxIdentity)) return;
-      liveTransitionManager?.observeSplice('audio', splice);
-      msePipeline.onMseAudioSplice(splice);
-    }
-    catch (error) { callbackError = error; }
-  };
-  const onMseVideoSplice = splice => {
-    try {
-      if (!playbackIntents.isCurrentDemux(demuxIdentity)) return;
-      liveTransitionManager?.observeSplice('video', splice);
-      msePipeline.onMseVideoSplice(splice);
-    }
-    catch (error) { callbackError = error; }
-  };
-  const onMseLayerSwitch = layer => {
-    try {
-      const pending = pendingLayerSwitch;
-      if (!pending?.token || !playbackIntents.isCurrent(pending.token) ||
-          pending.demuxIdentity !== demuxIdentity) return;
-      const video = pending?.video.trackId === layer.videoTrackId
-        ? pending.video : tracks.get(layer.videoTrackId);
-      const audio = pending?.audio.trackId === layer.audioTrackId
-        ? pending.audio : tracks.get(layer.audioTrackId);
-      pendingLayerSwitch = null;
-      switchInFlight = false;
-      resumePlaybackIntent();
-      if (!video || !audio) return;
-      selectedVideo = video.trackId;
-      selectedVideoTrack = video;
-      selectedVideoPacketId = video.packetId;
-      selectedAudio = audio.trackId;
-      selectedAudioPacketId = audio.packetId;
-      selectedAudioGroupId = pending?.groupIdentification ??
-        audio.assetGroups?.find(group =>
-          group.selectionLevel === selectionLevel(video))?.groupIdentification ?? null;
-      renderVideoTracks();
-      renderAudioTracks();
-      appendLog(`${pending ? '' : '自動 · '}${videoTrackLabel(video)} へ切替完了 ` +
-        `(映像=${(Number(layer.videoPresentationTimeUs) / 1000000).toFixed(6)}s, ` +
-        `音声=${(Number(layer.audioPresentationTimeUs) / 1000000).toFixed(6)}s, ` +
-        `packet_id=0x${audio.packetId.toString(16)})`);
-      if (pending?.reason === 'source-damage' ||
-          pending?.reason === 'health-degradation') {
-        elements.playbackNotice.textContent = selectionLevel(video) > 0
-          ? '通常映像の受信状態が悪いため、降雨対応映像で再生しています。通常映像が安定すると自動的に戻ります。'
-          : '通常映像が安定したため、自動的に復帰しました。';
-        elements.playbackNotice.hidden = false;
-      }
-    } catch (error) { callbackError = error; }
-  };
-  const onMseLayerSwitchCancelled = cancelled => {
-    try {
-      const pending = pendingLayerSwitch;
-      if (!pending?.token || !playbackIntents.isCurrent(pending.token) ||
-          pending.demuxIdentity !== demuxIdentity) return;
-      pendingLayerSwitch = null;
-      switchInFlight = false;
-      resumePlaybackIntent();
-      renderVideoTracks();
-      renderAudioTracks();
-      const reason = {
-        'end-of-input': '入力が終了するまでに切替先を準備できませんでした',
-        reset: '再生状態がリセットされました',
-        reposition: '再生位置が変更されました',
-        'selection-changed': '別のトラックが選択されました',
-      }[cancelled.reason] ?? '切替を完了できませんでした';
-      const target = pending?.video ?? tracks.get(cancelled.videoTrackId);
-      appendLog(`${pending ? '' : '自動 · '}${target ? videoTrackLabel(target) : '映像'} ` +
-        `への切替を中止: ${reason}`);
-    } catch (error) { callbackError = error; }
-  };
-  const onMseLayerSwitchStarted = started => {
-    try {
-      const token = playbackIntents.begin({
-        generation,
-        demuxIdentity,
-        kind: 'layer-switch',
-        target: Number(started.earliestPresentationTimeUs) / 1000000,
-      });
-      gapRecovery.notifyTrackSwitch(generation);
-      switchInFlight = true;
-      const video = tracks.get(started.videoTrackId);
-      const audio = tracks.get(started.audioTrackId);
-      if (!video || !audio) return;
-      pendingLayerSwitch = {
-        video,
-        audio,
-        groupIdentification: audio.assetGroups?.find(group =>
-          group.selectionLevel === selectionLevel(video))?.groupIdentification ?? null,
-        reason: started.reason,
-        token,
-        demuxIdentity,
-      };
-      const automatic = started.reason !== 'manual';
-      appendLog(`${automatic ? '自動 · ' : ''}${videoTrackLabel(video)} への切替開始 ` +
-        `(理由=${started.reason}, 最早=${(Number(started.earliestPresentationTimeUs) /
-          1000000).toFixed(6)}s)`);
-      if (started.reason === 'source-damage') {
-        elements.playbackNotice.textContent =
-          '通常映像の受信データが破損しているため、降雨対応映像へ切り替えています。通常映像が安定すると自動的に戻ります。 [TLV_SOURCE_DAMAGE]';
-        elements.playbackNotice.hidden = false;
-      }
-    } catch (error) { callbackError = error; }
-  };
-  const onPlaybackDamage = damage => {
-    try {
-      gapRecovery.reportDamage(damage);
-      if (damage.severity !== 'severe' && damage.action !== 'seek-if-stalled') return;
-      const start = Number(
-        BigInt(damage.startTimeUs ?? damage.endTimeUs) - presentationStartUs,
-      ) / 1000000;
-      const recovery = damage.recoveryTimeUs === null
-        ? null : Number(BigInt(damage.recoveryTimeUs) - presentationStartUs) / 1000000;
-      const key = `${damage.videoTrackId}:${damage.startInputOffset}:${damage.endInputOffset}`;
-      if (reportedDamage.has(key)) return;
-      reportedDamage.add(key);
-      if (recovery !== null) {
-        elements.playbackNotice.textContent =
-          `録画データの一部が破損しているため、再生が止まった場合は ` +
-          `次の利用可能な復旧点へ自動的に移動します。` +
-          ` [${damage.code}]`;
-        const prefetched = start > elements.video.currentTime + 0.5 ? '（先読み）' : '';
-        appendLog(`映像損傷${prefetched} 再生時間 ${start.toFixed(3)}s -> ` +
-          `${recovery.toFixed(3)}s、` +
-          `停止時に復旧点へスキップします [${damage.code}]`);
-      } else {
-        elements.playbackNotice.textContent = liveMode
-          ? `受信データの破損により映像を復号できません。次の復旧点を待っています。 ` +
-            `[${damage.code}]`
-          : `録画末尾の破損により、これ以降の映像を復号できません。 ` +
-            `[${damage.code}]`;
-        appendLog(`映像損傷 復旧点なし [${damage.code}]`);
-      }
-      elements.playbackNotice.hidden = false;
-    } catch (error) { callbackError = error; }
-  };
-  const wantedVideoPacketId = parsePacketId();
-  const initialVideoPacketId = wantedVideoPacketId ?? probeResult.videoPacketId ?? undefined;
-  videoSelectionMode = automaticLayerSwitchEnabled(wantedVideoPacketId)
-    ? 'auto' : 'fixed';
 
-  const refreshAutomaticLayerPair = () => {
-    if (!demuxer) return Promise.resolve(null);
-    const refreshDemuxer = demuxer;
-    const refreshIdentity = demuxIdentity;
-    const currentAudio = [...knownAudioTracks.values()].find(
-      track => track.trackId === selectedAudio,
-    );
-    const pair = selectedVideoTrack && currentAudio ? resolveLayerPair(
-      [...knownVideoTracks.values(), ...knownAudioTracks.values()],
-      selectedVideoTrack, currentAudio, selectedAudioGroupId,
+  const refreshLayerPair = () => {
+    if (!selectedVideoTrack || selectedAudio === null) return;
+    const audio = tracks.get(selectedAudio);
+    layerPair = audio ? resolveLayerPair(
+      [...tracks.values()], selectedVideoTrack, audio, selectedAudioGroupId,
     ) : null;
-    const update = automaticLayerPairUpdate.then(async () => {
-      if (generation !== runGeneration || demuxer !== refreshDemuxer ||
-          demuxIdentity !== refreshIdentity) return automaticLayerPairSignature;
-      const previous = automaticLayerPairSignature;
-      const signature = await configureSdkAutomaticLayerPair(
-        refreshDemuxer, pair, previous, {manual: videoSelectionMode === 'fixed'},
-      );
-      if (generation !== runGeneration || demuxer !== refreshDemuxer ||
-          demuxIdentity !== refreshIdentity) return automaticLayerPairSignature;
-      automaticLayerPairSignature = signature;
-      if (pair?.fallback && signature !== previous) {
-        appendLog(`C++ 降雨対応候補を登録（切替未実行） ` +
-          `0x${pair.preferred.video.packetId.toString(16)} ↔ ` +
-          `0x${pair.fallback.video.packetId.toString(16)}`);
-      }
-      return signature;
-    });
-    automaticLayerPairUpdate = update.catch(error => { callbackError = error; });
-    return update;
   };
-
-  const selectAudioTrack = (track, groupIdentification = null) => {
+  const selectAudio = track => {
+    if (!mseAudioTrackSupported(track)) return false;
     selectedAudio = track.trackId;
     selectedAudioPacketId = track.packetId;
-    selectedAudioGroupId = groupIdentification ??
-      track.assetGroups?.[0]?.groupIdentification ?? null;
+    selectedAudioGroupId = track.assetGroups?.[0]?.groupIdentification ?? null;
     void demuxer.selectTrack('audio', selectedAudio);
+    refreshLayerPair();
     renderAudioTracks();
-    refreshAutomaticLayerPair();
+    return true;
   };
-
-  const synchronizeAudioForVideoLayer = () => {
-    const targetLevel = selectionLevel(selectedVideoTrack);
-    if (targetLevel === null) return;
-    const availableAudioTracks = [...tracks.values()].filter(track => track.kind === 'audio');
-    const currentTrack = availableAudioTracks.find(
-      track => track.trackId === selectedAudio,
-    ) || preferredMseAudioTrack(
-      new Map(availableAudioTracks.map(track => [track.packetId, track])),
-      preferredAudioPacketId,
+  const selectVideo = track => {
+    selectedVideo = track.trackId;
+    selectedVideoTrack = track;
+    selectedVideoPacketId = track.packetId;
+    void demuxer.selectTrack('video', selectedVideo);
+    refreshLayerPair();
+    renderVideoTracks();
+  };
+  const switchVideoMode = async (mode, reason) => {
+    if (!layerPair || mode === 'frozen') return;
+    const target = mode === 'rainfall' ? layerPair.fallback : layerPair.preferred;
+    if (!target || target.video.trackId === selectedVideo) return;
+    const accepted = await demuxer.switchLayer(
+      target.video.trackId, target.audio.trackId,
+      BigInt(Math.round(elements.video.currentTime * 1000000)) +
+        (liveMode ? 0n : timestampMicroseconds(probeResult.presentationStart)),
     );
-    // A coordinated layer switch chooses its audio explicitly. Do not race it
-    // with an independent audio switch merely because track metadata repeated.
-    if (pendingLayerSwitch) return;
-    const corresponding = correspondingAudioTrack(
-      availableAudioTracks, currentTrack, targetLevel, selectedAudioGroupId,
-    );
-    if (!corresponding || !mseAudioTrackSupported(corresponding.track)) return;
-    selectedAudioGroupId = corresponding.groupIdentification;
-    if (corresponding.track.trackId === selectedAudio) return;
-    appendLog(`階層映像 selection_level=${targetLevel} に対応する音声 ` +
-      `packet_id=0x${corresponding.track.packetId.toString(16)} を選択します`);
-    if (activeAudioSwitch) {
-      activeAudioSwitch(
-        corresponding.track.packetId, corresponding.groupIdentification,
-      ).catch(error => {
-        appendLog(`階層音声切替エラー ${error.message || error}`);
-        console.error(error);
-      });
-    } else {
-      selectAudioTrack(corresponding.track, corresponding.groupIdentification);
-    }
+    if (!accepted) return;
+    selectedVideo = target.video.trackId;
+    selectedVideoTrack = target.video;
+    selectedAudio = target.audio.trackId;
+    appendLog(`${reason === 'decoder-performance' ? '復号負荷' : 'source damage'} により ` +
+      `${mode === 'rainfall' ? '降雨対応' : '通常'}映像へ切替`);
   };
 
-  const selectSubtitleTrack = track => {
-    if (subtitleTrackKind(track) !== 'caption') {
-      throw new Error('文字スーパーは字幕トラックとして選択できません');
-    }
-    const previousTrack = tracks.get(selectedSubtitle);
-    selectedSubtitle = track.trackId;
-    selectedSubtitlePacketId = track.packetId;
-    void demuxer.selectTrack('subtitle', selectedSubtitle);
-    if (previousTrack && previousTrack.trackId !== track.trackId) {
-      activeSubtitleRenderer?.clearTrack(previousTrack.packetId);
-    }
-    renderSubtitleTracks();
-  };
-
-  let demuxer;
-  const demuxCallbacks = {
+  const callbacks = {
     mseMaxAudioChannels: MSE_MAX_AUDIO_CHANNELS,
-    onMseVideoStart(detail) {
-      appendLog(`映像開始 HEVC NAL=${detail.nalType} シグナルRAP=${detail.signalledRandomAccess}`);
+    onMseInit(init) { try { pipeline.onMseInit(init); } catch (error) { callbackError = error; } },
+    onMseSegment(segment) {
+      try { pipeline.onMseSegment(segment); } catch (error) { callbackError = error; }
     },
-    onMseVideoRecovery: observeVideoRecovery,
-    onMseVideoProperties(properties) {
-      currentVideoProperties = properties;
-      updateVideoColorStatus();
-      const sourceTransfer = properties.sourceColor?.transfer ?? '不明';
-      const outputTransfer = properties.outputColor?.transfer ?? '不明';
-      appendLog(`映像属性更新 PTS=${properties.presentationTimeUs}us ` +
-        `入力transfer=${sourceTransfer} 出力transfer=${outputTransfer} ` +
-        `SDR解釈=${properties.sdrInHlg ? '有効' : '無効'}`);
+    onMseAudioSplice(splice) {
+      try { pipeline.onMseAudioSplice(splice); } catch (error) { callbackError = error; }
     },
-    onMseInit,
-    onMseSegment,
-    onMseAudioSplice,
-    onMseVideoSplice,
-    onMseLayerSwitchStarted,
-    onMseLayerSwitch,
-    onMseLayerSwitchCancelled,
-    onPlaybackDamage,
+    onMseVideoSplice(splice) {
+      try { pipeline.onMseVideoSplice(splice); } catch (error) { callbackError = error; }
+    },
+    onMseVideoRecovery(event) {
+      if (event.phase === 'stable-rap-committed') recorded?.notifyPreferredStableRap();
+    },
+    onPlaybackDamage() {
+      if (liveMode) return;
+      recorded?.reportSourceDamage();
+    },
     onTrack(track) {
       tracks.set(track.trackId, track);
-      seekSession?.observeTrack(track);
-      appendLog(`トラック ${track.kind} packet_id=0x${track.packetId.toString(16)} codec=${track.codec}`);
       if (track.kind === 'video') {
         knownVideoTracks.set(track.packetId, track);
-        renderVideoTracks();
-        const previousGroup = selectedVideoTrack?.assetGroups?.[0];
-        const matchingReplacement = selectedVideo === null && selectedVideoTrack &&
-          track.contextId === selectedVideoTrack.contextId &&
-          (track.componentTag === selectedVideoTrack.componentTag ||
-            track.assetGroups?.some(group =>
-              group.groupIdentification === previousGroup?.groupIdentification &&
-              group.selectionLevel === previousGroup?.selectionLevel));
         if (selectedVideo === null &&
-            (matchingReplacement ||
-             (initialVideoPacketId === undefined || track.packetId === initialVideoPacketId))) {
-          selectedVideo = track.trackId;
-          selectedVideoTrack = track;
-          selectedVideoPacketId = track.packetId;
-          void demuxer.selectTrack('video', selectedVideo);
-          renderVideoTracks();
-          if (startTimeSeconds > 0 && track.packetId === initialVideoPacketId) {
-            appendLog(`${videoTrackLabel(track)} をシーク用映像層として選択します`);
-          }
-          synchronizeAudioForVideoLayer();
+            (parsePacketId() === undefined || track.packetId === parsePacketId())) {
+          selectVideo(track);
         }
       } else if (track.kind === 'audio') {
         knownAudioTracks.set(track.packetId, track);
-        renderAudioTracks();
-        if (!mseAudioTrackSupported(track)) {
-          appendLog(`音声 packet_id=0x${track.packetId.toString(16)} ` +
-            `${track.audio?.channels ?? '?'}ch は MSE 上限 ` +
-            `${MSE_MAX_AUDIO_CHANNELS}ch を超えるため除外します`);
-          if (selectedAudio === track.trackId) {
-            selectedAudio = null;
-            void demuxer.selectTrack('audio', undefined);
-            const fallback = preferredMseAudioTrack(
-              knownAudioTracks, preferredAudioPacketId,
-            );
-            if (fallback) {
-              appendLog(`互換音声 packet_id=0x${fallback.packetId.toString(16)} に切り替えます`);
-              selectAudioTrack(fallback);
-            }
-          }
-          return;
+        if (selectedAudio === null &&
+            (preferredAudioPacketId === null || track.packetId === preferredAudioPacketId)) {
+          selectAudio(track);
         }
-        const desired = preferredAudioPacketId ?? selectedAudioPacketId;
-        const targetLevel = selectionLevel(selectedVideoTrack);
-        const restoresSelectedGroup = selectedAudio === null && selectedAudioGroupId !== null &&
-          track.assetGroups?.some(group =>
-            group.groupIdentification === selectedAudioGroupId &&
-            (targetLevel === null || group.selectionLevel === targetLevel));
-        if (restoresSelectedGroup ||
-            (selectedAudioGroupId === null &&
-             (selectedAudio === null || track.packetId === desired))) {
-          selectAudioTrack(track, restoresSelectedGroup ? selectedAudioGroupId : null);
-        }
-        synchronizeAudioForVideoLayer();
       } else if (track.kind === 'subtitle' && track.codec === 'ttml') {
-        const trackKind = subtitleTrackKind(track);
-        knownTtmlTracks.set(track.packetId, track);
-        dataBroadcast.captionTrackChanged(track);
-        appendLog(`${trackKind === 'caption' ? '字幕' : '文字スーパー'} ` +
-          `packet_id=0x${track.packetId.toString(16)} type=${track.subtitle.type} ` +
-          `display=${track.subtitle.displayMode}`);
-        if (trackKind === 'caption') {
-          knownSubtitleTracks.set(track.packetId, track);
-          renderSubtitleTracks();
-          const desired = preferredSubtitlePacketId ?? selectedSubtitlePacketId;
-          if (selectedSubtitle === null || track.packetId === desired) selectSubtitleTrack(track);
+        knownSubtitleTracks.set(track.packetId, track);
+        if (selectedSubtitle === null) {
+          selectedSubtitle = track.trackId;
+          selectedSubtitlePacketId = track.packetId;
+          void demuxer.selectTrack('subtitle', selectedSubtitle);
         }
       }
-      refreshAutomaticLayerPair();
+      refreshLayerPair();
+      renderVideoTracks();
+      renderAudioTracks();
+      renderSubtitleTracks();
     },
     onTrackRemoved(track) {
-      seekSession?.observeTrackRemoved(track);
-      if (pendingLayerSwitch &&
-          (track.trackId === pendingLayerSwitch.video.trackId ||
-           track.trackId === pendingLayerSwitch.audio.trackId)) {
-        appendLog(`${videoTrackLabel(pendingLayerSwitch.video)} への切替先が消えたため中止します`);
-        void demuxer.selectTrack('video', selectedVideo).catch(error => {
-          appendLog(`レイヤー切替中止エラー ${error.message || error}`);
-        });
-      }
       tracks.delete(track.trackId);
-      if (track.kind === 'video') {
-        const removedSelectedVideo = selectedVideo === track.trackId;
-        knownVideoTracks.delete(track.packetId);
-        if (removedSelectedVideo) {
-          selectedVideo = null;
-          selectedVideoTrack = null;
-        }
-        renderVideoTracks();
-      } else if (track.kind === 'audio') {
-        knownAudioTracks.delete(track.packetId);
-        if (selectedAudio === track.trackId) selectedAudio = null;
-        renderAudioTracks();
-      } else if (track.kind === 'subtitle') {
-        knownTtmlTracks.delete(track.packetId);
-        knownSubtitleTracks.delete(track.packetId);
-        if (selectedSubtitle === track.trackId) selectedSubtitle = null;
-        renderSubtitleTracks();
-      }
-      if (track.kind === 'video' || track.kind === 'audio') {
-        automaticLayerPairSignature = null;
-        refreshAutomaticLayerPair();
-      }
-    },
-    onBroadcastClock(clock) {
-      try { dataBroadcast.broadcastClockChanged(clock); }
-      catch (error) { callbackError = error; }
-    },
-    onEventInfo(event) {
-      try {
-        if (Number(event.tableId) === 0x8b && event.currentNext &&
-            Number(event.sectionNumber) === 0 &&
-            currentVideoPresentationHint !== event.videoPresentationHint) {
-          currentVideoPresentationHint = event.videoPresentationHint;
-          updateVideoColorStatus();
-          appendLog(event.videoPresentationHint === 'hdr'
-            ? '現在の番組に HDR マークがあります：ブラウザの HLG 表示を維持します'
-            : '現在の番組に明確な SDR/HDR マークがありません：元の映像信号を維持します');
-        }
-        dataBroadcast.eventInformationChanged(event);
-      }
-      catch (error) { callbackError = error; }
-    },
-    onViewerParticipationNotification(notification) {
-      dataBroadcast.viewerParticipationChanged(notification);
-    },
-    onApplicationResourceView(resource) {
-      try { dataBroadcast.resourceChanged(resource); }
-      catch (error) { callbackError = error; }
-    },
-    onApplicationState(state) {
-      try { dataBroadcast.applicationStateChanged(demuxer, state); }
-      catch (error) { callbackError = error; }
-    },
-    onApplicationResourcesReset() {
-      dataBroadcast.resourcesReset();
+      if (track.trackId === selectedVideo) selectedVideo = null;
+      if (track.trackId === selectedAudio) selectedAudio = null;
+      if (track.trackId === selectedSubtitle) selectedSubtitle = null;
+      knownVideoTracks.delete(track.packetId);
+      knownAudioTracks.delete(track.packetId);
+      knownSubtitleTracks.delete(track.packetId);
+      refreshLayerPair();
     },
     onPlaybackAccessUnitView(unit) {
-      try {
-        seekSession?.observeAccessUnit(unit);
-        gapRecovery.observeAccessUnit(unit);
-        const subtitleTrack = tracks.get(unit.trackId);
-        if (!suppressOutput && unit.codec === 'ttml' && subtitleTrack?.kind === 'subtitle') {
-          dataBroadcast.captionDataChanged(unit);
-        }
-        if (unit.trackId === selectedVideo) {
-          if (unit.discontinuity) {
-            videoDiscontinuityCount += 1;
-            appendLog(`video discontinuity #${videoDiscontinuityCount} ` +
-              `PTS=${(Number(unit.ptsValue) / unit.ptsTimescale).toFixed(6)}s ` +
-              `RAP=${unit.randomAccess}`);
-          }
-        } else if (unit.trackId === selectedAudio) {
-          if (unit.discontinuity) {
-            audioDiscontinuityCount += 1;
-            appendLog(`audio discontinuity #${audioDiscontinuityCount} ` +
-              `PTS=${(Number(unit.ptsValue) / unit.ptsTimescale).toFixed(6)}s`);
-          }
-        } else if (unit.codec === 'ttml' && subtitleTrack?.kind === 'subtitle' &&
-            !suppressOutput) {
-          const track = tracks.get(unit.trackId);
-          if (!track || !activeSubtitleRenderer) return;
-          const trackKind = subtitleTrackKind(track);
-          if (!shouldRenderSubtitleTrack(track, selectedSubtitle)) return;
-          if (unit.discontinuity) activeSubtitleRenderer.clearTrack(track.packetId);
-          const subtitleData = {
-            packetId: track.packetId,
-            trackKind,
-            subtitleType: track.subtitle.type,
-            subtitleOperationMode: track.subtitle.operationMode,
-            mpuSequenceNumber: unit.mpuSequenceNumber ?? undefined,
-            pts: timestampMilliseconds(unit.ptsValue, unit.ptsTimescale),
-            dts: timestampMilliseconds(unit.dtsValue, unit.dtsTimescale),
-            subtitleTimingMode: unit.subtitleTimingMode ?? track.subtitle?.timingMode,
-            subtitleOperationMode: unit.subtitleOperationMode ?? track.subtitle.operationMode,
-            subtitleDisplayMode: unit.subtitleDisplayMode ?? track.subtitle.displayMode,
-            subtitleCompressionType: unit.subtitleCompressionType ?? track.subtitle.compressionType,
-            subtitleReferenceStartMediaTime: timestampMilliseconds(
-              unit.subtitleReferenceStartPtsValue,
-              unit.subtitleReferenceStartPtsTimescale,
-            ),
-            data: unit.data,
-            len: unit.data.byteLength,
-            resources: (unit.subtitleResources || []).map(resource => ({
-              index: resource.subsampleNumber,
-              dataType: resource.dataType,
-              data: resource.data,
-            })),
-          };
-          const result = activeSubtitleRenderer.push(subtitleData);
-          subtitleEventCount += 1;
-          if (subtitleEventCount <= 8) {
-            appendLog(`${trackKind === 'caption' ? '字幕' : '文字スーパー'} ` +
-              `#${subtitleEventCount} packet_id=0x${track.packetId.toString(16)}` +
-              ` cues=${result.cueCount} resources=${result.resourceCount}` +
-              ` pts=${subtitleData.pts?.toFixed(3) ?? '—'}ms`);
-          }
-        }
-      } catch (error) { callbackError = error; }
-    },
-    onError(error) {
-      if (!error.recoverable) callbackError = new Error(error.message);
-      else {
-        if (/^incomplete TLV (header|payload) at end of input$/.test(error.message)) {
-          incompleteInputTail = true;
-        }
-        if (recoverableErrors++ < 8) appendLog(`分離警告 @${error.inputOffset}: ${error.message}`);
+      locator?.observeAccessUnit(unit);
+      if (unit.codec === 'ttml' && unit.trackId === selectedSubtitle) {
+        dataBroadcast.captionDataChanged(unit);
       }
     },
+    onBroadcastClock: clock => dataBroadcast.broadcastClockChanged(clock),
+    onEventInfo: event => dataBroadcast.eventInformationChanged(event),
+    onApplicationResourceView: resource => dataBroadcast.resourceChanged(resource),
+    onApplicationState: state => dataBroadcast.applicationStateChanged(demuxer, state),
+    onApplicationResourcesReset: () => dataBroadcast.resourcesReset(),
+    onError(error) {
+      if (!error.recoverable) callbackError = new Error(error.message);
+      else appendLog(`分離警告 @${error.inputOffset}: ${error.message}`);
+    },
   };
-  demuxer = new wasmModule.TlvDemuxer(demuxCallbacks);
-  demuxIdentity = Object.freeze({generation, demuxer, sourceIdentity: source.identity});
-  activeDemuxIdentity = demuxIdentity;
-  const initialPlaybackIntent = playbackIntents.begin({
-    generation,
-    demuxIdentity,
-    kind: startTimeSeconds > 0 ? 'explicit-seek' : 'playback',
-    target: startTimeSeconds,
-  });
-  [currentHlgSdrLut, prototypeHlgSdrLut] = await Promise.all([
-    demuxer.hlgSdrColorLut(), demuxer.hlgSdrPrototypeColorLut(),
-  ]);
-  setHlgSdrLut(currentToneMappingMode === 'prototype'
-    ? prototypeHlgSdrLut : currentHlgSdrLut);
+
+  demuxer = new wasmModule.TlvDemuxer(callbacks);
+  activeDemuxer = demuxer;
+  activeDemuxIdentity = Object.freeze({generation, demuxer, sourceIdentity: source.identity});
   await demuxer.configureTrackSelection({
-    videoPacketId: initialVideoPacketId,
+    videoPacketId: parsePacketId(),
     audioPacketId: preferredAudioPacketId,
     subtitlePacketId: preferredSubtitlePacketId,
   });
   await demuxer.setMseToneMappingMode(effectiveToneMappingMode());
   await demuxer.setSubtitlePassthroughEnabled(true);
-  if (!liveMode) await demuxer.setMseTimestampOffset(-presentationStartUs);
-  await demuxer.setMseOutputEnabled(!suppressOutput);
-  activeDemuxer = demuxer;
-  activeVideoSwitch = async (packetId, earliestUs = null) => {
-    gapRecovery.notifyTrackSwitch(generation);
-    const track = knownVideoTracks.get(packetId);
-    if (!track) throw new Error(`映像 packet_id=0x${packetId.toString(16)} は利用できません`);
-    if (track.trackId === selectedVideo) return;
-    if (pendingLayerSwitch) throw new Error('別の映像レイヤー切替が進行中です');
-    const currentAudio = [...knownAudioTracks.values()].find(
-      candidate => candidate.trackId === selectedAudio,
-    );
-    const corresponding = correspondingAudioTrack(
-      knownAudioTracks.values(), currentAudio, selectionLevel(track), selectedAudioGroupId,
-    );
-    if (!corresponding) {
-      throw new Error('切替先の映像レイヤーに対応する音声がありません');
-    }
-    const mediaEntryUs = BigInt(Math.round((playbackFlow.entryCovered()
-      ? elements.video.currentTime + 0.1
-      : playbackFlow.entryTimeSeconds) * 1000000));
-    const earliest = earliestUs ?? presentationStartUs + mediaEntryUs;
-    pendingLayerSwitch = {
-      video: track,
-      audio: corresponding.track,
-      groupIdentification: corresponding.groupIdentification,
-      reason: 'manual',
-    };
-    const accepted = playbackFlow.entryCovered()
-      ? await demuxer.switchLayer(track.trackId, corresponding.track.trackId, earliest)
-      : await demuxer.switchLayerAtPlaybackEntry(
-        track.trackId, corresponding.track.trackId, mediaEntryUs,
-      );
-    if (!accepted) {
-      pendingLayerSwitch = null;
-      throw new Error('映像レイヤー切替を開始できませんでした');
-    }
-    appendLog(`${videoTrackLabel(track)} を次の RAP で切り替えます`);
-  };
-  activeVideoSelectionMode = async packetId => {
-    if (packetId === null) {
-      elements.videoPacketId.value = '';
-      videoSelectionMode = 'auto';
-      try {
-        await refreshAutomaticLayerPair();
-        renderVideoTracks();
-        appendLog('映像レイヤーを自動選択に戻し、状態を再評価しました');
-      } catch (error) {
-        videoSelectionMode = 'fixed';
-        elements.videoPacketId.value = selectedVideoPacketId === null
-          ? '' : String(selectedVideoPacketId);
-        await refreshAutomaticLayerPair();
-        renderVideoTracks();
-        throw error;
-      }
-      return;
-    }
-    elements.videoPacketId.value = String(packetId);
-    videoSelectionMode = 'fixed';
-    await refreshAutomaticLayerPair();
-    if (pendingLayerSwitch && selectedVideo !== null) {
-      await demuxer.selectTrack('video', selectedVideo);
-    }
-    const target = knownVideoTracks.get(packetId);
-    if (target?.trackId === selectedVideo) {
-      renderVideoTracks();
-      appendLog(`${videoTrackLabel(target)} を固定選択に設定しました`);
-      return;
-    }
-    await activeVideoSwitch(packetId);
-  };
-  activeAudioSwitch = async (packetId, groupIdentification = null, earliestUs = null) => {
-    gapRecovery.notifyTrackSwitch(generation);
-    let track = [...tracks.values()].find(
-      item => item.kind === 'audio' && item.packetId === packetId,
-    );
-    if (!track) throw new Error(`音声 packet_id=0x${packetId.toString(16)} は利用できません`);
-    if (groupIdentification !== null) {
-      const layered = correspondingAudioTrack(
-        knownAudioTracks.values(), track, selectionLevel(selectedVideoTrack), groupIdentification,
-      );
-      if (layered) track = layered.track;
-    }
-    if (!mseAudioTrackSupported(track)) {
-      throw new Error(`音声 packet_id=0x${packetId.toString(16)} の ` +
-        `${track.audio?.channels ?? '?'}ch は MSE 非対応です`);
-    }
-    if (track.trackId === selectedAudio) {
-      if (groupIdentification !== null) selectedAudioGroupId = groupIdentification;
-      return;
-    }
-    if (suppressOutput) {
-      selectAudioTrack(track, groupIdentification);
-      return;
-    }
-    if (generation !== runGeneration) return;
-    const earliest = earliestUs ??
-      presentationStartUs + BigInt(Math.round((elements.video.currentTime + 0.1) * 1000000));
-    const preparationDeadline = earliestUs === null ? 0 : performance.now() + 3000;
-    let boundary = null;
-    do {
-      boundary = await demuxer.switchAudioTrack(track.trackId, earliest);
-      if (boundary !== null || preparationDeadline === 0 ||
-          performance.now() >= preparationDeadline || generation !== runGeneration) break;
-      await new Promise(resolve => setTimeout(resolve, 25));
-    } while (true);
-    if (callbackError) throw callbackError;
-    if (boundary === null) {
-      throw new Error('切替先の音声が現在の再生位置まで準備できていません');
-    }
-    if (generation !== runGeneration) return;
-    selectedAudio = track.trackId;
-    selectedAudioPacketId = track.packetId;
-    selectedAudioGroupId = groupIdentification ??
-      track.assetGroups?.[0]?.groupIdentification ?? null;
-    appendLog(`音声切替 packet_id=0x${track.packetId.toString(16)} (インプレース)`);
-    renderAudioTracks();
-  };
-  activeSubtitleSwitch = packetId => {
-    const track = [...tracks.values()].find(
-      item => item.kind === 'subtitle' && item.subtitle?.type === 0 && item.packetId === packetId,
-    );
-    if (!track) throw new Error(`字幕 packet_id=0x${packetId.toString(16)} は利用できません`);
-    if (track.trackId === selectedSubtitle) return;
-    selectSubtitleTrack(track);
-    appendLog(`字幕切替 packet_id=0x${packetId.toString(16)}`);
-  };
   if (!liveMode) {
+    await demuxer.setMseTimestampOffset(-timestampMicroseconds(probeResult.presentationStart));
     await demuxer.startIndex(false);
-    if (!await demuxer.setIndexDuration(presentationEndUs)) {
-      throw new Error('録画 index に cached duration を設定できませんでした');
-    }
+    await demuxer.setIndexDuration(timestampMicroseconds(probeResult.presentationEnd));
   }
-  elements.mediaInfo.textContent = 'tlvdemux';
-  elements.probeState.textContent = 'バッファリング中';
+  await demuxer.setMseOutputEnabled(true);
 
-  let offset = 0n;
-  let playbackBytes = 0n;
-  let lastReported = 0n;
-  if (startTimeSeconds > 0) {
-    seekSession = createMseRecordedSeekSession({
-      targetTimeSeconds: startTimeSeconds,
-      source,
-      durationUs: externalDurationUs,
-      presentationStartUs,
-      presentationEndUs,
-      demuxer,
-      media: elements.video,
-      queues,
-      flowControl: playbackFlow,
-      signal: activeController?.signal,
-      isActive: () => generation === runGeneration,
-      requiredTracks,
-      headReady: () => requiredTracks.length === 1
-        ? selectedAudio !== null : selectedVideo !== null && selectedAudio !== null,
-      candidateTrack: track => requiredTracks.length === 1
-        ? track.kind === 'audio' && track.trackId === selectedAudio
-        : track.kind === 'video' &&
-          (track.trackId === selectedVideo || sameVideoLayerGroup(selectedVideoTrack, track)),
-      trackPriority: track => track.kind === 'video' ? selectionLevel(track) ?? 0xff : 0,
-      activateVideoTrack: async track => {
-        if (requiredTracks.length === 1) {
-          if (track && track.trackId !== selectedAudio) selectAudioTrack(track);
-          return;
-        }
-        if (!track || track.trackId === selectedVideo) return;
-        selectedVideo = track.trackId;
-        selectedVideoTrack = track;
-        selectedVideoPacketId = track.packetId;
-        await demuxer.selectTrack('video', selectedVideo);
-        const currentAudio = [...tracks.values()].find(
-          candidate => candidate.kind === 'audio' && candidate.trackId === selectedAudio,
-        );
-        const corresponding = correspondingAudioTrack(
-          [...tracks.values()].filter(candidate => candidate.kind === 'audio'),
-          currentAudio, selectionLevel(track), selectedAudioGroupId,
-        );
-        if (corresponding) {
-          selectAudioTrack(corresponding.track, corresponding.groupIdentification);
-          await demuxer.selectTrack('audio', corresponding.track.trackId);
-        }
-        renderVideoTracks();
-        appendLog(`シーク位置では ${videoTrackLabel(track)} を選択します`);
-      },
-      beforeLanding: async () => {
-        suppressOutput = false;
-      },
-      waitForAppends: async () => {
-        await Promise.all([...queues.values()].map(queue => queue.waitStable()));
-      },
-      checkError: () => { if (callbackError) throw callbackError; },
-      onProgress: progress => {
-        playbackBytes = progress.bytesRead;
-        elements.transferred.textContent =
-          `${formatBytes(probeResult.transferred + playbackBytes)} / seek 16 MiB`;
-      },
-    });
-    const result = await seekSession.run();
-    if (generation !== runGeneration) return;
-    offset = result.nextOffset;
-    playbackBytes = result.bytesRead;
-    internalSeekTarget = startTimeSeconds;
-    elements.video.currentTime = startTimeSeconds;
-    if (playbackIntents.isCurrent(initialPlaybackIntent)) {
-      resumePlaybackIntent(startTimeSeconds);
+  activeAudioSwitch = async packetId => {
+    const track = knownAudioTracks.get(packetId);
+    if (!track || !selectAudio(track)) throw new Error('選択した音声は利用できません');
+  };
+  activeVideoSwitch = async packetId => {
+    const track = knownVideoTracks.get(packetId);
+    if (!track) throw new Error('選択した映像は利用できません');
+    selectVideo(track);
+  };
+  activeVideoSelectionMode = value => {
+    if (value === null) {
+      videoSelectionMode = 'auto';
+      return Promise.resolve();
     }
-    maybeStartPlayback();
-    appendLog(`シーク ${startTimeSeconds.toFixed(3)}s -> 推定 ` +
-      `${formatBytes(result.estimateOffset)}、RAP ` +
-      `${(Number(result.rapPresentationTimeUs) / 1000000).toFixed(3)}s @ ` +
-      `${formatBytes(result.restartOffset)}、総読み込み ${formatBytes(result.bytesRead)}`);
-  }
-  if (liveMode && source.stream) {
+    videoSelectionMode = 'fixed';
+    return activeVideoSwitch(value);
+  };
+
+  if (liveMode) {
+    const flow = createMsePlaybackFlowControl({
+      media: playbackMedia, queues, entryKind: 'live',
+      highSeconds: 2, lowSeconds: 1, backBufferSeconds: 3,
+    });
     for await (const data of source.stream()) {
       if (generation !== runGeneration) return;
-      const dataLength = BigInt(data.byteLength);
-      await demuxer.setMsePlaybackPosition(
-        BigInt(Math.round(elements.video.currentTime * 1000000)));
-      if (!await demuxer.push(data)) {
-        throw new Error(`Live 分離入力に失敗しました: ${playbackBytes}`);
-      }
+      if (!await demuxer.push(data)) throw new Error('Live 分離入力に失敗しました');
       if (callbackError) throw callbackError;
-      await playbackFlow.afterPush(data.byteLength, () => generation === runGeneration);
-      playbackBytes += dataLength;
-      elements.transferred.textContent =
-        `${formatBytes(playbackBytes)} / ${playbackFlow.commonAhead().toFixed(1)}s`;
-      if (playbackBytes - lastReported >= 32n * MiB) {
-        appendLog(`Live ${formatBytes(playbackBytes)}、` +
-          `共通バッファ=${playbackFlow.commonAhead().toFixed(1)}s`);
-        lastReported = playbackBytes;
-      }
+      await flow.afterPush(data.byteLength, () => generation === runGeneration);
     }
-  }
-  while ((!liveMode || !source.stream) && offset < source.size && generation === runGeneration) {
-    const pushedBytes = await withActiveDemux(async () => {
-      if (generation !== runGeneration || offset >= source.size) return null;
-      const readOffset = offset;
-      const length = source.size - readOffset < PLAYBACK_CHUNK
-        ? source.size - readOffset : PLAYBACK_CHUNK;
-      const data = await source.read(readOffset, length);
-      if (generation !== runGeneration) return null;
-      if (!data.byteLength) throw new Error(`録画入力が ${readOffset} で終了しました`);
-      await demuxer.setMsePlaybackPosition(
-        BigInt(Math.round(elements.video.currentTime * 1000000)));
-      if (!await demuxer.push(data)) throw new Error(`分離入力に失敗しました: ${readOffset}`);
-      if (callbackError) throw callbackError;
-      const byteLength = BigInt(data.byteLength);
-      offset += byteLength;
-      playbackBytes += byteLength;
-      await playbackFlow.afterPush(data.byteLength, () => generation === runGeneration);
-      return data.byteLength;
+  } else {
+    locator = createMseRecordedWindowLocator({
+      source, demuxer, queues,
+      presentationStartUs: timestampMicroseconds(probeResult.presentationStart),
+      selectedAudioTrack: () => selectedAudio,
+      preferredVideoTrack: () => layerPair?.preferred.video ?? selectedVideo,
+      rainfallVideoTrack: () => layerPair?.fallback?.video ?? null,
+      activateVideoTrack: async mode => {
+        if (mode === 'rainfall') await switchVideoMode('rainfall', 'source-damage');
+      },
+      onProgress: progress => {
+        elements.transferred.textContent =
+          `${formatBytes(probeResult.transferred + progress.bytesRead)} / seek 16 MiB`;
+      },
     });
-    if (pushedBytes === null) return;
-    elements.transferred.textContent = `${formatBytes(probeResult.transferred + playbackBytes)} / ` +
-      `${playbackFlow.commonAhead().toFixed(1)}s`;
-    if (playbackBytes - lastReported >= 32n * MiB || offset === source.size) {
-      appendLog(`再生 ${formatBytes(offset)} / ${formatBytes(source.size)}、` +
-        `共通バッファ=${playbackFlow.commonAhead().toFixed(1)}s`);
-      lastReported = playbackBytes;
-    }
+    recorded = createMseRecordedPlaybackController({
+      source, demuxer, media: elements.video, queues,
+      commonAhead,
+      locateSeekWindow: locator.locate,
+      switchVideoMode,
+      play: () => {
+        const started = startMsePlayback({
+          media: elements.video, queues, liveMode: false,
+        });
+        if (!started) throw new Error('Recorded の共通 A/V entry が再生時刻を覆っていません');
+        return started.playResult;
+      },
+      onPlaybackStart: ({quotaLimited, playResult}) => {
+        played = true;
+        monitorPlaybackQuality(generation);
+        elements.probeState.textContent = '再生中';
+        if (quotaLimited) appendLog('MSE quota 上限で共通 A/V entry から再生を開始');
+        Promise.resolve(playResult).catch(() => {
+          appendLog('自動再生がブロックされました。再生ボタンを押してください');
+        });
+      },
+      onProgress: state => {
+        elements.transferred.textContent =
+          `${formatBytes(BigInt(state.nextOffset))} / ${formatBytes(source.size)} · ` +
+          `共通バッファ=${Number(state.commonAhead).toFixed(1)}s`;
+      },
+      onStateChange: state => {
+        if (state.state === 'error') {
+          elements.playbackNotice.textContent =
+            '録画の音声窓と映像を同時に準備できませんでした。別の位置を選ぶか再試行してください。';
+          elements.playbackNotice.hidden = false;
+        }
+      },
+    });
+    activeRecordedPlaybackController = recorded;
+    await recorded.start(startTimeSeconds);
+    if (generation !== runGeneration) return;
   }
-  if (generation !== runGeneration) return;
-  liveTransitionManager?.destroy();
-  if (activeLiveTransitionManager === liveTransitionManager) {
-    activeLiveTransitionManager = null;
-  }
-  recordedTransitionManager?.destroy();
-  if (activeRecordedTransitionManager === recordedTransitionManager) {
-    activeRecordedTransitionManager = null;
-  }
-  gapRecovery.notifySourceEnded();
+
   await demuxer.flush();
   if (callbackError) throw callbackError;
   if (!liveMode) await demuxer.finalizeIndex();
-  const [seekPointCount, indexState] = await Promise.all([
-    demuxer.seekPointCount(), demuxer.indexState(),
-  ]);
-  appendLog(`索引 RAP ${seekPointCount} 点、状態=${indexState}`);
-  demuxer.delete();
-  activeDemuxer = null;
-  activeAudioSwitch = null;
-  activeVideoSwitch = null;
-  activeVideoSelectionMode = null;
-  activeSubtitleSwitch = null;
-  if (generation !== runGeneration) return;
-  const finalized = await msePipeline.finalize({
-    truncateToCommonEnd: !liveMode && incompleteInputTail,
-  });
-  if (finalized.truncatedTo !== null) {
-    appendLog(`不完全な入力末尾を共通 A/V 終端 ${finalized.truncatedTo.toFixed(6)}s に丸めました`);
-  }
+  maybeStartLivePlayback();
+  await pipeline.finalize();
   elements.probeState.textContent = liveMode ? 'Live 終了' : '読み込み完了';
   appendLog(liveMode ? 'Live ストリームが終了しました' : 'ストリーム終端です');
 }
-
 async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false,
-                           initialLoad = false,
-                           initialPlaybackMode = MsePlaybackMode.AUDIO_VIDEO) {
+                           initialLoad = false) {
   if (initialLoad) dataBroadcast.beginSession();
   if (!reuseMedia) {
     releaseMedia();
@@ -1808,8 +923,7 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false,
       appendLog(`再生時間 ${durationSeconds(probeResult.duration).toFixed(6)}s、検出読み込み ${formatBytes(probeResult.transferred)}`);
     }
     await playSource(
-      source, probeResult, generation, startTimeSeconds, liveMode, reuseMedia,
-      initialPlaybackMode,
+      source, probeResult, generation, startTimeSeconds, liveMode,
     );
   } catch (error) {
     if (generation !== runGeneration || error.name === 'AbortError') return;
@@ -1899,61 +1013,33 @@ function bindPlaybackMediaEvents(media) {
     appendLog(`映像エラー ${message || '不明'}`);
     elements.probeState.textContent = 'デコード失敗';
     elements.mediaInfo.textContent = message || 'MediaElement エラー';
-    activeController?.abort();
+    if (activeRecordedPlaybackController) {
+      activeRecordedPlaybackController.reportPlaybackQuality({
+        totalFrames: 0, droppedFrames: 0, durationSeconds: 0,
+        mediaError: media.error ?? message,
+      });
+    } else {
+      activeController?.abort();
+    }
   }, options);
   media.addEventListener('waiting', () => {
     appendLog(`MediaElement waiting ${media.currentTime.toFixed(3)}s`);
-    activeGapRecovery?.notifyWaiting();
   }, options);
   media.addEventListener('pause', () => {
-    activeGapRecovery?.notifyPlaybackPaused();
     activeLiveTransitionManager?.notifyPlaybackPaused();
-    activeRecordedTransitionManager?.notifyPlaybackPaused();
   }, options);
   media.addEventListener('play', () => {
-    activeGapRecovery?.notifyPlaybackResumed();
     activeLiveTransitionManager?.notifyPlaybackResumed();
-    activeRecordedTransitionManager?.notifyPlaybackResumed();
   }, options);
   media.addEventListener('seeking', () => {
-    if (currentLiveMode || !activeMediaSource) return;
+    if (currentLiveMode || !activeRecordedPlaybackController) return;
     const target = media.currentTime;
     if (internalSeekTarget !== null && Math.abs(target - internalSeekTarget) < 0.1) return;
-    internalSeekTarget = null;
-    activeGapRecovery?.notifyExplicitSeek(runGeneration);
-    activeRecordedTransitionManager?.destroy();
-    activeRecordedTransitionManager = null;
-    const automaticMode = automaticLayerSwitchEnabled(parsePacketId());
-    const generation = runGeneration;
-    const demuxIdentity = activeDemuxIdentity;
-    const token = playbackIntents.begin({
-      generation, demuxIdentity, kind: 'explicit-seek', target,
-    });
-    const fencedDemuxer = activeDemuxer;
-    void fencedDemuxer?.beginMseRecordedSeek().catch(error => {
-      if (playbackIntents.isCurrent(token)) {
-        appendLog(`シーク fence エラー ${error.message || error}`);
-      }
-    });
-    if (isTimeBuffered(target) && !automaticMode) {
-      bufferedSeekFence = {token, target, demuxer: fencedDemuxer, demuxIdentity};
-      return;
-    }
-    bufferedSeekFence = null;
-    activeController?.abort();
-    playbackIntents.schedule(token, 120, async current => {
-      if (!activeMediaSource || generation !== runGeneration ||
-          current.demuxIdentity !== activeDemuxIdentity) return;
-      appendLog(`ユーザーシーク ${target.toFixed(3)}s` +
-        (automaticMode ? '、自動映像層を新しい MSE transaction で再評価します' : ''));
-      // A SourceBuffer that has already changed from the preferred 4K decoder
-      // configuration to the rainfall 1080p configuration is unsafe to reuse
-      // for a backwards seek into 4K. Chromium retains per-frame decoder config
-      // history, and overlapping the old timeline can eventually surface as
-      // VideoToolbox -17694. Rebuild MSE only for this cross-layer seek.
-      const reuseMedia = false;
-      stopPlayback(true, reuseMedia);
-      await loadAndPlay(current.target, reuseMedia);
+    internalSeekTarget = target;
+    appendLog(`ユーザーシーク ${target.toFixed(3)}s（AAC window を先に確定）`);
+    void activeRecordedPlaybackController.seek(target).catch(error => {
+      appendLog(`シークエラー ${error.message || error}`);
+      internalSeekTarget = null;
     });
   }, options);
   media.addEventListener('seeked', () => {
@@ -1961,25 +1047,24 @@ function bindPlaybackMediaEvents(media) {
         Math.abs(media.currentTime - internalSeekTarget) < 0.1) {
       internalSeekTarget = null;
     }
-    const fence = bufferedSeekFence;
-    if (fence && playbackIntents.isCurrent(fence.token) &&
-        fence.demuxIdentity === activeDemuxIdentity &&
-        Math.abs(media.currentTime - fence.target) < 0.1) {
-      bufferedSeekFence = null;
-      void fence.demuxer.finishMseRecordedSeek(
-        BigInt(Math.round(fence.target * 1000000)),
-      ).then(() => {
-        if (!playbackIntents.isCurrent(fence.token)) return;
-        playbackIntents.begin({
-          generation: runGeneration,
-          demuxIdentity: activeDemuxIdentity,
-          kind: 'playback',
-          target: fence.target,
-        });
-      }).catch(error => appendLog(`buffered seek fence エラー ${error.message || error}`));
-    }
-    activeGapRecovery?.notifyBufferedChange();
   }, options);
+  media.addEventListener('timeupdate', () => {
+    activeRecordedPlaybackController?.notifyConsumption();
+  }, options);
+  media.addEventListener('ratechange', () => {
+    activeRecordedPlaybackController?.setPlaybackRate(media.playbackRate);
+  }, options);
+  if (typeof media.requestVideoFrameCallback === 'function') {
+    let frameHandle = null;
+    const observe = (_now, metadata) => {
+      activeRecordedPlaybackController?.notifyPresentedFrame(metadata.mediaTime);
+      frameHandle = media.requestVideoFrameCallback(observe);
+    };
+    frameHandle = media.requestVideoFrameCallback(observe);
+    options.signal.addEventListener('abort', () => {
+      if (frameHandle !== null) media.cancelVideoFrameCallback?.(frameHandle);
+    }, {once: true});
+  }
 }
 
 bindPlaybackMediaEvents(elements.video);

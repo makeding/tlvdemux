@@ -1,3 +1,8 @@
+import {coalesceReadableStream} from './stream-input.mjs';
+
+const RECORDED_STREAM_TARGET_BYTES = 512 * 1024;
+const RECORDED_STREAM_MAX_DELAY_MILLISECONDS = 25;
+
 export class RangeUnsupportedError extends Error {
   constructor(message = 'The source does not support strict HTTP byte ranges.') {
     super(message);
@@ -26,6 +31,26 @@ export function createBlobRecordedSource(blob, {identity = blob, label = blob.na
         throw new RangeError('Blob range exceeds the safe integer range.');
       }
       return new Uint8Array(await blob.slice(start, end).arrayBuffer());
+    },
+    async *stream(offset = 0n, {signal = null} = {}) {
+      if (offset < 0n || offset > BigInt(blob.size)) {
+        throw new RangeError(`Requested Blob stream offset ${offset} exceeds source size ${blob.size}.`);
+      }
+      if (signal?.aborted) throw abortError();
+      const start = Number(offset);
+      if (!Number.isSafeInteger(start)) throw new RangeError('Blob offset exceeds the safe integer range.');
+      const reader = blob.slice(start).stream().getReader();
+      const abort = () => { void reader.cancel(abortError()); };
+      signal?.addEventListener('abort', abort, {once: true});
+      try {
+        yield* coalesceReadableStream(reader, {
+          targetBytes: RECORDED_STREAM_TARGET_BYTES,
+          maxDelayMilliseconds: RECORDED_STREAM_MAX_DELAY_MILLISECONDS,
+        });
+        if (signal?.aborted) throw abortError();
+      } finally {
+        signal?.removeEventListener('abort', abort);
+      }
     },
   };
 }
@@ -79,6 +104,29 @@ export async function openHttpRecordedSource({
         throw new RangeUnsupportedError(`Source size changed from ${size} to ${result.size}.`);
       }
       return result.data;
+    },
+    async *stream(offset = 0n, {signal: streamSignal = null} = {}) {
+      if (offset < 0n || offset > size) {
+        throw new RangeError(`Requested Range stream offset ${offset} exceeds source size ${size}.`);
+      }
+      if (offset === size) return;
+      const requestHeaders = new Headers(headers);
+      requestHeaders.set('Range', `bytes=${offset}-`);
+      const response = await fetchImpl(url, {
+        ...requestInit,
+        headers: requestHeaders,
+        signal: streamSignal ?? signal ?? requestInit.signal,
+      });
+      const returned = parseContentRange(response.headers.get('Content-Range'));
+      if (response.status !== 206 || !returned || returned.start !== offset ||
+          returned.end !== size - 1n || returned.size !== size || !response.body) {
+        await response.body?.cancel();
+        throw new RangeUnsupportedError(`Invalid streaming Range response for bytes ${offset}-.`);
+      }
+      yield* coalesceReadableStream(response.body.getReader(), {
+        targetBytes: RECORDED_STREAM_TARGET_BYTES,
+        maxDelayMilliseconds: RECORDED_STREAM_MAX_DELAY_MILLISECONDS,
+      });
     },
   };
 }

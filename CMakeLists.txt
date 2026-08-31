@@ -70,6 +70,7 @@ add_library(tlvdemux
     src/mse/output_capabilities.cpp
     src/mse/output_format.cpp
     src/mse/output_state.cpp
+    src/mse/recorded_audio_window_index.cpp
     src/mse/video_access_unit_history.cpp
     src/mse/video_layer_state_machine.cpp
     wasm/mse_remuxer.cpp
@@ -277,6 +278,15 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME tlvdemux-playback-damage-tests
         COMMAND tlvdemux-playback-damage-tests)
+
+    add_executable(tlvdemux-recorded-audio-window-index-tests
+        tests/recorded_audio_window_index_tests.cpp)
+    target_link_libraries(tlvdemux-recorded-audio-window-index-tests PRIVATE
+        tlvdemux::tlvdemux)
+    target_include_directories(tlvdemux-recorded-audio-window-index-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    add_test(NAME tlvdemux-recorded-audio-window-index-tests
+        COMMAND tlvdemux-recorded-audio-window-index-tests)
 
     add_executable(tlvdemux-package-api-tests tests/package/main.cpp)
     target_link_libraries(tlvdemux-package-api-tests PRIVATE tlvdemux::tlvdemux)

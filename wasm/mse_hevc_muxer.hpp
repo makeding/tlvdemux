@@ -79,6 +79,22 @@ public:
         if (!timeline_offset_ticks_) return std::nullopt;
         return scaled(*timeline_offset_ticks_, track_->timescale, 1000000);
     }
+    bool repeat_last_closed_picture(const std::int64_t start_time_us,
+                                    const std::int64_t end_time_us) {
+        if (!track_ || !last_closed_picture_ || end_time_us <= start_time_us) return false;
+        const auto offset = timeline_offset_ticks_.value_or(0);
+        auto dts = scaled(start_time_us, 1000000, track_->timescale) + offset;
+        const auto end = scaled(end_time_us, 1000000, track_->timescale) + offset;
+        const auto duration = std::max<std::int64_t>(1, default_duration());
+        while (dts < end) {
+            auto data = last_closed_picture_->data;
+            const auto pts = dts + last_closed_picture_->composition_offset;
+            if (!enqueue({std::move(data), dts, pts, 0, true})) return false;
+            dts = std::min(end, dts + duration);
+        }
+        flush_at(end);
+        return true;
+    }
     void observe_source_damage(const aribtlv::DamageSpan& damage) {
         if (damage.kind != aribtlv::TrackKind::Video ||
             !input_track_id_ || damage.track_id != *input_track_id_ ||
@@ -420,7 +436,6 @@ public:
             if (!all_leading) no_rasl_output_ = false;
         }
         if (has_eos) sequence_start_ = true;
-        if (!output_enabled) return;
 
         std::size_t output_size = 0;
         for (const auto& nalu : nalus) {
@@ -438,6 +453,10 @@ public:
         const auto dts = scaled(unit.dts.value, unit.dts.timescale, track_->timescale) + offset;
         const auto pts = scaled(unit.pts.value, unit.pts.timescale, track_->timescale) + offset;
         if (dts < 0) return;
+        if (irap >= 16 && irap <= 20) {
+            last_closed_picture_ = FrozenPicture{data, pts - dts};
+        }
+        if (!output_enabled) return;
         if (concealment_pending_stable_rap_) {
             if (!has_pending_sample()) {
                 const auto target_pts = scaled(
@@ -465,6 +484,11 @@ public:
     }
 
 private:
+    struct FrozenPicture {
+        Bytes data;
+        std::int64_t composition_offset = 0;
+    };
+
     enum class SourceDamageObservation {
         None,
         WaitingForRap,
@@ -626,6 +650,7 @@ private:
     std::optional<std::int64_t> timeline_offset_ticks_;
     std::optional<std::uint64_t> input_track_id_;
     std::optional<std::int64_t> splice_boundary_us_;
+    std::optional<FrozenPicture> last_closed_picture_;
     bool stage_next_switch_ = false;
     SourceDamageObservation source_damage_observation_ =
         SourceDamageObservation::None;

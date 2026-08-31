@@ -208,6 +208,8 @@ public:
     void clearAutomaticLayerSwitch();
     /** Set the recording-to-MSE timeline offset shared by startup and seeks. */
     void setTimestampOffset(std::int64_t timestamp_offset_us);
+    bool repeatLastClosedVideoWindow(std::int64_t start_time_us,
+                                     std::int64_t end_time_us);
     /** Arm or clear the one-shot source target for recorded-seek concealment. */
     void setRecordedSeekConcealmentTarget(
         std::optional<std::int64_t> presentation_time_us);
