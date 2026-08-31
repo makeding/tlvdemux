@@ -1,5 +1,6 @@
 export const MSE_STARTUP_NO_COMMON_AV = 'MSE_STARTUP_NO_COMMON_AV';
 export const MSE_SEEK_NO_COMMON_AV = 'MSE_SEEK_NO_COMMON_AV';
+export const MSE_RECORDED_SUPPLY_STALLED = 'MSE_RECORDED_SUPPLY_STALLED';
 export const TLV_VIDEO_UNAVAILABLE = 'TLV_VIDEO_UNAVAILABLE';
 export const MSE_SEEK_READ_BUDGET_BYTES = 16 * 1024 * 1024;
 
@@ -33,5 +34,15 @@ export class MseRecordedSeekError extends Error {
     this.name = 'MseRecordedSeekError';
     this.code = MSE_SEEK_NO_COMMON_AV;
     this.reason = reason;
+  }
+}
+
+export class MseRecordedSupplyError extends Error {
+  constructor(reason, diagnostics = null) {
+    super(`${MSE_RECORDED_SUPPLY_STALLED}: ${reason} Playback input stopped; retry playback or select a different recording.`);
+    this.name = 'MseRecordedSupplyError';
+    this.code = MSE_RECORDED_SUPPLY_STALLED;
+    this.reason = reason;
+    this.diagnostics = diagnostics;
   }
 }

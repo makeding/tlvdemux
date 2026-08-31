@@ -9,16 +9,19 @@ export {
 } from './mse-playback-buffer.mjs';
 import {
   MsePlaybackMode,
+  MseRecordedSupplyError,
   MseStartupBufferError,
   TLV_VIDEO_UNAVAILABLE,
 } from './mse-playback-contract.mjs';
 export {createMsePlaybackFlowControl} from './mse-playback-flow-control.mjs';
 export {
   MSE_SEEK_NO_COMMON_AV,
+  MSE_RECORDED_SUPPLY_STALLED,
   MSE_SEEK_READ_BUDGET_BYTES,
   MSE_STARTUP_NO_COMMON_AV,
   MsePlaybackMode,
   MseRecordedSeekError,
+  MseRecordedSupplyError,
   MseStartupBufferError,
   TLV_VIDEO_UNAVAILABLE,
 } from './mse-playback-contract.mjs';

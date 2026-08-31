@@ -113,28 +113,37 @@ assert.match(demo, /const supplyCoordinator = createMseSupplyCoordinator\(\);/,
 assert.doesNotMatch(demo, /forwardBufferHighSeconds/,
   'demo still gives an individual SourceBuffer ownership of the time watermark');
 assert.match(supplyFlow,
-  /startTimeSeconds !== 0 \|\| reuseMedia \|\|[\s\S]{0,100}playbackFlow\.commonAhead\(\) >= playbackFlow\.highWatermarkSeconds\(\)/,
-  'fresh recorded supply coordinator ignores its rate-adjusted common high watermark');
+  /startTimeSeconds !== 0 \|\| reuseMedia \|\|[\s\S]{0,100}playbackFlow\.canStartFreshRecorded\(\)/,
+  'fresh recorded supply coordinator bypasses SDK priming readiness');
 assert.match(demo,
   /supplyCoordinator\.canStartFreshRecorded\([\s\S]{0,180}startMsePlayback/,
   'fresh recorded playback bypasses its rate-adjusted common high watermark');
 assert.match(supplyFlow,
-  /notifyWaiting\(\)[\s\S]{0,220}ahead < low\) flow\.notifyDemand\(\)/,
-  'low-common-A/V waiting does not wake the sequential supply loop');
+  /notifyWaiting\(\)[\s\S]{0,180}const snapshot = flow\.notifyWaiting\(\)/,
+  'ordinary waiting is not reported to the SDK state machine');
+assert.doesNotMatch(supplyFlow, /notifyDemand/,
+  'the demo retains a demand retry path');
 assert.match(supplyFlow,
-  /notifyRateChange\(\)[\s\S]{0,100}flow\?\.notifyDemand\(\)[\s\S]{0,100}maybeStart\?\.\(\)/,
+  /notifyRateChange\(\)[\s\S]{0,100}flow\?\.notifyRateChange\(\)[\s\S]{0,100}maybeStart\?\.\(\)/,
   'a playback-rate change does not re-evaluate supply demand and startup');
 assert.match(supplyFlow,
-  /notifyBufferedChange\(\)[\s\S]{0,100}flow\?\.notifyDemand\(\)/,
+  /notifyBufferedChange\(\)[\s\S]{0,100}flow\?\.notifyBufferedChange\(\)/,
   'SourceBuffer updateend does not wake queue-pressure flow control');
 assert.match(demo,
-  /queueHighBytes: SOURCE_QUEUE_HIGH_BYTES,[\s\S]{0,80}queueHardBytes: SOURCE_QUEUE_HARD_BYTES/,
-  'the demo does not install the bounded soft/hard queue pressure contract');
+  /supply\?\.state === 'rebuffering'[\s\S]{0,120}probeState\.textContent = '再バッファ中'/,
+  'recorded starvation still reports a false playing state');
+assert.match(demo,
+  /queueHighBytes: SOURCE_QUEUE_HIGH_BYTES/,
+  'the demo does not install the strict queue pressure contract');
+assert.doesNotMatch(demo, /SOURCE_QUEUE_HARD_BYTES|queueHardBytes/,
+  'the demo retains the superseded 32 MiB track-skew bypass');
+assert.doesNotMatch(supplyFlow, /\.currentTime\s*=/,
+  'the supply coordinator writes MediaElement.currentTime');
 assert.match(demo, /const BACK_BUFFER_SECONDS = 3;/,
   'recorded 8K playback retains an excessive active SourceBuffer back buffer');
 assert.match(demo,
-  /quota=\$\{detail\.quotaExceededCount\}\/blocked=\$\{detail\.quotaBlocked\}[\s\S]{0,120}batch=\$\{formatBytes\(BigInt\(detail\.appendBatchLimitBytes\)\)\}[\s\S]{0,160}trimRef=\$\{detail\.backBufferReferenceTime/,
-  'waiting diagnostics cannot distinguish quota spin from reclaim or batch progress');
+  /quota=\$\{detail\.quotaExceededCount\}\/blocked=\$\{detail\.quotaBlocked\}[\s\S]{0,160}fragment=\$\{formatBytes\(BigInt\(detail\.pendingFragmentBytes\)\)\}[\s\S]{0,160}trimRef=\$\{detail\.backBufferReferenceTime/,
+  'waiting diagnostics omit the retained original fragment or presented trim clock');
 assert.match(demo,
   /activateManagedMediaSourceForBuffering\(elements\.video, opened\)/,
   'ManagedMediaSource activation can escape the recorded startup watermark gate');
@@ -144,17 +153,16 @@ assert.match(demo,
     `data:text/javascript;base64,${Buffer.from(supplyFlow).toString('base64')}`);
   const coordinator = supplyModule.createMseSupplyCoordinator();
   const playbackFlow = {
-    commonAhead: () => 16,
-    lowWatermarkSeconds: () => 16,
-    highWatermarkSeconds: () => 30,
+    ready: false,
+    canStartFreshRecorded() { return this.ready; },
   };
   assert.equal(coordinator.canStartFreshRecorded({
     liveMode: false, startTimeSeconds: 0, reuseMedia: false, playbackFlow,
-  }), false, '2x fresh playback started from the 16-second low watermark');
-  playbackFlow.commonAhead = () => 30;
+  }), false, 'fresh playback started before preferred or quota-limited priming');
+  playbackFlow.ready = true;
   assert.equal(coordinator.canStartFreshRecorded({
     liveMode: false, startTimeSeconds: 0, reuseMedia: false, playbackFlow,
-  }), true, '2x fresh playback did not start at the 30-second high watermark');
+  }), true, 'fresh playback did not start when the SDK priming rule was satisfied');
 
   let resolveOpened;
   const opened = new Promise(resolve => { resolveOpened = resolve; });

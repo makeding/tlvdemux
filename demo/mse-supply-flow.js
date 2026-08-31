@@ -1,7 +1,6 @@
 /**
  * Coordinates the demo's browser events with the SDK-owned common A/V supply
- * controller.  It deliberately owns no read loop: demand only wakes the loop
- * already blocked by flow control.
+ * controller. It does not authorize reads from MediaElement events.
  */
 export function createMseSupplyCoordinator() {
   let flow = null;
@@ -12,28 +11,30 @@ export function createMseSupplyCoordinator() {
       if (nextMaybeStart) maybeStart = nextMaybeStart;
     },
     release() {
-      flow?.notifyDemand();
+      flow?.fail(new DOMException('Recorded supply released.', 'AbortError'));
       flow = null;
       maybeStart = null;
     },
     canStartFreshRecorded({liveMode, startTimeSeconds, reuseMedia, playbackFlow}) {
       return liveMode || startTimeSeconds !== 0 || reuseMedia ||
-        playbackFlow.commonAhead() >= playbackFlow.highWatermarkSeconds();
+        playbackFlow.canStartFreshRecorded();
     },
     notifyWaiting() {
       if (!flow) return null;
       const ahead = flow.commonAhead();
       const low = flow.lowWatermarkSeconds();
-      if (ahead < low) flow.notifyDemand();
-      return {ahead, low, pressure: flow.queuePressure()};
+      const snapshot = flow.notifyWaiting();
+      return {ahead, low, state: snapshot.state, pressure: flow.queuePressure()};
     },
     notifyBufferedChange() {
-      flow?.notifyDemand();
+      flow?.notifyBufferedChange();
       maybeStart?.();
+      return flow?.state ?? null;
     },
     notifyRateChange() {
-      flow?.notifyDemand();
+      flow?.notifyRateChange();
       maybeStart?.();
+      return flow?.state ?? null;
     },
   };
 }

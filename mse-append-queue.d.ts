@@ -1,8 +1,6 @@
 export interface MseAppendQueueOptions {
-  retryDelayMilliseconds?: number;
   backBufferSeconds?: number;
   trimGranularitySeconds?: number;
-  maximumAppendBatchBytes?: number;
   getBackBufferReferenceTime?: (media: HTMLMediaElement) => number | null;
   getMediaError?: (media: HTMLMediaElement) => string;
   destroyOnSourceClose?: boolean;
@@ -40,16 +38,12 @@ export declare class MseAppendQueue {
   readonly committedMediaRanges: MseBufferedRange[];
   readonly waiters: unknown[];
   error: Error | null;
-  retryTimer: ReturnType<typeof setTimeout> | null;
   trimBeforeTime: number | null;
   forceTrim: boolean;
   quotaBlocked: boolean;
-  quotaRetryAfterBatchReduction: boolean;
   state: 'running' | 'quiescing' | 'idle' | 'destroyed';
   onUpdateEnd: (() => void) | null;
   scheduledTimestampOffsetSeconds: number;
-  maximumAppendBatchBytes: number;
-  currentAppendBatchBytes: number;
   getBackBufferReferenceTime: (media: HTMLMediaElement) => number | null;
   destroyOnSourceClose: boolean;
 
@@ -81,18 +75,20 @@ export declare class MseAppendQueue {
     updateEndCount: number;
     quotaExceededCount: number;
     quotaBlocked: boolean;
-    appendBatchLimitBytes: number;
+    pendingFragmentBytes: number;
     backBufferReferenceTime: number | null;
     pendingTrimBeforeTime: number | null;
-    retryScheduled: boolean;
     millisecondsSinceAppendStarted: number | null;
     millisecondsSinceUpdateEnd: number | null;
     millisecondsSinceQuotaExceeded: number | null;
   };
-  notifyDemand(): boolean;
   trimBackBuffer(force?: boolean): void;
+  canReclaimBackBuffer(): boolean;
   trimBefore(time: number, force?: boolean): void;
+  waitQuotaResolved(): Promise<void>;
   waitBelow(limit: number): Promise<void>;
+  mediaFragmentCount(): number;
+  hasAppendCapacity(): boolean;
   isStable(): boolean;
   waitStable(): Promise<void>;
   isFlowControlled(limit: number): boolean;

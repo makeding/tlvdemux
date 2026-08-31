@@ -146,11 +146,14 @@ const queue = (ranges, committed = ranges, queuedBytes = 0) => ({
   const queues = new Map([['video', video], ['audio', audio]]);
   const flow = createMsePlaybackFlowControl({
     media, queues, requiredTracks: ['audio'],
-    wait: async () => { media.currentTime = 9; },
   });
   assert.deepEqual(flow.entryRange(), {start: 0, end: 16},
     'audio-only entry waited for an empty video queue');
-  await flow.afterPush(2 * 1024 * 1024);
+  const pending = flow.afterPush(2 * 1024 * 1024);
+  await Promise.resolve();
+  media.currentTime = 9;
+  flow.notifyBufferedChange();
+  await pending;
   assert.equal(flow.commonAhead(), 7,
     'audio-only backpressure did not use the audio clock/range');
   const started = startMsePlayback({media, queues, requiredTracks: ['audio']});
@@ -244,15 +247,20 @@ const queue = (ranges, committed = ranges, queuedBytes = 0) => ({
   const queues = new Map([['video', video], ['audio', audio]]);
   let waits = 0;
   const flow = createMsePlaybackFlowControl({
-    media,
-    queues,
-    wait: async () => {
-      waits += 1;
-      media.currentTime = 9;
-    },
+    media, queues,
   });
-  await flow.afterPush(2 * 1024 * 1024);
-  assert.equal(waits, 1, '15-second high-water mark did not pause input');
+  let settled = false;
+  const pending = flow.afterPush(2 * 1024 * 1024).then(result => {
+    settled = true;
+    return result;
+  });
+  await Promise.resolve();
+  assert.equal(settled, false, '15-second high-water mark did not pause input');
+  waits += 1;
+  media.currentTime = 9;
+  flow.notifyBufferedChange();
+  await pending;
+  assert.equal(waits, 1, 'buffer progress did not release the high-water wait');
   assert.equal(commonBufferedAhead(media, queues), 7,
     'input resumed before common A/V fell below the 8-second low-water mark');
 }
@@ -261,60 +269,77 @@ const queue = (ranges, committed = ranges, queuedBytes = 0) => ({
   const media = {currentTime: 0, playbackRate: 2};
   const video = queue([{start: 0, end: 30}]);
   const audio = queue([{start: 0, end: 1.5}], undefined, 5 * 1024 * 1024);
-  let waits = 0;
+  let releaseQueue;
+  let queueWaits = 0;
+  audio.waitFlowControlled = () => {
+    queueWaits += 1;
+    return new Promise(resolve => { releaseQueue = resolve; });
+  };
   const flow = createMsePlaybackFlowControl({
     media,
     queues: new Map([['video', video], ['audio', audio]]),
-    wait: async () => { waits += 1; },
   });
   assert.equal(flow.highWatermarkSeconds(), 30,
     '2x playback did not scale the 15-second wall-clock high watermark');
   assert.equal(flow.lowWatermarkSeconds(), 16,
     '2x playback did not scale the 8-second wall-clock low watermark');
-  const result = await flow.afterPush(2 * 1024 * 1024);
+  const pending = flow.afterPush(2 * 1024 * 1024);
+  await Promise.resolve();
+  assert.equal(queueWaits, 1,
+    'the strict 4 MiB queue watermark was bypassed while common A/V was starved');
+  audio.queuedBytes = 0;
+  releaseQueue();
+  const result = await pending;
   assert.equal(result.commonAhead, 1.5,
     'flow control used one track ahead instead of the common A/V intersection');
-  assert.equal(waits, 0,
-    'the 4 MiB soft queue limit stopped input while common A/V was starved');
+  assert.equal(media.playbackRate, 2, 'queue pressure silently changed 2x playback');
 }
 
 {
   const media = {currentTime: 0, playbackRate: 2};
-  const video = queue([{start: 0, end: 30}]);
-  const audio = queue(
-    [{start: 0, end: 1.5}], undefined, 33 * 1024 * 1024,
-  );
-  let waits = 0;
+  const video = queue([{start: 0, end: 1.1}]);
+  const audio = queue([{start: 0, end: 1.1}]);
+  video.quotaExceededCount = 1;
   const flow = createMsePlaybackFlowControl({
     media,
     queues: new Map([['video', video], ['audio', audio]]),
-    wait: async () => {
-      waits += 1;
-      audio.queuedBytes = 31 * 1024 * 1024;
-    },
   });
-  let trimCalls = 0;
-  audio.trimBefore = () => { trimCalls += 1; };
-  await flow.afterPush(2 * 1024 * 1024);
-  assert.equal(waits, 1,
-    'the 32 MiB hard queue limit did not bound starved sequential input');
-  assert.ok(trimCalls >= 2,
-    'hard-pressure wait did not continue retiring the moving back buffer');
+  assert.equal(flow.canStartFreshRecorded(), true,
+    'quota-limited 2x startup rejected 1.0 second of common entry A/V');
+  assert.equal(media.playbackRate, 2,
+    'quota-limited startup silently downgraded the requested rate');
 }
 
 {
   const media = {currentTime: 15.554, playbackRate: 2};
   const video = queue([{start: 0, end: 25.254}], undefined, 33.2 * 1024 * 1024);
   const audio = queue([{start: 0, end: 25.254}]);
-  let demandPumps = 0;
-  video.notifyDemand = () => { demandPumps += 1; return true; };
   const flow = createMsePlaybackFlowControl({
     media,
     queues: new Map([['video', video], ['audio', audio]]),
   });
-  flow.notifyDemand();
-  assert.equal(demandPumps, 1,
-    '15.554s waiting did not kick the idle video queue with 24 pending operations');
+  const before = media.currentTime;
+  const snapshot = flow.notifyWaiting();
+  assert.equal(snapshot.state, 'priming');
+  assert.equal(media.currentTime, before,
+    'ordinary waiting wrote MediaElement.currentTime');
+}
+
+{
+  const media = {currentTime: 5.1, playbackRate: 2};
+  const forcedTrims = [];
+  const video = queue([{start: 0, end: 15.68}]);
+  const audio = queue([{start: 0, end: 15.68}]);
+  video.quotaBlocked = true;
+  video.trimBackBuffer = force => forcedTrims.push(['video', force]);
+  audio.trimBackBuffer = force => forcedTrims.push(['audio', force]);
+  const flow = createMsePlaybackFlowControl({
+    media,
+    queues: new Map([['video', video], ['audio', audio]]),
+  });
+  flow.notifyBufferedChange();
+  assert.deepEqual(forcedTrims, [['video', true], ['audio', false]],
+    'quota-held video fragment still waited for the ordinary coarse trim boundary');
 }
 
 {
@@ -334,20 +359,14 @@ const queue = (ranges, committed = ranges, queuedBytes = 0) => ({
   const media = {currentTime: 0, playbackRate: 2};
   const video = queue([{start: 0, end: 30}], undefined, 5 * 1024 * 1024);
   const audio = queue([{start: 0, end: 30}]);
-  let signalWaitStarted;
-  const waitStarted = new Promise(resolve => { signalWaitStarted = resolve; });
   const flow = createMsePlaybackFlowControl({
     media,
     queues: new Map([['video', video], ['audio', audio]]),
-    wait: () => {
-      signalWaitStarted();
-      return new Promise(() => {});
-    },
   });
   const pending = flow.afterPush(2 * 1024 * 1024);
-  await waitStarted;
+  await Promise.resolve();
   media.currentTime = 15;
-  flow.notifyDemand();
+  flow.notifyBufferedChange();
   const result = await pending;
   assert.equal(result.commonAhead, 15,
     'low-common-A/V waiting did not release a reader sleeping at the soft queue limit');
@@ -358,17 +377,15 @@ const queue = (ranges, committed = ranges, queuedBytes = 0) => ({
   const video = queue([{start: 0, end: 30}]);
   const audio = queue([{start: 0, end: 30}]);
   const queues = new Map([['video', video], ['audio', audio]]);
-  let waits = 0;
   const flow = createMsePlaybackFlowControl({
     media,
     queues,
-    wait: async () => {
-      waits += 1;
-      media.currentTime = 14.1;
-    },
   });
-  await flow.afterPush(2 * 1024 * 1024);
-  assert.equal(waits, 1, '2x input did not pause at 30 media seconds common A/V ahead');
+  const pending = flow.afterPush(2 * 1024 * 1024);
+  await Promise.resolve();
+  media.currentTime = 14.1;
+  flow.notifyBufferedChange();
+  await pending;
   assert.ok(commonBufferedAhead(media, queues) < 16,
     '2x input resumed before common A/V fell below 16 media seconds');
 }
@@ -379,25 +396,44 @@ const queue = (ranges, committed = ranges, queuedBytes = 0) => ({
     ['video', queue([{start: 0, end: 16}])],
     ['audio', queue([{start: 0, end: 16}])],
   ]);
-  let signalWaitStarted;
-  const waitStarted = new Promise(resolve => { signalWaitStarted = resolve; });
   const flow = createMsePlaybackFlowControl({
     media,
     queues,
-    wait: () => {
-      signalWaitStarted();
-      return new Promise(() => {});
-    },
   });
   const pending = flow.afterPush(2 * 1024 * 1024);
-  await waitStarted;
+  await Promise.resolve();
   media.playbackRate = 2;
-  flow.notifyDemand();
+  flow.notifyRateChange();
   const result = await pending;
   assert.equal(result.commonAhead, 16,
     'ratechange wake altered the common buffered interval');
   assert.equal(flow.highWatermarkSeconds(), 30,
     'ratechange wake did not re-evaluate the dynamic 2x high watermark');
+}
+
+{
+  let currentTime = 0;
+  let currentTimeWrites = 0;
+  const media = {
+    playbackRate: 1,
+    get currentTime() { return currentTime; },
+    set currentTime(value) { currentTimeWrites += 1; currentTime = value; },
+  };
+  const ranges = [{start: 0, end: 4}];
+  const flow = createMsePlaybackFlowControl({
+    media,
+    queues: new Map([
+      ['video', queue(ranges)],
+      ['audio', queue(ranges)],
+    ]),
+  });
+  await flow.afterPush(512 * 1024);
+  flow.notifyWaiting();
+  flow.notifyBufferedChange();
+  flow.notifyRateChange();
+  flow.end();
+  assert.equal(currentTimeWrites, 0,
+    'an ordinary priming/feeding/rebuffering/ended transition wrote currentTime');
 }
 
 console.log('MSE playback flow-control tests passed');

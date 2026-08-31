@@ -193,55 +193,42 @@ staging 済みの splice offset がある場合は必ずそれを優先し、ent
 input budget 内で共通 A/V entry を形成できなかった場合だけです。
 fresh playback の入口より最初の降雨 RAP が後にある場合、splice は RAP の source PTS を維持しつつ、
 replacement A/V 出力を timestamp 0 へ写像する負の MSE timestamp offset を通知します。demo は同じ
-SourceBuffer mutation queue で replacement init／media より前にこの offset を適用します。入力の
-backpressure は parser の進捗ではなく共通 A/V buffered 区間を使用し、wall-clock 再生余裕 15 秒で
-request を止め、8 秒未満で再開します。media-time 上の watermark は現在の正の `playbackRate` を
-掛けて換算し、2x では high 30 秒／low 16 秒とします。この共通 A/V watermark だけが時間による
-append／read throttle を所有します。
-個別の audio／video SourceBuffer がそれぞれの 15 秒 horizon で append を止めてはいけません。そうすると
-同じ multiplex input の後方にあるもう一方の track が per-queue byte limit の後ろに取り残されます。
-queue ごとの 4 MiB は pending append の soft watermark です。共通 A/V ahead が rate 換算後の low watermark
-未満なら、sequential reader はこの soft limit を迂回し、required queue ごとの有界な 32 MiB hard limit まで
-読み進めます。soft limit で既に sleep 中の reader も、低い共通 A/V を報告する `waiting` で直ちに再評価し、
-その queue が 4 MiB 未満になるまで待ってはいけません。per-queue limit は pending append byte だけを制限し、
-共通 A/V が枯渇しているのに source read が停止する状態を許可しません。fresh recorded playback は
-`play()` 前に rate 換算後の共通 high watermark、つまり 1x では 15 media 秒、2x では 30 media 秒へ
-到達しなければなりません。low watermark は再生開始後の供給再開 threshold だけであり、startup target
-ではありません。2x を選択または default にした場合は、両 SourceBuffer に最初の 30 秒が append されるまで
-2x を維持します。4.8 GiB の
-`20260731-102-170000_272b7cdc-8d85-4f77-91df-b935f3ae0e96.mmts` regression では、16 秒の low
-watermark で再生を開始すると、表示映像が約 6 秒で枯渇し、`15.525s` 付近の `waiting` で共通 A/V が約 1 秒、
-pending video が 32.5 MiB になります。これは startup underbuffer failure であり、許容される hard-limit
-steady state ではありません。共通 A/V が rate 換算後の low watermark 未満の `waiting` は
-供給失敗として、queue local timer を待たず同じ sequential source-read loop を直ちに再開します。
-再生入口を覆う共通区間がない間は、進捗なしに読み込める playback input を
-16 MiB に制限し、使い切った場合は録画を EOF まで取得せず `MSE_STARTUP_NO_COMMON_AV` で失敗します。
+SourceBuffer mutation queue で replacement init／media より前にこの offset を適用します。Blob と HTTP
+録画 source は取消可能な `stream(offset, {signal})` を提供し、HTTP は一回の open-ended
+`Range: bytes=<offset>-` request を使います。duration probe と明示 seek だけが有界な
+`read(offset, length)` を使い、seek 完了後は旧 stream を cancel して返された `nextOffset` から一回だけ
+再開します。Recorded と Live は同じ 512 KiB／25 ms coalescer と push runner を共有します。
 
-append queue は隣接して queue 済みの media fragment を最大 8 MiB の一回の append にまとめます。ただし
-initialization segment、codec change、timestamp-offset mutation、splice、remove、trim operation を跨いでは
-いけません。一回の `updateend` は batch 内の元の coded interval を個別に commit し、source gap を跨ぐ
-coverage を作ってはいけません。これにより copy memory を有界にしたまま、8K の最初の 30 秒を数百回の
-個別 `appendBuffer()` transaction に分割しません。
-browser quota pressure 下でも queue は work-conserving でなければなりません。pending operation があり、
-`SourceBuffer.updating === false` かつ current operation がない required queue は直ちに実行可能です。
-playback demand または `waiting` 通知は deferred quota retry を取り消し、同期的に pump します。
-`20260731-102-170000_272b7cdc-8d85-4f77-91df-b935f3ae0e96.mmts` の 2x regression は `15.554s` の
-`waiting` で共通 A/V 9.7 秒、video 33.2 MiB／pending 24、current append なし、SourceBuffer idle、
-video `updateend` 122 回に到達しました。この実行可能な queue を idle のまま残すことは supply state machine
-failure です。quota failure 自体は進捗ではありません。同じ append は、完了した `remove()` が media を
-回収するか、失敗した結合 batch を縮小するまで、timer や demand 通知だけで再試行してはいけません。
-authoritative run が video SourceBuffer idle のまま `quota=330/retry=true` に達したことは、無条件 retry が
-復旧ではなく supply state machine の空転であることを示します。録画 video の trim clock は
-`MediaElement.currentTime` ではなく compositor が最後に実提示した frame とします。2x では media clock が
-約 `15.5s` に達しても表示 frame は約 `5s` に留まり得るため、`currentTime - 3s` まで remove すると自然再生に
-必要な未 decode video を削除します。audio／video の back buffer は有界に保ち、それより前への移動は
-既存の有界 recorded-seek transaction が担当します。
+録画供給は SDK 所有の単一線形 state machine です。`priming` は現在の正の `playbackRate` を掛けた 15 秒を
+優先しますが hard gate ではありません。browser が quota ceiling を示した後は、入口を覆う共通 A/V が
+`0.5 秒 × playbackRate` あれば rate を変えず再生を開始します。`feeding` は `8 秒 × playbackRate` 未満を
+供給し、優先 high watermark より上で停止します。`ratechange` は両 watermark を直ちに再計算します。
+`rebuffering` は最後の提示 frame とユーザーの再生意図を保持し、seek、`currentTime` 書換え、MSE 再構築、
+rate 変更を行いません。MediaElement の `waiting` は消費側の不足を報告するだけで、source read や append
+retry の許可にはなりません。
+
+各 SourceBuffer は進行中 append 一つと pending の元 media fragment 一つだけを所有します。append queue は
+隣接 fragment を結合せず、track skew のために 4 MiB pending limit を緩和しません。
+`QuotaExceededError` では `quota-wait` が source read を止め、失敗した元 fragment を一回だけ保持します。
+compositor が最後に実提示した video frame に基づく安全な `remove()` が完了した場合だけ一回 retry します。
+timer、demand、`waiting` retry はありません。
+その同一 fragment を quota 保持中は、新しく提示された安全な履歴を通常の粗い trim granularity を待たず
+直ちに remove 対象にします。これは回収 timing だけを変え、`remove()` 完了前の append は許可しません。
+安全に回収できる提示履歴がなければ、state、source offset、
+元 fragment size、共通 A/V、presented/current clock、quota counter、直近 progress を含む snapshot と共に
+`MSE_RECORDED_SUPPLY_STALLED` で失敗し、永久 buffer にしません。video は提示済み履歴を 3 秒保持し、古い位置への
+移動は既存の有界 explicit recorded-seek transaction が担当します。再生入口を覆う共通区間がない間は、
+進捗なしに読める input は 16 MiB までで、使い切ると `MSE_STARTUP_NO_COMMON_AV` になります。
+
+権威録画 `20260731-102-170000_272b7cdc-8d85-4f77-91df-b935f3ae0e96.mmts` の実 browser
+acceptance は必須です。File の 1x／2x は従来の停止境界 `15.554s` を越えて EOS まで再生しなければ
+なりません。unit／WASM／native test が成功しても、page が再生中を表示したまま media clock がその
+境界で止まる結果は失敗です。hidden seek、rate downgrade、非 EOS `DEMUXER_UNDERFLOW`、永久的な
+quota wait、供給起因の dropped frame も禁止します。同一 source の Live 1x を対照 run とします。
 
 `ManagedMediaSource` を開くためだけの `play()` は activation であり、fresh recorded playback の開始許可では
 ありません。opened source を返して media append を始める前に element を再び pause し、可視の録画開始は
-共通 A/V high-watermark gate だけが所有します。authoritative Chrome run では 2x playback が `2.428s` に
-有効になり、audio が `BUFFERING_HAVE_ENOUGH` のまま video は `7.246s` に `DEMUXER_UNDERFLOW` へ入りました。
-最初の 30 media 秒を迂回する startup path は startup supply failure です。
+supply state machine の preferred または quota-limited priming rule が所有します。
 
 Live 再生には timestamp 0 の入口はありません。起動入口は現在の stream が生成した最初の共通
 A/V buffered 区間であり、設定した live 起動 buffer が成立した後だけ media clock をその区間へ
@@ -1009,9 +996,10 @@ application resource は、`libaribhtml5` に含まれる同一 origin の Servi
 video-plane 処理、document preparation、内蔵 ROM sound、remote-control の動作も
 `libaribhtml5` が提供し、外部 application URL は引き続き block されます。
 
-ローカル file では `Blob.slice()` を使用します。remote file は正しい `206` と
-`Content-Range` response を返す必要があります。Live mode は duration probe と seek
-を行わず、通常の streaming `GET` を使い、Media Source を上限のない timeline として
+ローカル file の有界 random read は `Blob.slice()`、順次再生は `Blob.stream()` を使用します。
+remote file は一回の open-ended playback Range を含む正しい `206` と `Content-Range`
+response を返す必要があります。Live mode は duration probe と seek を行わず、通常の
+streaming `GET` を使い、Media Source を上限のない timeline として
 公開します。有効な Range response を返さない HTTP URL は自動的に Live mode へ
 fallback します。
 
