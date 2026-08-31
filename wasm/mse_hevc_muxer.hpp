@@ -420,6 +420,11 @@ public:
             if (!all_leading) no_rasl_output_ = false;
         }
         if (has_eos) sequence_start_ = true;
+
+        const auto offset = timeline_offset_ticks_.value_or(0);
+        const auto dts = scaled(unit.dts.value, unit.dts.timescale, track_->timescale) + offset;
+        const auto pts = scaled(unit.pts.value, unit.pts.timescale, track_->timescale) + offset;
+        if (dts < 0) return;
         if (!output_enabled) return;
 
         std::size_t output_size = 0;
@@ -434,10 +439,6 @@ public:
             append(data, unit.data.data() + nalu.offset, nalu.size);
         }
         if (data.empty()) return;
-        const auto offset = timeline_offset_ticks_.value_or(0);
-        const auto dts = scaled(unit.dts.value, unit.dts.timescale, track_->timescale) + offset;
-        const auto pts = scaled(unit.pts.value, unit.pts.timescale, track_->timescale) + offset;
-        if (dts < 0) return;
         if (concealment_pending_stable_rap_) {
             if (!has_pending_sample()) {
                 const auto target_pts = scaled(

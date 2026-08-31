@@ -58,6 +58,7 @@ export interface WorkerDemuxer {
   setMseTimestampOffset(timestampOffsetUs: bigint): Promise<void>;
   setMseRecordedSeekConcealmentTarget(presentationTimeUs: bigint | null): Promise<void>;
   beginMseRecordedSeek(): Promise<void>;
+  flushMseRecordedSeekLanding(): Promise<void>;
   finishMseRecordedSeek(playbackPositionUs: bigint): Promise<void>;
   cancelMseRecordedSeek(): Promise<void>;
   setMsePlaybackPosition(presentationTimeUs: bigint): Promise<void>;

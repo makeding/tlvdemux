@@ -254,8 +254,9 @@ public:
             }
             const bool active = audio_id && unit.track_id == *audio_id &&
                 active_audio == &iterator->second;
+            const bool landing_eligible = active && video.audio_output_ready();
             iterator->second.push(unit, active,
-                                  active && enabled && video.audio_output_ready(),
+                                  landing_eligible && enabled,
                                   video.timeline_offset_us());
             const auto automatic = automatic_layers.observe(unit);
             if (!recorded_seek_active && !pending_layer && automatic.playback_damage) {

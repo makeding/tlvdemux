@@ -328,27 +328,40 @@ unit with a valid timestamp so later sparse probes retain the recording's real
 normalization origin. A RAP before the requested media time is valid
 preroll: seek continues until the common buffered A/V interval covers the requested time,
 then normal 15-second/8-second backpressure resumes. The probe records RAPs only
-through target + 50 ms. It stops as soon as it observes a RAP not later than
-the target within the two-second preroll window; otherwise it stops when the
-observed candidate frontiers pass the target. It selects the closest acceptable
-observed RAP not later than the target without waiting for an unobserved layer.
+through target + 50 ms. It stops when the observed candidate frontiers pass the
+target, then selects the closest acceptable observed RAP not later than the
+target without letting an earlier head-discovery RAP short-circuit the locate
+window or waiting for an unobserved layer.
 Probe interpolation seeds its earlier anchor from the public
 union start at source offset zero, then retains the closest observations before
 and after the target instead of an access-unit history whose anchors can age
-out. The duration-linear estimate is bracketed by a short preceding probe and
-a bounded following probe before normal interpolation. This crosses a
-media-free span without turning into an unbounded sequential scan and preserves
-the source-read budget needed by formal landing. If one side is still
+out. The duration-linear estimate seeds one short preceding sequential locate;
+an isolated read at the estimate is not a bracket and may not consume the shared
+ledger. Real observations from the sequential locate drive later interpolation.
+For a target within the two-second preroll interval of presentation start, the
+already discovered presentation-start RAP is validated directly; a later RAP
+whose restart offset cannot reconstruct mux configuration is not a safe landing.
+This crosses a media-free span without turning into an unbounded sequential scan
+and preserves the source-read budget needed by formal landing. If one side is still
 unavailable, the next bounded probe moves backward. It must not
 bisect toward the file head and spend the shared budget in an unrelated earlier
 interval. A real RAP not later than the target is eligible only when probe
-evidence forms a selected A/V landing plan from its safe restart offset:
-selected AAC must be present on both sides of the target, and the remaining
+evidence forms a selected A/V landing plan from its safe restart offset: the
+remuxer's normalized selected-A/V coded ranges must cross the target and remain
+crossed after one following input chunk seals pending mux samples; the remaining
 shared budget must cover the still-unread span required by formal landing.
 There is no arbitrary one-second minimum and proximity alone is not viability.
+The presentation-start RAP is the sole preroll boundary exception: when its
+video already crosses the target and normalized AAC is short by at most the
+250 ms mux fragment duration, formal replay plus the explicit seek-fragment
+seal remains eligible because no earlier source bytes exist.
 Formal landing remains the final proof that both selected audio and video cover
 the exact target. At the formal landing, the sole reposition uses that RAP's
 safe restart offset.
+After replay reaches the validated endpoint, formal landing explicitly seals
+the remuxer's partial seek fragments once. This publishes already validated
+target-crossing AAC without another source read, end-of-input transition, or
+second reposition.
 Before the sequential landing input, the session gives the HEVC remuxer the
 original source target as a one-shot recorded-seek concealment target. It remains
 armed across out-of-PTS-order input

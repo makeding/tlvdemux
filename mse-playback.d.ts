@@ -268,6 +268,7 @@ export interface MseSeekDemuxer {
   setMseOutputEnabled(enabled: boolean): unknown | Promise<unknown>;
   setMseRecordedSeekConcealmentTarget(presentationTimeUs: bigint | null): unknown | Promise<unknown>;
   beginMseRecordedSeek(): unknown | Promise<unknown>;
+  flushMseRecordedSeekLanding(): unknown | Promise<unknown>;
   finishMseRecordedSeek(playbackPositionUs: bigint): unknown | Promise<unknown>;
   cancelMseRecordedSeek(): unknown | Promise<unknown>;
   setIndexDuration(durationUs: bigint): boolean | Promise<boolean>;

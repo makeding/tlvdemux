@@ -778,6 +778,8 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("setMseRecordedSeekConcealmentTarget",
                   &WasmDemuxer::setMseRecordedSeekConcealmentTarget)
         .function("beginMseRecordedSeek", &WasmDemuxer::beginMseRecordedSeek)
+        .function("flushMseRecordedSeekLanding",
+                  &WasmDemuxer::flushMseRecordedSeekLanding)
         .function("finishMseRecordedSeek", &WasmDemuxer::finishMseRecordedSeek)
         .function("cancelMseRecordedSeek", &WasmDemuxer::cancelMseRecordedSeek)
         .function("setMsePlaybackPosition",

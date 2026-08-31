@@ -241,7 +241,8 @@ try {
         }
       },
       onAccessUnit(unit) {
-        if (session?.phase === 'probe' && unit.codec === 'hevc' &&
+        if (session?.phase === 'probe' &&
+            unit.codec === 'hevc' &&
             (unit.randomAccess || unit.discontinuity) && probeUnits.length < 64) {
           probeUnits.push(`${unit.trackId}:${unit.ptsValue}/${unit.ptsTimescale}:` +
             `${unit.randomAccess}:${unit.restartOffset}:${unit.inputOffset}`);
