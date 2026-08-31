@@ -285,11 +285,13 @@ export function createMseRecordedSeekSession({
       const activeSpan = remainingPlan < PLANNER_WINDOW_BYTES ? remainingPlan : PLANNER_WINDOW_BYTES;
       const locateEnd = candidate + activeSpan < source.size ? candidate + activeSpan : source.size;
       let offset = candidate;
-      while (offset < locateEnd && !planPastTarget()) {
+      // A usable preceding RAP is the only planning result needed.  Reading
+      // on to a later clock frontier cannot strengthen that restart, while it
+      // would take bytes from the one formal landing that proves coverage.
+      while (offset < locateEnd && !bestRap()) {
         const data = await read(offset, locateEnd - offset < chunkSize ? locateEnd - offset : chunkSize);
         await push(data, offset);
         offset += BigInt(data.byteLength);
-        if (bestRap() && planPastTarget()) break;
       }
       const chosen = bestRap();
       // Formal landing, not a probe frontier, is the proof of exact or

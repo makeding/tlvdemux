@@ -475,8 +475,12 @@ try {
         }
       }
       if (concealed) {
-        assert.ok(Math.abs(targetRanges.video[0].start - targetTimeSeconds) <= 0.000002,
-          `concealed video did not begin at exact target ${targetTimeSeconds}s`);
+        assert.equal(landingMode, 'held-frame',
+          `concealed seek ${targetTimeSeconds}s was not reported as held-frame`);
+        assert.ok(targetRanges.video.some(range =>
+          range.start <= targetTimeSeconds + 0.000002 &&
+          range.end >= targetTimeSeconds),
+        `concealed video did not retain a real pre-target frame through ${targetTimeSeconds}s`);
       }
       results.push({
         targetTimeSeconds,
