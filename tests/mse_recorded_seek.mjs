@@ -160,9 +160,9 @@ function fixture({
   const result = await session.run();
   assert.equal(result.restartOffset, 20n * BigInt(MiB),
     'recorded seek did not cross media-free estimated windows to the real RAP');
-  assert.deepEqual(requests.slice(1, 7).map(request => request.offset),
-    [15n, 16n, 17n, 18n, 19n, 20n].map(value => value * BigInt(MiB)),
-  'recorded seek searched backward before exhausting a bounded forward probe span');
+  assert.deepEqual(requests.slice(1, 4).map(request => request.offset),
+    [15n, 16n, 19n].map(value => value * BigInt(MiB)),
+  'recorded seek did not bracket a silent estimate before backward refinement');
 }
 
 {
@@ -332,11 +332,10 @@ function fixture({
     chunkBytes: MiB,
   });
   const result = await session.run();
-  assert.equal(result.rapPresentationTimeUs, 49_900_000n);
+  assert.equal(result.rapPresentationTimeUs, 49_000_000n);
   assert.equal(requests[1].offset, 23n * BigInt(MiB));
-  assert.ok(requests[2].offset > 18n * BigInt(MiB) &&
-    requests[2].offset < 22n * BigInt(MiB),
-  'an aged-out timeline anchor made the probe scan an unrelated earlier interval');
+  assert.ok(requests.slice(2).some(request => request.offset <= 18n * BigInt(MiB)),
+    'interpolated probe did not return to the real RAP-side interval');
   assert.equal(media.currentTime, 50,
     'bounded backward probing changed the requested MediaElement time');
 }

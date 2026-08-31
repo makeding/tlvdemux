@@ -283,7 +283,7 @@ try {
     const source = {
       size: sourceSize,
       async read(offset, length) {
-        requests.push({offset, length});
+        requests.push({phase: session?.phase ?? 'duration', offset, length});
         return readRange(offset, length);
       },
     };
@@ -321,7 +321,7 @@ try {
         result = await session.run();
       } catch (error) {
         error.message += ` target=${targetTimeSeconds}s requests=` + requests.map(request =>
-          `${request.offset}+${request.length}`).join(',') + ` tracks=${JSON.stringify(
+          `${request.phase}:${request.offset}+${request.length}`).join(',') + ` tracks=${JSON.stringify(
             [...tracks.values()].filter(track => track.kind === 'video').map(track => ({
               trackId: String(track.trackId), packetId: String(track.packetId),
               selectionLevel: selectionLevel(track),
@@ -373,6 +373,11 @@ try {
         restartOffset: result.restartOffset.toString(),
         nextOffset: result.nextOffset.toString(),
         bytesRead: result.bytesRead.toString(),
+        requests: requests.map(request => ({
+          phase: request.phase,
+          offset: request.offset.toString(),
+          length: request.length.toString(),
+        })),
         targetRanges,
         concealed,
         videoRecoveryEvents,

@@ -13,6 +13,8 @@
   可定位已观测 RAP 的 restart/input offset 的 probe diagnostics。
 - 稀疏 probe 会先跨过时长线性 estimate 周边不含媒体的有界区间，再向后调整；同时用浏览器
   兼容的音轨选择，在同一个 16 MiB budget 内验证 4.8 GiB 录制的 `110.390227s` 目标。
+- 稀疏 probe 调整期间会为 landing 保留预算，使同一录制在 `197.260826s` 的不连续 landing
+  能继续读过提前结束的 AAC 区间并提交精确的共同 A/V。
 
 ## [0.3.6] - 2026-08-31
 

@@ -18,6 +18,9 @@
   moving the sparse probe backward, and validate the 4.8 GiB recording's
   `110.390227s` target with the same 16 MiB budget and browser-compatible
   audio-track selection.
+- Reserve the landing share of that budget while refining sparse probes, so the
+  same recording's `197.260826s` discontinuous landing can continue past an
+  early AAC interval and commit exact common A/V.
 
 ## [0.3.6] - 2026-08-31
 

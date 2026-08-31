@@ -291,7 +291,12 @@ variable-rate boundary at media time `110.390227s` (`110.924893s` source
 target). A duration-linear byte estimate that lands in repeated media-free
 windows is not progress; the same bounded seek must refine its byte position
 from real timestamped observations and form exact common A/V without scanning
-the recording.
+the recording. The same recording also has a discontinuous A/V landing at
+media time `197.260826s` (`197.795492s` source target): the first landing output
+may contain video through the target while its AAC ends before the target. The
+single formal landing must reserve enough of the same 16 MiB budget to continue
+to the following selected AAC and commit exact common A/V; probe refinement must
+not consume bytes that are required for that sequential landing.
 The monotonic playback-intent token and its single destructive commit lane are
 owned by the public `tlvdemux/mse-playback` SDK, not by the demo. Integrations
 create tokens for explicit seeks, layer switches, and recovery candidates and
@@ -322,10 +327,11 @@ observed RAP not later than the target without waiting for an unobserved layer.
 Probe interpolation seeds its earlier anchor from the public
 union start at source offset zero, then retains the closest observations before
 and after the target instead of an access-unit history whose anchors can age
-out. A probe may move forward through at most half of the shared budget before
-the next interpolation so it can cross a bounded media-free span around a
-variable-rate estimate without becoming an unbounded sequential scan. If one
-side is still unavailable, the next bounded probe moves backward. It must not
+out. The duration-linear estimate is bracketed by a short preceding probe and
+a bounded following probe before normal interpolation. This crosses a
+media-free span without turning into an unbounded sequential scan and preserves
+the source-read budget needed by formal landing. If one side is still
+unavailable, the next bounded probe moves backward. It must not
 bisect toward the file head and spend the shared budget in an unrelated earlier
 interval. The closest real RAP not later than the target is valid preroll;
 there is no arbitrary one-second minimum. Formal landing, not probe distance,
