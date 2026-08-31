@@ -2,8 +2,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {createMsePlaybackFlowControl} from '../mse-playback.mjs';
 
-const [html, css, demo, adapter, liveTransition, recordedTransition, mediaTransaction,
-  supplyFlow] = await Promise.all([
+const [html, css, demo, adapter, liveTransition, recordedTransition, mediaTransaction] = await Promise.all([
   readFile(new URL('../demo/index.html', import.meta.url), 'utf8'),
   readFile(new URL('../demo/demo.css', import.meta.url), 'utf8'),
   readFile(new URL('../demo/demo.js', import.meta.url), 'utf8'),
@@ -11,7 +10,6 @@ const [html, css, demo, adapter, liveTransition, recordedTransition, mediaTransa
   readFile(new URL('../mse-live-transition.mjs', import.meta.url), 'utf8'),
   readFile(new URL('../demo/recorded-mse-transition.js', import.meta.url), 'utf8'),
   readFile(new URL('../demo/mse-media-transaction.js', import.meta.url), 'utf8'),
-  readFile(new URL('../demo/mse-supply-flow.js', import.meta.url), 'utf8'),
 ]);
 
 assert.match(html, /id="videoRecoveryStatus" class="video-recovery-status" role="status"/,
@@ -36,8 +34,6 @@ assert.match(liveTransition, /requestVideoFrameCallback/,
   'Live A\/V candidate commits without actual presented-frame evidence');
 assert.match(mediaTransaction, /candidate\.probeMedia/,
   'demo does not promote the already-buffered Live candidate MediaElement');
-assert.match(mediaTransaction, /get playbackRate\(\) \{ return getMedia\(\)\.playbackRate; \}/,
-  'the flow-control media proxy hides the selected playback rate');
 assert.match(liveTransition, /restoreFocus[\s\S]*focus\(\{preventScroll: true\}\)/,
   'Live candidate promotion loses MediaElement keyboard focus');
 assert.match(liveTransition, /MSE detach algorithm/,
@@ -78,18 +74,9 @@ assert.doesNotMatch(demo, /reposition\(item\.seekResult\.nextOffset/,
   'recorded candidate performs a second reposition after formal landing');
 assert.match(mediaTransaction, /promotedMedia\.currentTime\s*=\s*target;/,
   'recorded candidate does not preserve the exact user-requested time');
-assert.match(mediaTransaction, /candidate\.seekResult\?\.requestedTimeSeconds[\s\S]{0,160}candidate\.target/,
-  'recorded candidate does not prefer the SDK-approved requested seek clock');
 assert.doesNotMatch(mediaTransaction,
   /promotedMedia\.currentTime\s*=\s*Math\.max/,
   'recorded candidate still substitutes a later buffered landing time');
-assert.doesNotMatch(mediaTransaction,
-  /currentTime\s*=\s*candidate\.seekResult\?\.(?:heldFrameTime(?:Seconds|Us)|recoveryTime(?:Seconds|Us))/,
-  'recorded candidate replaces the requested clock with a held frame or recovery time');
-assert.match(recordedTransition, /landingMode\s*=\s*result\.landingMode\s*\?\?\s*'exact'/,
-  'demo does not distinguish exact and held-frame seek results');
-assert.match(recordedTransition, /直前の利用可能な映像を保持[\s\S]{0,120}自動復帰/,
-  'held-frame result does not describe automatic natural-playback recovery');
 assert.ok(demo.split('\n').length - 1 < 2000,
   'demo.js was not kept below 2000 lines after recorded-seek extraction');
 const msePlaybackVersions = [demo, adapter, liveTransition, recordedTransition]
@@ -108,104 +95,6 @@ assert.match(demo, /notifyPlaybackPaused/,
   'demo does not freeze resilience and candidate work on user pause');
 assert.match(mediaTransaction, /waitUntilPlaybackResumed\(\)[\s\S]*mediaElement\.play\(\)/,
   'ManagedMediaSource candidate playback bypasses the user-pause gate');
-assert.match(demo, /const supplyCoordinator = createMseSupplyCoordinator\(\);/,
-  'demo does not retain the active common-A/V supply controller');
-assert.doesNotMatch(demo, /forwardBufferHighSeconds/,
-  'demo still gives an individual SourceBuffer ownership of the time watermark');
-assert.match(supplyFlow,
-  /startTimeSeconds !== 0 \|\| reuseMedia \|\|[\s\S]{0,100}playbackFlow\.canStartFreshRecorded\(\)/,
-  'fresh recorded supply coordinator bypasses SDK priming readiness');
-assert.match(demo,
-  /supplyCoordinator\.canStartFreshRecorded\([\s\S]{0,180}startMsePlayback/,
-  'fresh recorded playback bypasses its rate-adjusted common high watermark');
-assert.match(supplyFlow,
-  /notifyWaiting\(\)[\s\S]{0,180}const snapshot = flow\.notifyWaiting\(\)/,
-  'ordinary waiting is not reported to the SDK state machine');
-assert.doesNotMatch(supplyFlow, /notifyDemand/,
-  'the demo retains a demand retry path');
-assert.match(supplyFlow,
-  /notifyRateChange\(\)[\s\S]{0,100}flow\?\.notifyRateChange\(\)[\s\S]{0,100}maybeStart\?\.\(\)/,
-  'a playback-rate change does not re-evaluate supply demand and startup');
-assert.match(supplyFlow,
-  /notifyBufferedChange\(\)[\s\S]{0,100}flow\?\.notifyBufferedChange\(\)/,
-  'SourceBuffer updateend does not wake queue-pressure flow control');
-assert.match(demo,
-  /supply\?\.state === 'rebuffering'[\s\S]{0,120}probeState\.textContent = '再バッファ中'/,
-  'recorded starvation still reports a false playing state');
-assert.match(demo,
-  /queueHighBytes: SOURCE_QUEUE_HIGH_BYTES/,
-  'the demo does not install the strict queue pressure contract');
-assert.doesNotMatch(demo, /SOURCE_QUEUE_HARD_BYTES|queueHardBytes/,
-  'the demo retains the superseded 32 MiB track-skew bypass');
-assert.doesNotMatch(supplyFlow, /\.currentTime\s*=/,
-  'the supply coordinator writes MediaElement.currentTime');
-assert.match(demo, /const BACK_BUFFER_SECONDS = 3;/,
-  'recorded 8K playback retains an excessive active SourceBuffer back buffer');
-assert.match(demo,
-  /quota=\$\{detail\.quotaExceededCount\}\/blocked=\$\{detail\.quotaBlocked\}[\s\S]{0,160}fragment=\$\{formatBytes\(BigInt\(detail\.pendingFragmentBytes\)\)\}[\s\S]{0,160}trimRef=\$\{detail\.backBufferReferenceTime/,
-  'waiting diagnostics omit the retained original fragment or presented trim clock');
-assert.match(demo,
-  /activateManagedMediaSourceForBuffering\(elements\.video, opened\)/,
-  'ManagedMediaSource activation can escape the recorded startup watermark gate');
-
-{
-  const supplyModule = await import(
-    `data:text/javascript;base64,${Buffer.from(supplyFlow).toString('base64')}`);
-  const coordinator = supplyModule.createMseSupplyCoordinator();
-  const playbackFlow = {
-    ready: false,
-    canStartFreshRecorded() { return this.ready; },
-  };
-  assert.equal(coordinator.canStartFreshRecorded({
-    liveMode: false, startTimeSeconds: 0, reuseMedia: false, playbackFlow,
-  }), false, 'fresh playback started before preferred or quota-limited priming');
-  playbackFlow.ready = true;
-  assert.equal(coordinator.canStartFreshRecorded({
-    liveMode: false, startTimeSeconds: 0, reuseMedia: false, playbackFlow,
-  }), true, 'fresh playback did not start when the SDK priming rule was satisfied');
-
-  let resolveOpened;
-  const opened = new Promise(resolve => { resolveOpened = resolve; });
-  const activationCalls = [];
-  const activation = supplyModule.activateManagedMediaSourceForBuffering({
-    play() { activationCalls.push('play'); return Promise.resolve(); },
-    pause() { activationCalls.push('pause'); },
-  }, opened);
-  await Promise.resolve();
-  assert.deepEqual(activationCalls, ['play'],
-    'ManagedMediaSource was not activated before waiting for sourceopen');
-  resolveOpened();
-  await activation;
-  assert.deepEqual(activationCalls, ['play', 'pause'],
-    'ManagedMediaSource activation escaped as an ungated recorded playback start');
-}
-
-{
-  const media = {currentTime: 0, playbackRate: 2};
-  const ranges = [{start: 0, end: 32}];
-  const supplyQueue = () => ({
-    bufferedRanges: () => ranges,
-    committedRanges: () => ranges,
-    trimBefore() {},
-    waitFlowControlled: async () => {},
-  });
-  const flow = createMsePlaybackFlowControl({
-    media,
-    queues: new Map([
-      ['video', supplyQueue()],
-      ['audio', supplyQueue()],
-    ]),
-  });
-  assert.equal(flow.highWatermarkSeconds(), 30,
-    '2x did not convert the 15-second wall-clock high watermark to 30 media seconds');
-  assert.equal(flow.lowWatermarkSeconds(), 16,
-    '2x did not convert the 8-second wall-clock low watermark to 16 media seconds');
-  media.playbackRate = 1;
-  assert.equal(flow.highWatermarkSeconds(), 15,
-    'the supply controller did not read the changed playback rate dynamically');
-  assert.equal(flow.lowWatermarkSeconds(), 8,
-    'the supply controller retained stale low-watermark rate state');
-}
 
 {
   const executableAdapter = adapter

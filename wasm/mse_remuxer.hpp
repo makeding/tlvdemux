@@ -36,11 +36,8 @@ public:
     void suspendAutomaticLayerSwitch(tlvdemux::MseAutomaticLayerPair pair);
     void clearAutomaticLayerSwitch();
     void setTimestampOffset(std::int64_t timestamp_offset_us);
-    // `presentation_time_us` is in the recording source timeline, before MSE
-    // timestamp-offset mapping, matching recordedSeekLandingEvidence().
     void setRecordedSeekConcealmentTarget(
         std::optional<std::int64_t> presentation_time_us);
-    tlvdemux::MseRecordedSeekLandingEvidence recordedSeekLandingEvidence() const;
     void beginMseRecordedSeek();
     void finishMseRecordedSeek(std::int64_t playback_position_us);
     void cancelMseRecordedSeek();

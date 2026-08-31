@@ -86,11 +86,6 @@ assert.ok(modulePathArgument && mediaPathArgument,
   'usage: node tests/wasm_seek_smoke.mjs TLVDEMUX_JS SAMPLE [TARGET_S ...]');
 const targets = (targetArguments.length ? targetArguments : ['60', '200', '380']).map(Number);
 assert.ok(targets.every(Number.isFinite), 'invalid seek target');
-const readBudgetBytes = process.env.TLVDEMUX_SEEK_BUDGET_BYTES === undefined
-  ? MSE_SEEK_READ_BUDGET_BYTES : Number(process.env.TLVDEMUX_SEEK_BUDGET_BYTES);
-const authoritativeHeldFrameTargets = basename(mediaPathArgument) ===
-  '20260731-102-170000_272b7cdc-8d85-4f77-91df-b935f3ae0e96.mmts'
-  ? new Set([139.276545, 150.886703]) : new Set();
 
 const require = createRequire(import.meta.url);
 const createTlvDemuxModule = require(resolve(modulePathArgument));
@@ -199,11 +194,9 @@ try {
     const tracks = new Map();
     const ranges = {video: [], audio: []};
     const declaredRanges = {video: [], audio: []};
-    const rawSegments = {video: [], audio: []};
     const timescales = {video: null, audio: null};
     const splices = {video: [], audio: []};
     const videoRecoveryEvents = [];
-    const landingVideoUnits = [];
     const offsets = {video: -presentationStartUs, audio: -presentationStartUs};
     const queues = new Map([
       ['video', queue(ranges.video)],
@@ -215,15 +208,9 @@ try {
     let selectedVideoTrack = null;
     let callbackError = null;
     const probeUnits = [];
-    const probeClocks = [];
-    const repositionCalls = [];
-    const concealmentTargets = [];
-    const previousSyncCalls = [];
-    let readAttemptedAfterBudget = false;
     let session;
     let demuxer;
     demuxer = new module.TlvDemuxer({
-      mseMaxAudioChannels: 8,
       onTrack(track) {
         tracks.set(track.trackId, track);
         session?.observeTrack(track);
@@ -235,8 +222,7 @@ try {
           // callback acknowledgement must be idempotent during a seek landing.
           demuxer.selectTrack('video', selectedVideo);
           demuxer.selectTrack('video', selectedVideo);
-        } else if (track.kind === 'audio' && selectedAudio === null &&
-            (track.audio?.channels === 0 || track.audio?.channels <= 8)) {
+        } else if (track.kind === 'audio' && selectedAudio === null) {
           selectedAudio = track.trackId;
           demuxer.selectTrack('audio', selectedAudio);
           demuxer.selectTrack('audio', selectedAudio);
@@ -253,27 +239,9 @@ try {
         }
       },
       onAccessUnit(unit) {
-        if ((session?.phase === 'probe' || session?.phase === 'backward-plan') &&
-            unit.codec === 'hevc' && probeUnits.length < 64) {
+        if (session?.phase === 'probe' && unit.codec === 'hevc' && probeUnits.length < 32) {
           probeUnits.push(`${unit.trackId}:${unit.ptsValue}/${unit.ptsTimescale}:` +
-            `${unit.randomAccess}:${unit.restartOffset}:${unit.inputOffset}:` +
-            `${session.bytesRead}`);
-        }
-        if (session?.phase === 'single-landing' && unit.codec === 'hevc' &&
-            landingVideoUnits.length < 64) {
-          landingVideoUnits.push({
-            trackId: unit.trackId,
-            ptsValue: unit.ptsValue,
-            ptsTimescale: unit.ptsTimescale,
-            dtsValue: unit.dtsValue ?? null,
-            dtsTimescale: unit.dtsTimescale ?? null,
-            randomAccess: unit.randomAccess,
-            discontinuity: unit.discontinuity ?? null,
-            discontinuityReason: unit.discontinuityReason ?? unit.reason ?? null,
-            inputOffset: unit.inputOffset,
-            restartOffset: unit.restartOffset,
-            bytesRead: session.bytesRead,
-          });
+            `${unit.randomAccess}:${unit.restartOffset}`);
         }
         session?.observeAccessUnit(unit);
       },
@@ -286,21 +254,11 @@ try {
         splices.audio.push(splice);
       },
       onMseVideoRecovery(event) { videoRecoveryEvents.push(event); },
-      onBroadcastClock(clock) {
-        if ((session?.phase === 'probe' || session?.phase === 'backward-plan') &&
-            probeClocks.length < 64) {
-          probeClocks.push(`${clock.mediaTimeValue}/${clock.mediaTimeTimescale}:` +
-            `${clock.inputOffset}:${session.bytesRead}`);
-        }
-      },
       onMseInit(init) {
         if (init.type in timescales) timescales[init.type] = initTimescale(init.data);
       },
       onMseSegment(segment) {
         if (!(segment.type in ranges)) return;
-        rawSegments[segment.type].push({
-          startTimeUs: BigInt(segment.startTimeUs), endTimeUs: BigInt(segment.endTimeUs),
-        });
         assert.ok(timescales[segment.type], `${segment.type} media preceded its init`);
         mergeRange(declaredRanges[segment.type], {
           start: Number(BigInt(segment.startTimeUs) + offsets[segment.type]) / 1000000,
@@ -314,24 +272,6 @@ try {
         if (!error.recoverable) callbackError = new Error(error.message);
       },
     });
-    const reposition = demuxer.reposition.bind(demuxer);
-    demuxer.reposition = async (...args) => {
-      repositionCalls.push({phase: session?.phase ?? 'bootstrap', args});
-      return reposition(...args);
-    };
-    const setConcealmentTarget = demuxer.setMseRecordedSeekConcealmentTarget.bind(demuxer);
-    demuxer.setMseRecordedSeekConcealmentTarget = async target => {
-      concealmentTargets.push(target);
-      return setConcealmentTarget(target);
-    };
-    if (typeof demuxer.previousSync === 'function') {
-      const previousSync = demuxer.previousSync.bind(demuxer);
-      demuxer.previousSync = async target => {
-        const point = await previousSync(target);
-        previousSyncCalls.push({phase: session?.phase ?? 'bootstrap', target, point});
-        return point;
-      };
-    }
     demuxer.startIndex(false);
     const media = {currentTime: targetTimeSeconds};
     const flowControl = createMsePlaybackFlowControl({
@@ -340,9 +280,7 @@ try {
     const source = {
       size: sourceSize,
       async read(offset, length) {
-        const alreadyRequested = requests.reduce((sum, request) => sum + request.length, 0n);
-        if (alreadyRequested >= BigInt(readBudgetBytes)) readAttemptedAfterBudget = true;
-        requests.push({phase: session?.phase ?? 'duration', offset, length});
+        requests.push({offset, length});
         return readRange(offset, length);
       },
     };
@@ -373,90 +311,38 @@ try {
         }
       },
       checkError: () => { if (callbackError) throw callbackError; },
-      readBudgetBytes,
     });
     try {
       let result;
       try {
         result = await session.run();
       } catch (error) {
-        const landingEvidence = typeof demuxer.getMseRecordedSeekLandingEvidence === 'function'
-          ? await demuxer.getMseRecordedSeekLandingEvidence() : null;
         error.message += ` target=${targetTimeSeconds}s requests=` + requests.map(request =>
-          `${request.phase}:${request.offset}+${request.length}`).join(',') + ` tracks=${JSON.stringify(
+          `${request.offset}+${request.length}`).join(',') + ` tracks=${JSON.stringify(
             [...tracks.values()].filter(track => track.kind === 'video').map(track => ({
               trackId: String(track.trackId), packetId: String(track.packetId),
               selectionLevel: selectionLevel(track),
             })))} ranges=${JSON.stringify(ranges)} recovery=${JSON.stringify(videoRecoveryEvents,
               (_, value) => typeof value === 'bigint' ? value.toString() : value)} ` +
-          `declaredRanges=${JSON.stringify(declaredRanges)} units=${probeUnits.join(',')} ` +
-          `clocks=${probeClocks.join(',')} presentationStartUs=${presentationStartUs} ` +
-          `repositions=${JSON.stringify(repositionCalls,
-            (_, value) => typeof value === 'bigint' ? value.toString() : value)} ` +
-          `rawSegments=${JSON.stringify(rawSegments,
-            (_, value) => typeof value === 'bigint' ? value.toString() : value)} ` +
-          `splices=${JSON.stringify(splices,
-            (_, value) => typeof value === 'bigint' ? value.toString() : value)} ` +
-          `landingVideoUnits=${JSON.stringify(landingVideoUnits,
-            (_, value) => typeof value === 'bigint' ? value.toString() : value)} ` +
-          `concealmentTargets=${concealmentTargets.join(',')} landingEvidence=${JSON.stringify(
-            landingEvidence, (_, value) => typeof value === 'bigint' ? value.toString() : value)} ` +
-          `previousSync=${JSON.stringify(previousSyncCalls,
-            (_, value) => typeof value === 'bigint' ? value.toString() : value)}`;
+          `declaredRanges=${JSON.stringify(declaredRanges)} units=${probeUnits.join(',')}`;
         throw error;
       }
       const requested = requests.reduce((sum, request) => sum + request.length, 0n);
       assert.equal(requested, result.bytesRead);
-      assert.ok(requested <= BigInt(readBudgetBytes),
+      assert.ok(requested <= BigInt(MSE_SEEK_READ_BUDGET_BYTES),
         `seek ${targetTimeSeconds}s exceeded the 16 MiB budget`);
-      assert.equal(readAttemptedAfterBudget, false,
-        `seek ${targetTimeSeconds}s read after exhausting its shared budget`);
-      const formalLandings = repositionCalls.filter(call => call.phase === 'single-landing');
-      assert.equal(formalLandings.length, 1,
-        `seek ${targetTimeSeconds}s performed ${formalLandings.length} formal landings`);
       assert.ok(result.rapPresentationTimeUs <= result.sourceTargetUs,
         `seek ${targetTimeSeconds}s selected a RAP after the target`);
-      assert.equal(media.currentTime, targetTimeSeconds,
-        `seek ${targetTimeSeconds}s replaced the requested MediaElement time`);
-      const landingMode = result.landingMode ?? 'exact';
-      assert.ok(landingMode === 'exact' || landingMode === 'held-frame',
-        `seek ${targetTimeSeconds}s returned an unknown landing mode ${landingMode}`);
-      if (authoritativeHeldFrameTargets.has(targetTimeSeconds)) {
-        assert.equal(landingMode, 'held-frame',
-          `seek ${targetTimeSeconds}s did not use its required natural-playback fallback`);
-      }
+      assert.equal(flowControl.entryCovered(), true,
+        `seek ${targetTimeSeconds}s did not form common A/V at the target`);
       const targetRanges = Object.fromEntries(Object.entries(ranges).map(([type, items]) => [
         type,
         items.filter(range => range.start <= targetTimeSeconds + 0.000002 &&
           range.end >= targetTimeSeconds),
       ]));
-      assert.ok(targetRanges.video.length > 0,
-        `seek ${targetTimeSeconds}s did not retain video at the requested clock: ` +
+      assert.ok(targetRanges.video.length > 0 && targetRanges.audio.length > 0,
+        `seek ${targetTimeSeconds}s did not retain exact per-track target coverage: ` +
         JSON.stringify(ranges));
-      if (landingMode === 'exact') {
-        assert.equal(flowControl.entryCovered(), true,
-          `exact seek ${targetTimeSeconds}s did not form common A/V at the target`);
-        assert.ok(targetRanges.audio.length > 0,
-          `exact seek ${targetTimeSeconds}s did not retain exact audio target coverage: ` +
-          JSON.stringify(ranges));
-      } else {
-        const heldFrameTimeSeconds = result.heldFrameTimeSeconds;
-        const recoveryTimeSeconds = result.recoveryTimeSeconds;
-        if (heldFrameTimeSeconds !== null && heldFrameTimeSeconds !== undefined ||
-            recoveryTimeSeconds !== null && recoveryTimeSeconds !== undefined) {
-          assert.ok(heldFrameTimeSeconds !== null && heldFrameTimeSeconds !== undefined,
-            `video-held seek ${targetTimeSeconds}s omitted its held frame time`);
-          assert.ok(heldFrameTimeSeconds <= targetTimeSeconds,
-            `video-held seek ${targetTimeSeconds}s held a future frame`);
-          assert.ok(recoveryTimeSeconds !== null && recoveryTimeSeconds !== undefined,
-            `video-held seek ${targetTimeSeconds}s omitted its recovery time`);
-          assert.ok(recoveryTimeSeconds > targetTimeSeconds,
-            `video-held seek ${targetTimeSeconds}s did not schedule forward recovery`);
-        } else {
-          assert.ok(flowControl.heldFrameEntryRange() !== null,
-            `audio-tail seek ${targetTimeSeconds}s omitted its bounded degraded range`);
-        }
-      }
       for (const [type, items] of Object.entries(splices)) {
         const zeroSplice = items.find(splice =>
           BigInt(splice.presentationTimeUs) + BigInt(splice.timestampOffsetUs ?? 0n) === 0n);
@@ -475,12 +361,8 @@ try {
         }
       }
       if (concealed) {
-        assert.equal(landingMode, 'held-frame',
-          `concealed seek ${targetTimeSeconds}s was not reported as held-frame`);
-        assert.ok(targetRanges.video.some(range =>
-          range.start <= targetTimeSeconds + 0.000002 &&
-          range.end >= targetTimeSeconds),
-        `concealed video did not retain a real pre-target frame through ${targetTimeSeconds}s`);
+        assert.ok(Math.abs(targetRanges.video[0].start - targetTimeSeconds) <= 0.000002,
+          `concealed video did not begin at exact target ${targetTimeSeconds}s`);
       }
       results.push({
         targetTimeSeconds,
@@ -488,24 +370,6 @@ try {
         restartOffset: result.restartOffset.toString(),
         nextOffset: result.nextOffset.toString(),
         bytesRead: result.bytesRead.toString(),
-        requestedTimeSeconds: result.requestedTimeSeconds ?? targetTimeSeconds,
-        landingMode,
-        heldFrameTimeSeconds: result.heldFrameTimeSeconds ?? null,
-        recoveryTimeSeconds: result.recoveryTimeSeconds ?? null,
-        repositionCalls: repositionCalls.map(({phase, args: [offset, preserveTimeline]}) => ({
-          phase, offset: offset.toString(), preserveTimeline,
-        })),
-        readAttemptedAfterBudget,
-        probeClocks,
-        previousSyncCalls,
-        splices,
-        rawSegments,
-        landingVideoUnits,
-        requests: requests.map(request => ({
-          phase: request.phase,
-          offset: request.offset.toString(),
-          length: request.length.toString(),
-        })),
         targetRanges,
         concealed,
         videoRecoveryEvents,

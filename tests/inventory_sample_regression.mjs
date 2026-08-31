@@ -134,16 +134,6 @@ for (const sample of samples) {
 
 run('rain recorded seeks 60/200/380s', process.execPath,
   ['tests/wasm_seek_smoke.mjs', wasm, 'demo/rain.tlv', '60', '200', '380']);
-run('variable-rate recorded seek 452.985098s', process.execPath, [
-  'tests/wasm_seek_smoke.mjs', wasm,
-  'demo/20260731-101-180000_9220c865-bfab-4d4d-8651-824b8e91a9e1.mmts',
-  '452.985098',
-]);
-run('variable-rate recorded seek grid', process.execPath, [
-  'tests/wasm_seek_smoke.mjs', wasm,
-  'demo/20260731-102-170000_272b7cdc-8d85-4f77-91df-b935f3ae0e96.mmts',
-  '1', '60', '110.390227', '139.276545', '150.886703', '197.260826', '300', '450',
-]);
 run('manual rainfall to automatic preferred', process.execPath,
   ['tests/wasm_manual_auto_layer_sample.mjs', wasm, 'demo/audiotrack.tlv', 'restore']);
 run('manual rainfall to automatic damaged preferred', process.execPath,

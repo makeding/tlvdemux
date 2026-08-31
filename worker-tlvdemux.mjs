@@ -258,11 +258,7 @@ class WorkerDemuxer extends WorkerObject {
   setMseRecordedSeekConcealmentTarget(presentationTimeUs) {
     return this.call('setMseRecordedSeekConcealmentTarget', [presentationTimeUs]);
   }
-  getMseRecordedSeekLandingEvidence() {
-    return this.call('getMseRecordedSeekLandingEvidence');
-  }
   beginMseRecordedSeek() { return this.call('beginMseRecordedSeek'); }
-  flushMseRecordedSeekLanding() { return this.call('flushMseRecordedSeekLanding'); }
   finishMseRecordedSeek(playbackPositionUs) {
     return this.call('finishMseRecordedSeek', [playbackPositionUs]);
   }
@@ -296,7 +292,6 @@ class WorkerDemuxer extends WorkerObject {
   estimateOffset(target, sourceSize) {
     return this.call('estimateOffset', [target, sourceSize]);
   }
-  previousSync(target) { return this.call('previousSync', [target]); }
   seekPointCount() { return this.call('seekPointCount'); }
   indexState() { return this.call('indexState'); }
   applicationEntry(contextId) {

@@ -254,9 +254,8 @@ public:
             }
             const bool active = audio_id && unit.track_id == *audio_id &&
                 active_audio == &iterator->second;
-            const bool landing_eligible = active && video.audio_output_ready();
             iterator->second.push(unit, active,
-                                  landing_eligible && enabled,
+                                  active && enabled && video.audio_output_ready(),
                                   video.timeline_offset_us());
             const auto automatic = automatic_layers.observe(unit);
             if (!recorded_seek_active && !pending_layer && automatic.playback_damage) {
@@ -525,11 +524,6 @@ void tlvdemux::MseRemuxer::setTimestampOffset(
 void tlvdemux::MseRemuxer::setRecordedSeekConcealmentTarget(
     const std::optional<std::int64_t> presentation_time_us) {
     impl_->video.set_recorded_seek_concealment_target(presentation_time_us);
-}
-
-tlvdemux::MseRecordedSeekLandingEvidence
-tlvdemux::MseRemuxer::recordedSeekLandingEvidence() const {
-    return impl_->video.recorded_seek_landing_evidence();
 }
 
 void tlvdemux::MseRemuxer::beginMseRecordedSeek() {

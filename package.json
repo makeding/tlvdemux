@@ -1,6 +1,6 @@
 {
   "name": "tlvdemux",
-  "version": "0.3.7",
+  "version": "0.3.5",
   "description": "ARIB MMT/TLV demultiplexer for browsers, workers, and Node.js",
   "license": "MIT",
   "author": {
@@ -73,11 +73,6 @@
       "import": "./recorded-source.mjs",
       "default": "./recorded-source.mjs"
     },
-    "./mse-recorded-supply": {
-      "types": "./mse-recorded-supply.d.ts",
-      "import": "./mse-recorded-supply.mjs",
-      "default": "./mse-recorded-supply.mjs"
-    },
     "./worker-client": {
       "types": "./worker-tlvdemux.d.ts",
       "import": "./worker-tlvdemux.mjs",
@@ -116,8 +111,6 @@
     "stream-input.mjs",
     "recorded-source.d.ts",
     "recorded-source.mjs",
-    "mse-recorded-supply.d.ts",
-    "mse-recorded-supply.mjs",
     "worker-tlvdemux.d.ts",
     "worker-tlvdemux.mjs",
     "worker/",
@@ -141,7 +134,7 @@
     "test:manual-auto-layer": "node tests/wasm_manual_auto_layer_sample.mjs dist/tlvdemux.js demo/audiotrack.tlv restore && node tests/wasm_manual_auto_layer_sample.mjs dist/tlvdemux.js demo/rain.tlv defer",
     "test:inventory-samples": "node tests/inventory_sample_regression.mjs",
     "test:inventory-samples:hardware": "node tests/inventory_sample_regression.mjs --hardware-only",
-    "test": "node tests/live_stream_coalescing.mjs && node tests/recorded_source.mjs && node tests/mse_recorded_supply.mjs && node tests/mse_append_queue.mjs && node tests/mse_output_pipeline.mjs && node tests/mse_gap_recovery.mjs && node tests/mse_playback_resilience.mjs && node tests/mse_playback_flow_control.mjs && node tests/mse_recorded_seek.mjs && node tests/mse_live_transition.mjs && node tests/mse_playback_intent.mjs && node tests/demo_audio_only_contract.mjs && node tests/worker_result_value.mjs && node tests/worker_track_selection.mjs && node tests/asset_group_selection.mjs && node tests/subtitle_track_selection.mjs && node tests/hlg_sdr_lut.mjs dist/tlvdemux.js && node tests/hlg_sdr_renderer.mjs && node tests/wasm_smoke.mjs dist/tlvdemux.js && node tests/wasm_transport_metadata.mjs dist/tlvdemux.js",
+    "test": "node tests/live_stream_coalescing.mjs && node tests/recorded_source.mjs && node tests/mse_append_queue.mjs && node tests/mse_output_pipeline.mjs && node tests/mse_gap_recovery.mjs && node tests/mse_playback_resilience.mjs && node tests/mse_playback_flow_control.mjs && node tests/mse_recorded_seek.mjs && node tests/mse_live_transition.mjs && node tests/mse_playback_intent.mjs && node tests/demo_audio_only_contract.mjs && node tests/worker_result_value.mjs && node tests/worker_track_selection.mjs && node tests/asset_group_selection.mjs && node tests/subtitle_track_selection.mjs && node tests/hlg_sdr_lut.mjs dist/tlvdemux.js && node tests/hlg_sdr_renderer.mjs && node tests/wasm_smoke.mjs dist/tlvdemux.js && node tests/wasm_transport_metadata.mjs dist/tlvdemux.js",
     "prepack": "npm run build && npm test"
   }
 }

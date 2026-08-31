@@ -5,7 +5,6 @@ export function createMediaElementProxy(getMedia) {
   return {
     get currentTime() { return getMedia().currentTime; },
     set currentTime(value) { getMedia().currentTime = value; },
-    get playbackRate() { return getMedia().playbackRate; },
     get paused() { return getMedia().paused; },
     get seeking() { return getMedia().seeking; },
     get ended() { return getMedia().ended; },
@@ -34,19 +33,6 @@ export function formatBytes(value) {
   let unit = -1;
   do { scaled /= 1024; unit += 1; } while (scaled >= 1024 && unit < units.length - 1);
   return `${scaled.toFixed(scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2)} ${units[unit]}`;
-}
-
-export function onceMediaEvent(target, event) {
-  return new Promise((resolve, reject) => {
-    const done = () => { cleanup(); resolve(); };
-    const failed = () => { cleanup(); reject(new Error(`${event} に失敗しました`)); };
-    const cleanup = () => {
-      target.removeEventListener(event, done);
-      target.removeEventListener('error', failed);
-    };
-    target.addEventListener(event, done, {once: true});
-    target.addEventListener('error', failed, {once: true});
-  });
 }
 
 export async function openDetachedMseMedia(
@@ -104,10 +90,7 @@ export async function commitDemoMseCandidate({
   assertCurrent = () => {},
 }) {
   assertCurrent();
-  // The RAP/held frame only provides decodable media; it never replaces the
-  // explicit user clock installed on the promoted MediaElement.
-  const target = candidate.seekResult?.requestedTimeSeconds ??
-    candidate.intentTarget ?? candidate.target ?? previousMedia.currentTime;
+  const target = candidate.intentTarget ?? candidate.target ?? previousMedia.currentTime;
   if (previousMedia.paused) {
     throw new DOMException('Transition paused by the user.', 'AbortError');
   }
