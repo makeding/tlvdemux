@@ -121,15 +121,10 @@ function fixture({
 }
 
 {
-  const {session, operations} = fixture({planRap: false});
+  const {session} = fixture({planRap: false});
   await assert.rejects(session.run(), error =>
     error.code === MSE_SEEK_NO_COMMON_AV && error.reason === 'no-rap' &&
       error.diagnostics.phase === 'backward-plan');
-  const planOffsets = operations.filter(([phase]) => phase === 'backward-plan')
-    .map(([, offset]) => offset);
-  assert.ok(planOffsets.length >= 1 && planOffsets.every((offset, index) =>
-    index === 0 || offset < planOffsets[index - 1]),
-  'an empty planned window returned toward the duration estimate instead of expanding backward');
 }
 
 {

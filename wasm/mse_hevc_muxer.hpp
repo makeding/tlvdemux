@@ -43,6 +43,8 @@ public:
         recorded_seek_concealment_target_us_ = target_us;
         recorded_seek_landing_evidence_ = {};
         held_frame_source_pts_us_.reset();
+        candidate_held_frame_source_pts_us_.reset();
+        candidate_held_frame_.reset();
         concealment_episode_marker_start_us_.reset();
         concealment_episode_start_us_.reset();
         concealment_pending_stable_rap_ = false;
@@ -140,6 +142,8 @@ public:
         recorded_seek_concealment_target_us_.reset();
         recorded_seek_landing_evidence_ = {};
         held_frame_source_pts_us_.reset();
+        candidate_held_frame_source_pts_us_.reset();
+        candidate_held_frame_.reset();
         concealment_episode_marker_start_us_.reset();
         concealment_episode_start_us_.reset();
         concealment_pending_stable_rap_ = false;
@@ -218,6 +222,7 @@ public:
                     // target, the stable RAP will provide its real decode
                     // boundary; otherwise it is later sealed normally.
                     emit_ready_keeping_pending();
+                    retain_pre_target_damage_rap(unit, nalus, irap, has_vcl);
                     concealment_episode_marker_start_us_ = scaled(
                         unit.pts.value, unit.pts.timescale, 1000000);
                     concealment_episode_start_us_.reset();
@@ -233,6 +238,12 @@ public:
                 }
             } else if (previous_observation == SourceDamageObservation::CandidateGop) {
                 recovery_candidate_rejected_ = true;
+                // A second marker invalidates the only retained candidate
+                // RAP. It never leaks into MSE; preserve the complete prefix.
+                if (candidate_held_frame_source_pts_us_) {
+                    candidate_held_frame_source_pts_us_.reset();
+                    candidate_held_frame_.reset();
+                }
             }
             started_ = false;
             no_rasl_output_ = false;
@@ -280,6 +291,8 @@ public:
                     flush();
                     concealment_episode_marker_start_us_.reset();
                     concealment_episode_start_us_.reset();
+                    candidate_held_frame_source_pts_us_.reset();
+                    candidate_held_frame_.reset();
                 }
             }
         }
@@ -448,10 +461,38 @@ public:
         }
         if (data.empty()) return;
         if (concealment_pending_stable_rap_) {
-            if (held_frame_source_pts_us_.has_value()) {
+            bool candidate_held_frame_enqueued = false;
+            // The loss-marked RAP can be the first configuration-bearing AU
+            // after formal reposition.  It reaches the SourceDamage branch
+            // before that configuration is installed, so retain its owned
+            // raw sample and only turn it into an MP4 sample once this stable
+            // RAP has installed the track and its timeline mapping.
+            if (candidate_held_frame_ && track_) {
+                const auto candidate_dts = scaled(
+                    candidate_held_frame_->dts.value,
+                    candidate_held_frame_->dts.timescale, track_->timescale) + offset;
+                const auto candidate_pts = scaled(
+                    candidate_held_frame_->pts.value,
+                    candidate_held_frame_->pts.timescale, track_->timescale) + offset;
+                if (candidate_dts >= 0) {
+                    candidate_held_frame_enqueued = enqueue({
+                        std::move(candidate_held_frame_->data), candidate_dts,
+                        candidate_pts, 0, true,
+                    });
+                } else {
+                    candidate_held_frame_source_pts_us_.reset();
+                }
+                candidate_held_frame_.reset();
+            }
+            const auto held_frame_source_pts_us =
+                candidate_held_frame_enqueued &&
+                        candidate_held_frame_source_pts_us_.has_value()
+                    ? candidate_held_frame_source_pts_us_
+                    : held_frame_source_pts_us_;
+            if (held_frame_source_pts_us.has_value()) {
                 recorded_seek_landing_evidence_ = {
                     tlvdemux::MseRecordedSeekLandingMode::HeldFrame,
-                    held_frame_source_pts_us_,
+                    held_frame_source_pts_us,
                     scaled(unit.pts.value, unit.pts.timescale, 1000000),
                 };
             }
@@ -462,6 +503,7 @@ public:
             recorded_seek_concealment_target_us_.reset();
             concealment_episode_marker_start_us_.reset();
             concealment_episode_start_us_.reset();
+            candidate_held_frame_source_pts_us_.reset();
         }
         if (enqueue({std::move(data), dts, pts, 0, irap >= 0})) {
             const auto source_pts_us = scaled(
@@ -482,6 +524,34 @@ private:
         WaitingForRap,
         CandidateGop,
     };
+
+    struct RetainedCandidateRap {
+        Bytes data;
+        aribtlv::Timestamp dts;
+        aribtlv::Timestamp pts;
+    };
+
+    void retain_pre_target_damage_rap(const aribtlv::AccessUnit& unit,
+                                      const std::vector<NaluView>& nalus,
+                                      const int irap, const bool has_vcl) {
+        if (!recorded_seek_concealment_target_us_ || irap < 0 || !has_vcl) return;
+        const auto source_pts_us = scaled(
+            unit.pts.value, unit.pts.timescale, 1000000);
+        // This is a real candidate RAP from before the requested clock, never
+        // the later stable RAP that validates its GOP.
+        if (source_pts_us >= *recorded_seek_concealment_target_us_) return;
+        Bytes data;
+        for (const auto& nalu : nalus) {
+            if (!included_in_sample(nalu)) continue;
+            append(data, u32(nalu.size));
+            append(data, unit.data.data() + nalu.offset, nalu.size);
+        }
+        if (data.empty()) return;
+        candidate_held_frame_ = RetainedCandidateRap{
+            std::move(data), unit.dts, unit.pts,
+        };
+        candidate_held_frame_source_pts_us_ = source_pts_us;
+    }
 
     void on_segment_emitted(const std::vector<Sample>& samples) override {
         if (!samples.empty()) output_started_ = true;
@@ -646,6 +716,8 @@ private:
     std::optional<std::int64_t> recorded_seek_concealment_target_us_;
     tlvdemux::MseRecordedSeekLandingEvidence recorded_seek_landing_evidence_;
     std::optional<std::int64_t> held_frame_source_pts_us_;
+    std::optional<std::int64_t> candidate_held_frame_source_pts_us_;
+    std::optional<RetainedCandidateRap> candidate_held_frame_;
     std::optional<std::int64_t> concealment_episode_marker_start_us_;
     std::optional<std::int64_t> concealment_episode_start_us_;
     bool concealment_pending_stable_rap_ = false;

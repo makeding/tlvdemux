@@ -3,9 +3,9 @@ import {MSE_SEEK_READ_BUDGET_BYTES, MseRecordedSeekError} from './mse-playback-c
 import {createMsePlaybackFlowControl} from './mse-playback-flow-control.mjs';
 
 const DEFAULT_CHUNK_BYTES = 1024 * 1024;
-const DEFAULT_LANDING_RESERVE_BYTES = 9 * 1024 * 1024;
-const PLANNER_WINDOW_BYTES = 4n * 1024n * 1024n;
-const INITIAL_PLANNER_PREROLL_BYTES = 20n * 1024n * 1024n;
+const DEFAULT_LANDING_RESERVE_BYTES = 7 * 1024 * 1024;
+const PLANNER_WINDOW_BYTES = 6n * 1024n * 1024n;
+const INITIAL_PLANNER_PREROLL_BYTES = 16n * 1024n * 1024n;
 const MAX_PLANNER_WINDOWS = 1;
 
 function abortError() {
@@ -199,7 +199,7 @@ export function createMseRecordedSeekSession({
     .filter(rap => rap.ptsUs <= sourceTargetUs && tracks.has(rap.trackId) &&
       (allowBootstrap || rap.discoveredDuring === 'backward-plan'))
     .sort((left, right) => {
-      if (left.ptsUs !== right.ptsUs) return left.ptsUs < right.ptsUs ? -1 : 1;
+      if (left.ptsUs !== right.ptsUs) return left.ptsUs > right.ptsUs ? -1 : 1;
       return videoTrackPriority(tracks.get(left.trackId)) - videoTrackPriority(tracks.get(right.trackId));
     })[0] ?? null;
   const planPastTarget = () => {

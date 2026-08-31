@@ -289,6 +289,56 @@ void test_short_aac_tail_keeps_preceding_video_hold() {
           "AAC tail changed instead of remaining on its original timeline");
 }
 
+void test_damage_marked_candidate_rap_holds_after_stable_validation() {
+    constexpr auto target_us = 60'534'666LL;
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.setRecordedSeekConcealmentTarget(target_us);
+    // This is the actual formal-landing shape: the loss-marked candidate RAP
+    // is itself the first configuration-bearing AU after reposition. The
+    // muxer must retain it before the stable RAP later installs the track.
+    remuxer.push(damaged(hevc_unit(2, 60'060'800, 60'060'800, true, true)));
+    remuxer.push(hevc_unit(2, 60'594'672, 60'594'672, true, false));
+    remuxer.push(hevc_unit(2, 60'628'039, 60'628'039, false, false));
+    remuxer.flush();
+
+    const auto evidence = remuxer.recordedSeekLandingEvidence();
+    check(evidence.landing_mode == tlvdemux::MseRecordedSeekLandingMode::HeldFrame &&
+              evidence.held_frame_time_us == std::optional<std::int64_t>{60'060'800} &&
+              evidence.recovery_time_us == std::optional<std::int64_t>{60'594'672},
+          "damage-marked candidate RAP was not retained through stable validation");
+    const auto video = segments_of(sink.segments, "video");
+    check(composition_timestamps(video) == std::vector<std::int64_t>{
+              60'060'800, 60'594'672, 60'628'039},
+          "held frame was not the real pre-target candidate RAP");
+    check(!video.empty() && video.front().tfdt == 60'060'800 &&
+              video.front().samples.front().duration == 533'872,
+          "candidate RAP was not extended to the stable recovery boundary");
+}
+
+void test_repeated_damage_discards_unvalidated_candidate_rap() {
+    constexpr auto target_us = 60'534'666LL;
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.setRecordedSeekConcealmentTarget(target_us);
+    remuxer.push(damaged(hevc_unit(2, 60'060'800, 60'060'800, true, true)));
+    remuxer.push(damaged(hevc_unit(2, 60'200'000, 60'200'000, true, false)));
+    remuxer.push(hevc_unit(2, 60'594'672, 60'594'672, true, false));
+    remuxer.push(hevc_unit(2, 60'628'039, 60'628'039, false, false));
+    remuxer.flush();
+
+    const auto evidence = remuxer.recordedSeekLandingEvidence();
+    check(evidence.landing_mode == tlvdemux::MseRecordedSeekLandingMode::Exact &&
+              !evidence.held_frame_time_us && !evidence.recovery_time_us,
+          "repeated damage retained an invalidated candidate RAP as held evidence");
+    const auto video = segments_of(sink.segments, "video");
+    check(composition_timestamps(video) == std::vector<std::int64_t>{
+              60'594'672, 60'628'039},
+          "repeated damage leaked its discarded candidate RAP into output");
+}
+
 void test_target_outside_damage_is_unchanged() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
@@ -314,6 +364,8 @@ int main() {
     test_previous_frame_fill_and_continuous_aac();
     test_future_rap_is_not_fabricated_without_previous_frame();
     test_short_aac_tail_keeps_preceding_video_hold();
+    test_damage_marked_candidate_rap_holds_after_stable_validation();
+    test_repeated_damage_discards_unvalidated_candidate_rap();
     test_target_outside_damage_is_unchanged();
     std::cout << "MSE recorded-seek concealment tests passed\n";
 }
