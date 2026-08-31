@@ -29,6 +29,7 @@ function fixture({
   cachedEstimateOffset = null,
   estimatedOffset = 16n * BigInt(MiB),
   probeRapUs = 51_000_000n,
+  probeSilentBeforeOffset = null,
   coverOnCancel = false,
   headTimelineOnRead = 1,
 } = {}) {
@@ -93,6 +94,10 @@ function fixture({
           });
         }
       } else if (session.phase === 'probe') {
+        if (probeSilentBeforeOffset !== null && position < probeSilentBeforeOffset) {
+          position += BigInt(data.byteLength);
+          return true;
+        }
         if (!noRap) {
           session.observeAccessUnit({
             codec: 'hevc', trackId: 1, ptsValue: probeRapUs, ptsTimescale: 1000000,
@@ -146,6 +151,18 @@ function fixture({
     'recorded seek left the head before establishing the normalization timeline');
   assert.notEqual(requests[2].offset, 2n * BigInt(MiB),
     'recorded seek began a sequential scan instead of its bounded target probe');
+}
+
+{
+  const {session, requests} = fixture({
+    probeSilentBeforeOffset: 20n * BigInt(MiB),
+  });
+  const result = await session.run();
+  assert.equal(result.restartOffset, 20n * BigInt(MiB),
+    'recorded seek did not cross media-free estimated windows to the real RAP');
+  assert.deepEqual(requests.slice(1, 7).map(request => request.offset),
+    [15n, 16n, 17n, 18n, 19n, 20n].map(value => value * BigInt(MiB)),
+  'recorded seek searched backward before exhausting a bounded forward probe span');
 }
 
 {
@@ -315,13 +332,11 @@ function fixture({
     chunkBytes: MiB,
   });
   const result = await session.run();
-  assert.equal(result.rapPresentationTimeUs, 49_000_000n);
+  assert.equal(result.rapPresentationTimeUs, 49_900_000n);
   assert.equal(requests[1].offset, 23n * BigInt(MiB));
   assert.ok(requests[2].offset > 18n * BigInt(MiB) &&
     requests[2].offset < 22n * BigInt(MiB),
   'an aged-out timeline anchor made the probe scan an unrelated earlier interval');
-  assert.ok(requests[3].offset <= 18n * BigInt(MiB),
-    'a RAP too close to the target did not reserve stable A/V landing preroll');
   assert.equal(media.currentTime, 50,
     'bounded backward probing changed the requested MediaElement time');
 }

@@ -4,6 +4,17 @@
 > プロジェクトで `tlvdemux` 名前空間を使用していました。該当項目は
 > **旧 `tlvdemux` 実装**と表記します。これは別製品ではなく、歴史上の名称です。
 
+## [0.3.7] - 2026-08-31
+
+- 録画 seek の head discovery は track catalogue だけで完了せず、timestamp を持つ候補
+  playback access unit を観測してから sparse probe へ進むようにしました。signalling が
+  最初の media access unit より前にある録画でも、実際の normalization origin を維持します。
+- 5.1 GiB の variable-rate 録画と `452.985098s` target を 16 MiB budget の直接 regression
+  に追加し、観測 RAP の restart／input offset を特定できる probe diagnostics も追加しました。
+- duration 比例 estimate 周辺の media を含まない有界区間を越えてから sparse probe を後方へ
+  移すようにし、4.8 GiB 録画の `110.390227s` target も browser 互換 audio track 選択と同じ
+  16 MiB budget で検証しました。
+
 ## [0.3.6] - 2026-08-31
 
 - 明示的な録画 seek が probe、landing、append、exact A/V commit を排他的に所有するようにし、
