@@ -330,6 +330,11 @@ void WasmMseRemuxer::setRecordedSeekConcealmentTarget(
     impl_->remuxer().setRecordedSeekConcealmentTarget(presentation_time_us);
 }
 
+tlvdemux::MseRecordedSeekLandingEvidence
+WasmMseRemuxer::recordedSeekLandingEvidence() const {
+    return impl_->remuxer().recordedSeekLandingEvidence();
+}
+
 void WasmMseRemuxer::beginMseRecordedSeek() {
     impl_->remuxer().beginMseRecordedSeek();
 }

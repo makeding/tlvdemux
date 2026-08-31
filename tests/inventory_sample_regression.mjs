@@ -142,7 +142,7 @@ run('variable-rate recorded seek 452.985098s', process.execPath, [
 run('variable-rate recorded seek grid', process.execPath, [
   'tests/wasm_seek_smoke.mjs', wasm,
   'demo/20260731-102-170000_272b7cdc-8d85-4f77-91df-b935f3ae0e96.mmts',
-  '1', '60', '110.390227', '139.276545', '197.260826', '300', '450',
+  '1', '60', '110.390227', '139.276545', '150.886703', '197.260826', '300', '450',
 ]);
 run('manual rainfall to automatic preferred', process.execPath,
   ['tests/wasm_manual_auto_layer_sample.mjs', wasm, 'demo/audiotrack.tlv', 'restore']);

@@ -57,6 +57,7 @@ export interface WorkerDemuxer {
   clearAutomaticLayerSwitch(): Promise<void>;
   setMseTimestampOffset(timestampOffsetUs: bigint): Promise<void>;
   setMseRecordedSeekConcealmentTarget(presentationTimeUs: bigint | null): Promise<void>;
+  getMseRecordedSeekLandingEvidence(): Promise<createTlvDemuxModule.MseRecordedSeekLandingEvidence>;
   beginMseRecordedSeek(): Promise<void>;
   flushMseRecordedSeekLanding(): Promise<void>;
   finishMseRecordedSeek(playbackPositionUs: bigint): Promise<void>;

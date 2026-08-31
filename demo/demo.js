@@ -26,7 +26,7 @@ import {MsePlaybackMode, createDemoPlaybackResilience}
   from './playback-resilience.js?v=recorded-seek-entry-fence-v2';
 import {createLiveMseTransitionManager} from '../mse-live-transition.mjs?v=recorded-seek-entry-fence-v2';
 import {createMseVideoRecoveryLogger, createRecordedMseTransitionManager,
-  createRecordedSeekConcealmentLogger}
+  createRecordedSeekConcealmentLogger, describeRecordedSeekLanding}
   from './recorded-mse-transition.js?v=recorded-seek-entry-fence-v2';
 import {commitDemoMseCandidate, createMediaElementProxy, formatBytes, openDetachedMseMedia}
   from './mse-media-transaction.js?v=recorded-seek-entry-fence-v2';
@@ -1645,10 +1645,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       resumePlaybackIntent(startTimeSeconds);
     }
     maybeStartPlayback();
-    appendLog(`シーク ${startTimeSeconds.toFixed(3)}s -> 推定 ` +
-      `${formatBytes(result.estimateOffset)}、RAP ` +
-      `${(Number(result.rapPresentationTimeUs) / 1000000).toFixed(3)}s @ ` +
-      `${formatBytes(result.restartOffset)}、総読み込み ${formatBytes(result.bytesRead)}`);
+    appendLog(describeRecordedSeekLanding(result, startTimeSeconds));
   }
   if (liveMode && source.stream) {
     for await (const data of source.stream()) {

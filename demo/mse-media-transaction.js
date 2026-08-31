@@ -90,7 +90,10 @@ export async function commitDemoMseCandidate({
   assertCurrent = () => {},
 }) {
   assertCurrent();
-  const target = candidate.intentTarget ?? candidate.target ?? previousMedia.currentTime;
+  // The RAP/held frame only provides decodable media; it never replaces the
+  // explicit user clock installed on the promoted MediaElement.
+  const target = candidate.seekResult?.requestedTimeSeconds ??
+    candidate.intentTarget ?? candidate.target ?? previousMedia.currentTime;
   if (previousMedia.paused) {
     throw new DOMException('Transition paused by the user.', 'AbortError');
   }

@@ -203,6 +203,12 @@ void test_previous_frame_fill_and_continuous_aac() {
     push_damage_episode(remuxer);
     remuxer.flush();
 
+    const auto evidence = remuxer.recordedSeekLandingEvidence();
+    check(evidence.landing_mode == tlvdemux::MseRecordedSeekLandingMode::HeldFrame &&
+              evidence.held_frame_time_us == std::optional<std::int64_t>{98'033'367} &&
+              evidence.recovery_time_us == std::optional<std::int64_t>{100'269'228},
+          "previous-frame concealment did not publish held-frame evidence");
+
     const auto video = segments_of(sink.segments, "video");
     check(composition_timestamps(video) == std::vector<std::int64_t>{
               98'000'000, 98'033'367, 100'269'228, 100'302'595},
@@ -222,7 +228,7 @@ void test_previous_frame_fill_and_continuous_aac() {
           "AAC and concealed video do not intersect at the target");
 }
 
-void test_stable_rap_fill_without_previous_frame() {
+void test_future_rap_is_not_fabricated_without_previous_frame() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
     remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
@@ -235,21 +241,52 @@ void test_stable_rap_fill_without_previous_frame() {
 
     const auto video = segments_of(sink.segments, "video");
     check(composition_timestamps(video) == std::vector<std::int64_t>{
-              99'000'000, 100'269'228, 100'302'595},
-          "stable-RAP fill moved the original RAP");
-    check(!video.empty() && video.front().tfdt == 99'000'000 &&
-              video.front().samples.front().duration == 1'269'228,
-          "stable-RAP fill does not end at the original decode boundary");
-    std::vector<std::uint32_t> sizes;
-    std::vector<std::vector<std::uint8_t>> payloads;
-    for (const auto& segment : video) {
-        for (const auto& sample : segment.samples) sizes.push_back(sample.size);
-        payloads.insert(payloads.end(), segment.payloads.begin(), segment.payloads.end());
+              100'269'228, 100'302'595},
+          "future RAP was copied backward to fabricate a target frame");
+    const auto evidence = remuxer.recordedSeekLandingEvidence();
+    check(evidence.landing_mode == tlvdemux::MseRecordedSeekLandingMode::Exact &&
+              !evidence.held_frame_time_us && !evidence.recovery_time_us,
+          "seek without a previous complete picture advertised a held frame");
+}
+
+void test_short_aac_tail_keeps_preceding_video_hold() {
+    constexpr auto target_us = 150'886'703LL;
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.setRecordedSeekConcealmentTarget(target_us);
+    remuxer.push(hevc_unit(2, 150'550'401, 150'550'401, true, true));
+    remuxer.push(damaged(hevc_unit(2, 150'700'000, 150'700'000, false, false)));
+    remuxer.push(hevc_unit(2, 150'800'000, 150'800'000, true, false));
+    remuxer.push(hevc_unit(2, 150'967'490, 150'967'490, true, false));
+    remuxer.push(hevc_unit(2, 151'234'423, 151'234'423, false, false));
+    for (auto pts = 7'207'872LL; pts <= 7'237'568LL; pts += 1'024) {
+        remuxer.push(audio_unit(pts));
     }
-    check(sizes.size() >= 2 && sizes[0] == sizes[1],
-          "target filler did not reuse the stable RAP bytes");
-    check(payloads.size() >= 2 && payloads[0] == payloads[1],
-          "target filler is not byte-identical to the decodable stable RAP");
+    remuxer.push(audio_unit(7'238'591));
+    remuxer.push(audio_unit(7'239'615));
+    remuxer.flush();
+
+    const auto evidence = remuxer.recordedSeekLandingEvidence();
+    check(evidence.landing_mode == tlvdemux::MseRecordedSeekLandingMode::HeldFrame &&
+              evidence.held_frame_time_us == std::optional<std::int64_t>{150'550'401} &&
+              evidence.recovery_time_us == std::optional<std::int64_t>{150'967'490},
+          "short AAC tail did not retain the target-preceding video frame");
+    const auto video_end = std::max_element(sink.segments.begin(), sink.segments.end(),
+        [](const auto& left, const auto& right) {
+            return (left.type == "video" ? left.end_time_us : 0) <
+                   (right.type == "video" ? right.end_time_us : 0);
+        });
+    check(video_end != sink.segments.end() && video_end->type == "video" &&
+              video_end->end_time_us > target_us,
+          "held video does not cover the requested seek clock");
+    std::int64_t audio_end_us = 0;
+    for (const auto& segment : sink.segments) {
+        if (segment.type == "audio") audio_end_us = std::max(audio_end_us, segment.end_time_us);
+    }
+    check(audio_end_us == 150'846'646 && audio_end_us < target_us,
+          "AAC tail changed instead of remaining on its original timeline");
 }
 
 void test_target_outside_damage_is_unchanged() {
@@ -275,7 +312,8 @@ void test_target_outside_damage_is_unchanged() {
 
 int main() {
     test_previous_frame_fill_and_continuous_aac();
-    test_stable_rap_fill_without_previous_frame();
+    test_future_rap_is_not_fabricated_without_previous_frame();
+    test_short_aac_tail_keeps_preceding_video_hold();
     test_target_outside_damage_is_unchanged();
     std::cout << "MSE recorded-seek concealment tests passed\n";
 }

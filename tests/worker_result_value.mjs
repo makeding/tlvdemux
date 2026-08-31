@@ -26,7 +26,10 @@ class FakeWorker {
     this.messages.push({message: delivered, transferByteLengths});
     queueMicrotask(() => {
       if (delivered.type === protocol.invoke) {
-        const value = delivered.method === 'switchAudioTrack' ? null : true;
+        const value = delivered.method === 'switchAudioTrack' ? null
+          : delivered.method === 'getMseRecordedSeekLandingEvidence'
+            ? {landingMode: 'held-frame', heldFrameTimeUs: 5n, recoveryTimeUs: 7n}
+            : true;
         this.onmessage?.({data: {type: protocol.result, requestId: delivered.requestId, value}});
       } else {
         this.onmessage?.({data: {type: protocol.result, requestId: delivered.requestId, value: true}});
@@ -108,6 +111,9 @@ await demuxer.setMseRecordedSeekConcealmentTarget(5n);
 assert.deepEqual(fake.messages.find(entry =>
   entry.message.method === 'setMseRecordedSeekConcealmentTarget')?.message.args, [5n],
   'worker proxy did not forward the one-shot recorded-seek target');
+assert.deepEqual(await demuxer.getMseRecordedSeekLandingEvidence(), {
+  landingMode: 'held-frame', heldFrameTimeUs: 5n, recoveryTimeUs: 7n,
+}, 'worker proxy did not return recorded-seek landing evidence');
 await demuxer.beginMseRecordedSeek();
 await demuxer.finishMseRecordedSeek(6n);
 await demuxer.cancelMseRecordedSeek();

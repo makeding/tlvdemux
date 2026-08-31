@@ -527,6 +527,11 @@ void tlvdemux::MseRemuxer::setRecordedSeekConcealmentTarget(
     impl_->video.set_recorded_seek_concealment_target(presentation_time_us);
 }
 
+tlvdemux::MseRecordedSeekLandingEvidence
+tlvdemux::MseRemuxer::recordedSeekLandingEvidence() const {
+    return impl_->video.recorded_seek_landing_evidence();
+}
+
 void tlvdemux::MseRemuxer::beginMseRecordedSeek() {
     impl_->begin_recorded_seek();
 }

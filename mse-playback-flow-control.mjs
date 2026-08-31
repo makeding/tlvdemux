@@ -56,6 +56,33 @@ export function createMsePlaybackFlowControl({
       range.start < committed.end && range.end > committed.start);
     return buffered ? committed : null;
   };
+  // This is deliberately narrower than normal seek coverage.  It accepts only
+  // a native-emitted video sample that covers the requested clock and a short
+  // AAC tail that ends immediately before it; createMseRecordedSeekSession()
+  // additionally requires native held-frame evidence before committing it.
+  const heldFrameEntryRange = () => {
+    if (entryKind !== 'seek' || !currentRequiredTracks.includes('video') ||
+        !currentRequiredTracks.includes('audio')) return null;
+    const video = queues.get('video');
+    const audio = queues.get('audio');
+    if (!video || !audio) return null;
+    const videoCommitted = coveringBufferedRange(
+      video.committedRanges?.() ?? [], entryTimeSeconds, entryToleranceSeconds,
+    );
+    if (!videoCommitted) return null;
+    const videoBuffered = (video.bufferedRanges?.() ?? []).find(range =>
+      range.start <= entryTimeSeconds + browserBoundaryToleranceSeconds &&
+      range.end >= entryTimeSeconds && range.start < videoCommitted.end &&
+      range.end > videoCommitted.start);
+    if (!videoBuffered) return null;
+    const audioTail = (audio.committedRanges?.() ?? []).find(range =>
+      range.start <= entryTimeSeconds && range.end < entryTimeSeconds &&
+      range.end >= entryTimeSeconds - 0.25);
+    if (!audioTail) return null;
+    const audioBuffered = (audio.bufferedRanges?.() ?? []).find(range =>
+      range.start < audioTail.end && range.end > audioTail.start);
+    return audioBuffered ? videoCommitted : null;
+  };
 
   const api = {
     entryKind,
@@ -76,6 +103,9 @@ export function createMsePlaybackFlowControl({
       return coveringRange(
         queues, entryTimeSeconds, entryToleranceSeconds, currentRequiredTracks,
       );
+    },
+    heldFrameEntryRange() {
+      return heldFrameEntryRange();
     },
     entryCovered() {
       return entryCovered || api.entryRange() !== null;
