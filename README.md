@@ -267,6 +267,18 @@ timestamp-offset mutation, splice, remove, or trim operation. One successful
 batching must not manufacture coverage across a source gap. This bounds copy
 memory while avoiding hundreds of individual `appendBuffer()` transactions for
 the first 30 seconds of 8K media.
+The queue must also remain work-conserving under browser quota pressure. A
+required queue with pending operations, `SourceBuffer.updating === false`, and
+no current operation is immediately runnable: a playback-demand or `waiting`
+notification cancels any deferred quota retry and pumps it synchronously. The
+`20260731-102-170000_272b7cdc-8d85-4f77-91df-b935f3ae0e96.mmts` 2x regression
+reached `waiting` at `15.554s` with 9.7 seconds of common A/V, 33.2 MiB and 24
+pending video operations, no current video append, an idle SourceBuffer, and
+122 completed video `updateend` events. Leaving that runnable queue idle is a
+supply-state-machine failure. Recorded playback retains at most three media
+seconds behind the playhead in the demo; older navigation is served by the
+existing bounded recorded-seek transaction instead of pinning hundreds of MiB
+of 8K coded frames in the active SourceBuffer.
 
 Live playback has no timestamp-zero entry. Its startup entry is the first common
 A/V buffered interval produced by the current stream, and the media clock is

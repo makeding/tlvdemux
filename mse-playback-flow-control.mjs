@@ -71,6 +71,9 @@ export function createMsePlaybackFlowControl({
   const queuesFit = limit => [...requiredQueues().values()].every(
     queue => queuedBytes(queue) <= limit,
   );
+  const pumpRunnableQueues = () => {
+    for (const queue of requiredQueues().values()) queue.notifyDemand?.();
+  };
   const throwQueueError = () => {
     for (const queue of requiredQueues().values()) {
       if (queue.error) throw queue.error;
@@ -141,6 +144,7 @@ export function createMsePlaybackFlowControl({
       };
     },
     notifyDemand() {
+      pumpRunnableQueues();
       const pending = [...demandWaiters];
       demandWaiters.clear();
       for (const resolve of pending) resolve();
@@ -187,7 +191,9 @@ export function createMsePlaybackFlowControl({
       // event can release a reader that went to sleep while common A/V was
       // still above low.
       while (isActive()) {
+        trim();
         throwQueueError();
+        pumpRunnableQueues();
         const ahead = api.commonAhead();
         const queueLimit = ahead < lowWatermarkSeconds()
           ? queueHardBytes : queueHighBytes;

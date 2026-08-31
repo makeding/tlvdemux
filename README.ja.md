@@ -222,6 +222,14 @@ initialization segment、codec change、timestamp-offset mutation、splice、rem
 いけません。一回の `updateend` は batch 内の元の coded interval を個別に commit し、source gap を跨ぐ
 coverage を作ってはいけません。これにより copy memory を有界にしたまま、8K の最初の 30 秒を数百回の
 個別 `appendBuffer()` transaction に分割しません。
+browser quota pressure 下でも queue は work-conserving でなければなりません。pending operation があり、
+`SourceBuffer.updating === false` かつ current operation がない required queue は直ちに実行可能です。
+playback demand または `waiting` 通知は deferred quota retry を取り消し、同期的に pump します。
+`20260731-102-170000_272b7cdc-8d85-4f77-91df-b935f3ae0e96.mmts` の 2x regression は `15.554s` の
+`waiting` で共通 A/V 9.7 秒、video 33.2 MiB／pending 24、current append なし、SourceBuffer idle、
+video `updateend` 122 回に到達しました。この実行可能な queue を idle のまま残すことは supply state machine
+failure です。demo の録画再生は playhead より後方の media を最大 3 秒だけ保持します。それより前への移動は
+既存の有界 recorded-seek transaction が担当し、active SourceBuffer に数百 MiB の 8K coded frame を固定しません。
 
 Live 再生には timestamp 0 の入口はありません。起動入口は現在の stream が生成した最初の共通
 A/V buffered 区間であり、設定した live 起動 buffer が成立した後だけ media clock をその区間へ

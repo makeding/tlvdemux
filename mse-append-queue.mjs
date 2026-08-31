@@ -73,8 +73,10 @@ export class MseAppendQueue {
     this.currentBytes = 0;
     this.currentOperation = null;
     this.updateEndCount = 0;
+    this.quotaExceededCount = 0;
     this.lastAppendStartedAtMilliseconds = null;
     this.lastUpdateEndAtMilliseconds = null;
+    this.lastQuotaExceededAtMilliseconds = null;
     this.committedMediaRanges = [];
     this.waiters = [];
     this.error = null;
@@ -342,6 +344,8 @@ export class MseAppendQueue {
       this.currentBytes = 0;
       this.recountQueuedBytes();
       if (error?.name === 'QuotaExceededError') {
+        this.quotaExceededCount += 1;
+        this.lastQuotaExceededAtMilliseconds = Date.now();
         this.trimBefore(this.mediaElement.currentTime - this.backBufferSeconds, true);
         this.scheduleRetry();
       } else {
@@ -374,17 +378,31 @@ export class MseAppendQueue {
 
   diagnostics(nowMilliseconds = Date.now()) {
     return {
+      state: this.state,
       queuedBytes: this.queuedBytes,
       currentBytes: this.currentBytes,
       pendingOperations: this.queue.length,
       updating: this.sourceBuffer.updating,
       currentOperation: this.currentOperation?.kind ?? null,
       updateEndCount: this.updateEndCount,
+      quotaExceededCount: this.quotaExceededCount,
+      retryScheduled: this.retryTimer !== null,
       millisecondsSinceAppendStarted: this.lastAppendStartedAtMilliseconds === null
         ? null : Math.max(0, nowMilliseconds - this.lastAppendStartedAtMilliseconds),
       millisecondsSinceUpdateEnd: this.lastUpdateEndAtMilliseconds === null
         ? null : Math.max(0, nowMilliseconds - this.lastUpdateEndAtMilliseconds),
+      millisecondsSinceQuotaExceeded: this.lastQuotaExceededAtMilliseconds === null
+        ? null : Math.max(0, nowMilliseconds - this.lastQuotaExceededAtMilliseconds),
     };
+  }
+
+  notifyDemand() {
+    if (this.error || this.state !== 'running' || this.sourceBuffer.updating ||
+        (this.queue.length === 0 && this.trimBeforeTime === null)) return false;
+    if (this.retryTimer !== null) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    this.pump();
+    return this.sourceBuffer.updating || this.currentOperation !== null;
   }
 
   trimBefore(time, force = false) {
