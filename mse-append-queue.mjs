@@ -83,6 +83,8 @@ export class MseAppendQueue {
     this.retryTimer = null;
     this.trimBeforeTime = null;
     this.forceTrim = false;
+    this.quotaBlocked = false;
+    this.quotaRetryAfterBatchReduction = false;
     this.state = 'running';
     this.onUpdateEnd = onUpdateEnd;
     this.scheduledTimestampOffsetSeconds = this.sourceBuffer.timestampOffset || 0;
@@ -91,6 +93,9 @@ export class MseAppendQueue {
     this.trimGranularitySeconds = options.trimGranularitySeconds ?? DEFAULT_TRIM_GRANULARITY_SECONDS;
     this.maximumAppendBatchBytes = options.maximumAppendBatchBytes ??
       DEFAULT_MAXIMUM_APPEND_BATCH_BYTES;
+    this.currentAppendBatchBytes = this.maximumAppendBatchBytes;
+    this.getBackBufferReferenceTime = options.getBackBufferReferenceTime ??
+      (media => media.currentTime);
     this.getMediaError = options.getMediaError ?? defaultMediaError;
     this.destroyOnSourceClose = options.destroyOnSourceClose ?? true;
 
@@ -114,6 +119,8 @@ export class MseAppendQueue {
           operation.startTimeSeconds,
           operation.endTimeSeconds,
         );
+        this.quotaBlocked = false;
+        this.quotaRetryAfterBatchReduction = false;
       }
       this.currentBytes = 0;
       this.recountQueuedBytes();
@@ -267,6 +274,11 @@ export class MseAppendQueue {
         return;
       }
     }
+    if (this.quotaBlocked) {
+      if (!this.quotaRetryAfterBatchReduction) return;
+      this.quotaBlocked = false;
+      this.quotaRetryAfterBatchReduction = false;
+    }
     if (!this.queue.length) return;
     let item = this.queue.shift();
     if (item.kind === 'timestamp-offset') {
@@ -304,7 +316,7 @@ export class MseAppendQueue {
         const next = this.queue[0];
         if (next.kind !== 'append' || next.mime !== null ||
             next.startTimeSeconds === null || next.endTimeSeconds === null ||
-            batchBytes + next.data.byteLength > this.maximumAppendBatchBytes) break;
+            batchBytes + next.data.byteLength > this.currentAppendBatchBytes) break;
         batchItems.push(this.queue.shift());
         batchBytes += next.data.byteLength;
       }
@@ -346,8 +358,15 @@ export class MseAppendQueue {
       if (error?.name === 'QuotaExceededError') {
         this.quotaExceededCount += 1;
         this.lastQuotaExceededAtMilliseconds = Date.now();
-        this.trimBefore(this.mediaElement.currentTime - this.backBufferSeconds, true);
-        this.scheduleRetry();
+        const largestItemBytes = Math.max(...batchItems.map(part => part.data.byteLength));
+        const reducedBatchBytes = Math.max(largestItemBytes, Math.floor(data.byteLength / 2));
+        const batchReduced = batchItems.length > 1 &&
+          reducedBatchBytes < this.currentAppendBatchBytes;
+        if (batchReduced) this.currentAppendBatchBytes = reducedBatchBytes;
+        this.quotaBlocked = true;
+        this.quotaRetryAfterBatchReduction = batchReduced;
+        this.trimBackBuffer(true);
+        if (batchReduced) this.scheduleRetry();
       } else {
         this.fail(error);
       }
@@ -377,6 +396,7 @@ export class MseAppendQueue {
   }
 
   diagnostics(nowMilliseconds = Date.now()) {
+    const backBufferReferenceTime = this.getBackBufferReferenceTime(this.mediaElement);
     return {
       state: this.state,
       queuedBytes: this.queuedBytes,
@@ -386,6 +406,11 @@ export class MseAppendQueue {
       currentOperation: this.currentOperation?.kind ?? null,
       updateEndCount: this.updateEndCount,
       quotaExceededCount: this.quotaExceededCount,
+      quotaBlocked: this.quotaBlocked,
+      appendBatchLimitBytes: this.currentAppendBatchBytes,
+      backBufferReferenceTime: Number.isFinite(backBufferReferenceTime)
+        ? backBufferReferenceTime : null,
+      pendingTrimBeforeTime: this.trimBeforeTime,
       retryScheduled: this.retryTimer !== null,
       millisecondsSinceAppendStarted: this.lastAppendStartedAtMilliseconds === null
         ? null : Math.max(0, nowMilliseconds - this.lastAppendStartedAtMilliseconds),
@@ -403,6 +428,12 @@ export class MseAppendQueue {
     this.retryTimer = null;
     this.pump();
     return this.sourceBuffer.updating || this.currentOperation !== null;
+  }
+
+  trimBackBuffer(force = false) {
+    const referenceTime = this.getBackBufferReferenceTime(this.mediaElement);
+    if (!Number.isFinite(referenceTime)) return;
+    this.trimBefore(referenceTime - this.backBufferSeconds, force);
   }
 
   trimBefore(time, force = false) {
@@ -474,6 +505,8 @@ export class MseAppendQueue {
     this.retryTimer = null;
     this.trimBeforeTime = null;
     this.forceTrim = false;
+    this.quotaBlocked = false;
+    this.quotaRetryAfterBatchReduction = false;
     this.queue = [];
     this.queuedBytes = this.currentBytes;
     if (!this.sourceBuffer.updating) {
@@ -507,6 +540,8 @@ export class MseAppendQueue {
     this.committedMediaRanges = [];
     this.trimBeforeTime = null;
     this.forceTrim = false;
+    this.quotaBlocked = false;
+    this.quotaRetryAfterBatchReduction = false;
     this.resolveWaiters();
   }
 

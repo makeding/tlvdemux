@@ -63,7 +63,8 @@ export function createMsePlaybackFlowControl({
 
   const trim = () => {
     for (const queue of requiredQueues().values()) {
-      queue.trimBefore(media.currentTime - backBufferSeconds);
+      if (typeof queue.trimBackBuffer === 'function') queue.trimBackBuffer();
+      else queue.trimBefore(media.currentTime - backBufferSeconds);
     }
   };
   const queuedBytes = queue => Number.isFinite(queue.queuedBytes)

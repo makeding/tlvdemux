@@ -347,12 +347,16 @@ for (const mime of [
   await tick();
   assert.equal(queue.error, null);
   assert.deepEqual(sourceBuffer.removeCalls, []);
-  assert.equal(sourceBuffer.updating, true);
-  sourceBuffer.complete();
-  await queue.waitIdle();
-  assert.equal(queue.queuedBytes, 0);
-  assert.deepEqual(queue.committedRanges(), [],
-    'QuotaExceeded retry without timing invented committed coded coverage');
+  assert.equal(sourceBuffer.updating, false);
+  assert.equal(queue.diagnostics().quotaBlocked, true,
+    'single-fragment quota failure was not held until real reclaim progress');
+  assert.equal(queue.diagnostics().retryScheduled, false,
+    'single-fragment quota failure kept timer-spinning without removable history');
+  assert.equal(queue.notifyDemand(), false,
+    'demand retried the identical quota-blocked append without progress');
+  assert.equal(queue.quotaExceededCount, 1,
+    'demand notification multiplied a quota failure without progress');
+  queue.destroy();
 }
 
 {
@@ -376,18 +380,17 @@ for (const mime of [
     'quota-pressure setup unexpectedly retained a current append');
   assert.equal(queue.queue.length, 1,
     'quota-pressure setup did not retain the pending video operation');
-  assert.equal(queue.diagnostics().retryScheduled, true,
-    'quota-pressure setup did not defer its normal retry');
-  assert.equal(queue.notifyDemand(), true,
-    'playback demand did not synchronously pump an idle required queue');
-  assert.equal(sourceBuffer.updating, true,
-    'playback demand left the runnable SourceBuffer idle');
+  assert.equal(queue.diagnostics().retryScheduled, false,
+    'quota-pressure setup armed a retry without reclaim or batch progress');
+  assert.equal(queue.notifyDemand(), false,
+    'playback demand retried an identical quota-blocked append without reclaim');
+  assert.equal(sourceBuffer.updating, false,
+    'quota-blocked SourceBuffer unexpectedly began the same append again');
   assert.equal(queue.diagnostics().retryScheduled, false,
     'playback demand left a stale quota retry armed');
-  sourceBuffer.complete();
-  await queue.waitIdle();
-  assert.deepEqual(queue.committedRanges(), [{start: 0, end: 2}],
-    'demand-driven quota recovery lost committed coded coverage');
+  assert.equal(queue.quotaExceededCount, 1,
+    'playback demand spun the quota counter without state progress');
+  queue.destroy();
 }
 
 {
@@ -414,12 +417,38 @@ for (const mime of [
   assert.deepEqual(sourceBuffer.removeCalls.at(-1), [0, 2],
     'batched QuotaExceeded retry did not make bounded back-buffer room');
   sourceBuffer.complete();
-  assert.equal(sourceBuffer.appendLengths.at(-1), 4 * 1024 * 1024,
-    'batched QuotaExceeded retry did not restore the original media fragments');
+  assert.equal(sourceBuffer.appendLengths.at(-1), 2 * 1024 * 1024,
+    'batched QuotaExceeded retry did not reduce the failed append transaction');
+  sourceBuffer.complete();
+  assert.equal(sourceBuffer.appendLengths.at(-1), 2 * 1024 * 1024,
+    'adaptive quota recovery did not preserve the remaining original fragment');
   sourceBuffer.complete();
   await queue.waitIdle();
   assert.deepEqual(queue.committedRanges(), [{start: 20, end: 23}],
     'batched QuotaExceeded retry lost the original coded intervals');
+}
+
+{
+  const sourceBuffer = new FakeSourceBuffer([[0, 30]]);
+  const mediaSource = new FakeMediaSource(sourceBuffer);
+  let presentedTime = 5;
+  const media = {currentTime: 15.5, error: null, buffered: sourceBuffer.buffered};
+  const queue = new MseAppendQueue(mediaSource, media, 'video/mp4', null, {
+    backBufferSeconds: 3,
+    getBackBufferReferenceTime: () => presentedTime,
+  });
+  queue.trimBackBuffer(true);
+  queue.notifyDemand();
+  assert.deepEqual(sourceBuffer.removeCalls, [[0, 2]],
+    'video back-buffer trim followed the racing media clock instead of the presented frame');
+  sourceBuffer.complete();
+  presentedTime = 8;
+  queue.trimBackBuffer(true);
+  queue.notifyDemand();
+  assert.deepEqual(sourceBuffer.removeCalls.at(-1), [0, 5],
+    'video back-buffer trim did not advance with compositor-presented frames');
+  sourceBuffer.complete();
+  await queue.waitIdle();
 }
 
 {

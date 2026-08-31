@@ -29,7 +29,8 @@ import {createMseVideoRecoveryLogger, createRecordedMseTransitionManager,
   from './recorded-mse-transition.js?v=recorded-seek-entry-fence-v2';
 import {commitDemoMseCandidate, createMediaElementProxy, formatBytes, onceMediaEvent, openDetachedMseMedia}
   from './mse-media-transaction.js?v=recorded-seek-entry-fence-v2';
-import {createMseSupplyCoordinator, describeRecordedSupplyStart}
+import {activateManagedMediaSourceForBuffering, createMseSupplyCoordinator,
+  describeRecordedSupplyStart}
   from './mse-supply-flow.js?v=common-av-supply-v1';
 import {MSE_MAX_AUDIO_CHANNELS, createDemoTrackControls}
   from './track-controls.js?v=recorded-seek-fence-v1';
@@ -435,8 +436,9 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     activeMediaSource = fresh;
     activeObjectUrl = URL.createObjectURL(fresh);
     elements.video.replaceChildren();
-    if (typeof globalThis.ManagedMediaSource === 'function' &&
-        fresh instanceof globalThis.ManagedMediaSource) {
+    const managedActivation = typeof globalThis.ManagedMediaSource === 'function' &&
+      fresh instanceof globalThis.ManagedMediaSource;
+    if (managedActivation) {
       // WebKit only activates ManagedMediaSource when an AirPlay fallback is
       // present or remote playback is explicitly disabled. The raw TLV demo
       // has no native AirPlay source, so opt out before attaching the blob URL.
@@ -445,13 +447,14 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     }
     elements.video.src = activeObjectUrl;
     elements.video.load();
-    if (typeof globalThis.ManagedMediaSource === 'function' &&
-        fresh instanceof globalThis.ManagedMediaSource) {
+    if (managedActivation) {
       // iOS starts a ManagedMediaSource only after the media element enters
-      // playback. The element is muted/playsinline, so this is autoplay-safe.
-      elements.video.play().catch(() => {});
+      // playback. This is only an activation handshake: formal recorded
+      // playback still belongs to the common-A/V startup watermark below.
+      await activateManagedMediaSourceForBuffering(elements.video, opened);
+    } else {
+      await opened;
     }
-    await opened;
     appendLog(`${typeof globalThis.ManagedMediaSource === 'function' &&
       fresh instanceof globalThis.ManagedMediaSource
       ? 'ManagedMediaSource' : 'MediaSource'} を使用します`);
@@ -682,7 +685,14 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       if (queue && queue.mime !== init.mime) {
         throw new Error(`シーク中に ${type} codec が変化しました: ${queue.mime} -> ${init.mime}`);
       }
-      if (!queue) queue = new MseAppendQueue(mediaSource, elements.video, init.mime, update, options);
+      if (!queue) {
+        queue = new MseAppendQueue(mediaSource, elements.video, init.mime, update, {
+          ...options,
+          getBackBufferReferenceTime: type === 'video'
+            ? () => gapRecovery.lastPresentedTime
+            : () => elements.video.currentTime,
+        });
+      }
       return queue;
     },
     onQueueCreated(type, queue) {
@@ -1809,7 +1819,11 @@ function bindPlaybackMediaEvents(media) {
             ? `/current=${formatBytes(BigInt(detail.currentBytes))}` +
               `/pending=${detail.pendingOperations}/updating=${detail.updating}` +
               `/state=${detail.state}/updateend=${detail.updateEndCount}` +
-              `/quota=${detail.quotaExceededCount}/retry=${detail.retryScheduled}` +
+              `/quota=${detail.quotaExceededCount}/blocked=${detail.quotaBlocked}` +
+              `/batch=${formatBytes(BigInt(detail.appendBatchLimitBytes))}` +
+              `/trimRef=${detail.backBufferReferenceTime?.toFixed(3) ?? '-'}s` +
+              `/trimTo=${detail.pendingTrimBeforeTime?.toFixed(3) ?? '-'}s` +
+              `/retry=${detail.retryScheduled}` +
               `/appendAge=${detail.millisecondsSinceAppendStarted ?? '-'}ms` +
               `/updateAge=${detail.millisecondsSinceUpdateEnd ?? '-'}ms` +
               `/quotaAge=${detail.millisecondsSinceQuotaExceeded ?? '-'}ms`
