@@ -241,9 +241,7 @@ try {
         }
       },
       onAccessUnit(unit) {
-        if (session?.phase === 'probe' &&
-            unit.codec === 'hevc' &&
-            (unit.randomAccess || unit.discontinuity) && probeUnits.length < 64) {
+        if (session?.phase === 'probe' && unit.codec === 'hevc' && probeUnits.length < 64) {
           probeUnits.push(`${unit.trackId}:${unit.ptsValue}/${unit.ptsTimescale}:` +
             `${unit.randomAccess}:${unit.restartOffset}:${unit.inputOffset}`);
         }
@@ -315,6 +313,9 @@ try {
         }
       },
       checkError: () => { if (callbackError) throw callbackError; },
+      readBudgetBytes: process.env.TLVDEMUX_SEEK_BUDGET_BYTES === undefined
+        ? MSE_SEEK_READ_BUDGET_BYTES
+        : Number(process.env.TLVDEMUX_SEEK_BUDGET_BYTES),
     });
     try {
       let result;

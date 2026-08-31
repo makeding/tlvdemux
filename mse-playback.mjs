@@ -791,8 +791,6 @@ export function createMseRecordedSeekSession({
   const sourceEndUs = BigInt(presentationEndUs);
   const toleranceUs = BigInt(Math.round(ENTRY_TOLERANCE_SECONDS * 1000000));
   const probePrerollUs = BigInt(Math.round(probePrerollSeconds * 1000000));
-  const minimumLandingPrerollUs = requiredTracks.includes('video') &&
-    requiredTracks.includes('audio') ? 1000000n : 0n;
   const tracks = new Map();
   const cachedRanges = [];
   const probeFrontiers = new Map();
@@ -805,6 +803,7 @@ export function createMseRecordedSeekSession({
   let phase = 'idle';
   let bytesRead = 0n;
   let currentPushOffset = 0n;
+  let headTimelineReady = false;
 
   const active = () => !signal?.aborted && isActive();
   const ensureActive = () => { if (!active()) throw abortError(); };
@@ -820,6 +819,7 @@ export function createMseRecordedSeekSession({
     if (track.kind === 'audio' && unit.codec !== 'aac-latm') return;
     const pts = timestampUs(unit);
     if (pts === null) return;
+    if (phase === 'head') headTimelineReady = true;
     const sample = {
       ptsUs: pts,
       offset: unit.inputOffset === undefined ? currentPushOffset : BigInt(unit.inputOffset),
@@ -892,16 +892,15 @@ export function createMseRecordedSeekSession({
       frontier > sourceTargetUs + toleranceUs);
   };
 
-  const bestRap = (minimumPrerollUs = 0n) => [...probeRaps.values()]
-    .filter(rap => rap.ptsUs <= sourceTargetUs - minimumPrerollUs &&
-      tracks.has(rap.trackId))
+  const bestRap = () => [...probeRaps.values()]
+    .filter(rap => rap.ptsUs <= sourceTargetUs && tracks.has(rap.trackId))
     .sort((left, right) => {
       if (left.ptsUs !== right.ptsUs) return left.ptsUs > right.ptsUs ? -1 : 1;
       return videoTrackPriority(tracks.get(left.trackId)) - videoTrackPriority(tracks.get(right.trackId));
     })[0] ?? null;
 
-  const hasUsablePrerollRap = () => {
-    const rap = bestRap(minimumLandingPrerollUs);
+  const hasNearbyRap = () => {
+    const rap = bestRap();
     return rap !== null && rap.ptsUs + probePrerollUs >= sourceTargetUs;
   };
 
@@ -925,7 +924,7 @@ export function createMseRecordedSeekSession({
     await demuxer.setMseOutputEnabled(false);
     await demuxer.setMseTimestampOffset?.(-BigInt(presentationStartUs));
     let headOffset = 0n;
-    while (!headReady()) {
+    while (!headReady() || !headTimelineReady) {
       if (headOffset >= source.size) throw new MseRecordedSeekError('source-ended');
       const data = await read(headOffset, chunkSize);
       await push(data, headOffset);
@@ -946,12 +945,21 @@ export function createMseRecordedSeekSession({
     }
     const estimate = BigInt(estimateValue);
     const estimatedWindow = source.size * BigInt(Math.round(probePrerollSeconds * 1000000)) / durationUs;
-    const window = clampBigInt(estimatedWindow, chunkSize, 2n * 1024n * 1024n);
+    const window = clampBigInt(estimatedWindow, chunkSize, 3n * 1024n * 1024n);
+    const boundedForwardSpan = budget / 2n < 8n * 1024n * 1024n
+      ? budget / 2n : 8n * 1024n * 1024n;
+    const probeSpan = boundedForwardSpan > window ? boundedForwardSpan : window;
     let candidate = clampBigInt(estimate > window ? estimate - window : 0n, 0n,
+      source.size > chunkSize ? source.size - chunkSize : 0n);
+    const firstProbeSpan = 5n * chunkSize / 4n;
+    const forwardProbeSpan = 3n * chunkSize;
+    const forwardAnchor = clampBigInt(estimate + window + 2n * chunkSize, 0n,
       source.size > chunkSize ? source.size - chunkSize : 0n);
     let chosen = null;
     const probedCandidates = new Set();
     let earliestCandidate = candidate;
+    let initialProbe = true;
+    let forwardProbe = false;
 
     for (;;) {
       ensureActive();
@@ -961,26 +969,26 @@ export function createMseRecordedSeekSession({
       if (candidate < earliestCandidate) earliestCandidate = candidate;
       await demuxer.reposition(candidate, true);
       let offset = candidate;
-      const probeEnd = candidate + window < source.size
-        ? candidate + window : source.size;
-      while (offset < probeEnd && !frontiersPastTarget() && !hasUsablePrerollRap()) {
-        const data = await read(offset, chunkSize);
+      const activeProbeSpan = initialProbe ? firstProbeSpan
+        : forwardProbe ? forwardProbeSpan : probeSpan;
+      const probeEnd = candidate + activeProbeSpan < source.size
+        ? candidate + activeProbeSpan : source.size;
+      while (offset < probeEnd && !frontiersPastTarget() && !hasNearbyRap()) {
+        const remainingProbe = probeEnd - offset;
+        const data = await read(offset, remainingProbe < chunkSize ? remainingProbe : chunkSize);
         await push(data, offset);
         offset += BigInt(data.byteLength);
       }
-      const landingRap = bestRap(minimumLandingPrerollUs);
-      chosen = landingRap && landingRap.ptsUs + probePrerollUs >= sourceTargetUs
-        ? landingRap : bestRap();
+      chosen = bestRap();
       const chosenPrerollUs = chosen === null ? null : sourceTargetUs - chosen.ptsUs;
-      if (chosen && ((chosenPrerollUs >= minimumLandingPrerollUs &&
-          chosenPrerollUs <= probePrerollUs) || candidate === 0n)) break;
-      if (chosen && chosenPrerollUs < minimumLandingPrerollUs) {
-        const earlierCandidate = chosen.restartOffset > window
-          ? chosen.restartOffset - window : 0n;
-        candidate = earlierCandidate < candidate
-          ? earlierCandidate : candidate > window ? candidate - window : 0n;
+      if (chosen && (chosenPrerollUs <= probePrerollUs || candidate === 0n)) break;
+      if (initialProbe) {
+        initialProbe = false;
+        forwardProbe = true;
+        candidate = forwardAnchor;
         continue;
       }
+      forwardProbe = false;
       if (candidate === 0n) {
         while (offset < source.size) {
           const data = await read(offset, chunkSize);
@@ -993,8 +1001,9 @@ export function createMseRecordedSeekSession({
         break;
       }
       const interpolated = interpolatedTargetOffset();
+      const interpolationPreroll = window * 2n;
       const interpolatedCandidate = interpolated === null ? null
-        : interpolated > window ? interpolated - window : 0n;
+        : interpolated > interpolationPreroll ? interpolated - interpolationPreroll : 0n;
       let nextCandidate = interpolatedCandidate ??
         (candidate > window ? candidate - window : 0n);
       nextCandidate = clampBigInt(nextCandidate, 0n,
