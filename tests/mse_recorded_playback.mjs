@@ -280,6 +280,34 @@ const locateAtStart = async () => ({
 }
 
 {
+  const media = {currentTime: 9, playbackRate: 1};
+  const switches = [];
+  const controller = createMseRecordedPlaybackController({
+    source: streamSource([]), media,
+    queues: new Map([['video', queue()], ['audio', queue()]]),
+    demuxer: {push: async () => {}}, commonAhead: () => 0,
+    locateSeekWindow: locateAtStart,
+    switchVideoMode: async mode => { switches.push(mode); return mode === 'frozen'; },
+  });
+  await controller.reportSourceDamage({damageStartTimeSeconds: 9});
+  assert.equal(controller.diagnostics().continuityState, 'frozen');
+  assert.equal(controller.videoMode, 'frozen');
+  assert.equal(media.currentTime, 9, 'ordinary source-damage recovery wrote currentTime');
+  controller.reportVideoRecovery({
+    phase: 'candidate-rejected', continuityState: 'preferred-candidate',
+    damageStartUs: 9000000n, aacFrontierUs: 10000000n,
+    frozenThroughUs: 10010000n, candidateRapUs: 9800000n,
+    fallbackTrackId: null, lastVideoOutputEndUs: 10010000n,
+  });
+  assert.equal(controller.diagnostics().continuityState, 'frozen');
+  controller.reportVideoRecovery({phase: 'stable-rap-committed'});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(controller.diagnostics().continuityState, 'normal');
+  assert.deepEqual(switches, ['frozen', 'preferred']);
+  assert.equal(media.currentTime, 9, 'preferred restoration wrote currentTime');
+}
+
+{
   let firstAbort = null;
   const source = {
     size: 64n,

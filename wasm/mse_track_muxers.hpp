@@ -7,6 +7,7 @@
 #include "mse/hevc_parser.hpp"
 #include "mse/latm_parser.hpp"
 #include "mse/mp4_builder.hpp"
+#include "mse/video_continuity_state.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -34,6 +35,11 @@ using tlvdemux::detail::mse::LatmParser;
 using tlvdemux::detail::mse::Mp4Track;
 using tlvdemux::detail::mse::NaluView;
 using tlvdemux::detail::mse::Sample;
+using tlvdemux::detail::mse::PreferredContinuityDecision;
+using tlvdemux::detail::mse::VideoContinuityPhase;
+using tlvdemux::detail::mse::VideoContinuitySnapshot;
+using tlvdemux::detail::mse::VideoContinuityState;
+using tlvdemux::detail::mse::video_continuity_phase_name;
 using tlvdemux::detail::mse::annex_b_views;
 using tlvdemux::detail::mse::append;
 using tlvdemux::detail::mse::copy_nalu;
@@ -47,4 +53,3 @@ using tlvdemux::detail::mse::scaled;
 #include "mse_aac_muxer.hpp"
 
 } // namespace tlvdemux::detail::mse::remux
-

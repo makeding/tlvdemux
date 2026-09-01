@@ -10,6 +10,12 @@ export type MseRecordedPlaybackState =
   | 'idle' | 'locating-audio' | 'resolving-video' | 'committing'
   | 'running' | 'ended' | 'error';
 export type MseRecordedVideoMode = 'preferred' | 'rainfall' | 'frozen';
+export type MseRecordedSeekState =
+  | 'seek-audio-anchor' | 'seek-preferred' | 'seek-rainfall'
+  | 'seek-prior-frame' | 'seek-commit' | 'seek-resume';
+export type MseRecordedContinuityState =
+  | 'normal' | 'damage-sealed' | 'fallback-pending' | 'frozen'
+  | 'preferred-candidate' | 'restoring';
 
 export interface MseRecordedAudioWindow {
   startTimeSeconds: number;
@@ -64,7 +70,11 @@ export interface MseRecordedPlaybackController {
   setPlaybackRate(rate: number): {highMediaSeconds: number; lowMediaSeconds: number};
   notifyPresentedFrame(mediaTimeSeconds: number): void;
   notifyConsumption(): void;
-  reportSourceDamage(): void;
+  reportSourceDamage(options?: {
+    damageStartTimeSeconds?: number;
+    fallbackVideoTrack?: bigint | null;
+  }): Promise<unknown>;
+  reportVideoRecovery(event: Record<string, unknown>): void;
   notifyPreferredStableRap(): void;
   reportPlaybackQuality(options: {
     totalFrames: number;
@@ -94,6 +104,7 @@ export declare function createMseRecordedPlaybackController(options: {
     readBudgetBytes: bigint;
     signal: AbortSignal;
     transition: (state: MseRecordedPlaybackState) => void;
+    seekTransition?: (state: MseRecordedSeekState) => void;
     waitForQueues: () => Promise<void>;
   }) => Promise<{nextOffset: bigint; bytesRead: bigint; videoMode: MseRecordedVideoMode}>;
   switchVideoMode?: (mode: MseRecordedVideoMode, reason: string | null) => unknown;

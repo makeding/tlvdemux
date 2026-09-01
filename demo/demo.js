@@ -2,6 +2,7 @@ import { DataBroadcastController } from './data-broadcast.js?v=webkit-canvas-pla
 import { HlgSdrRenderer } from '../hlg-sdr-renderer.mjs?v=cpp-color-lut-v1';
 import {
   audioTrackChoices,
+  configureAutomaticLayerPair,
   correspondingAudioTrack,
   resolveLayerPair,
   sameVideoLayerGroup,
@@ -554,6 +555,8 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   let selectedSubtitle = null;
   let selectedVideoTrack = null;
   let layerPair = null;
+  let automaticLayerSignature = null;
+  let automaticLayerConfiguration = Promise.resolve();
   let locator = null;
   let recorded = null;
   let callbackError = null;
@@ -620,6 +623,13 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     layerPair = audio ? resolveLayerPair(
       [...tracks.values()], selectedVideoTrack, audio, selectedAudioGroupId,
     ) : null;
+    if (!demuxer || !layerPair) return;
+    automaticLayerConfiguration = automaticLayerConfiguration.then(async () => {
+      automaticLayerSignature = await configureAutomaticLayerPair(
+        demuxer, layerPair, automaticLayerSignature,
+        {manual: videoSelectionMode === 'fixed'},
+      );
+    }).catch(error => { callbackError = error; });
   };
   const selectAudio = track => {
     if (!mseAudioTrackSupported(track)) return false;
@@ -640,20 +650,21 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     renderVideoTracks();
   };
   const switchVideoMode = async (mode, reason) => {
-    if (!layerPair || mode === 'frozen') return;
+    if (mode === 'frozen') return true;
+    if (!layerPair) return false;
     const target = mode === 'rainfall' ? layerPair.fallback : layerPair.preferred;
-    if (!target || target.video.trackId === selectedVideo) return;
+    if (!target || target.video.trackId === selectedVideo) return true;
     const accepted = await demuxer.switchLayer(
-      target.video.trackId, target.audio.trackId,
+      target.video.trackId, selectedAudio,
       BigInt(Math.round(elements.video.currentTime * 1000000)) +
         (liveMode ? 0n : timestampMicroseconds(probeResult.presentationStart)),
     );
-    if (!accepted) return;
+    if (!accepted) return false;
     selectedVideo = target.video.trackId;
     selectedVideoTrack = target.video;
-    selectedAudio = target.audio.trackId;
     appendLog(`${reason === 'decoder-performance' ? '復号負荷' : 'source damage'} により ` +
       `${mode === 'rainfall' ? '降雨対応' : '通常'}映像へ切替`);
+    return true;
   };
 
   const callbacks = {
@@ -669,11 +680,31 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       try { pipeline.onMseVideoSplice(splice); } catch (error) { callbackError = error; }
     },
     onMseVideoRecovery(event) {
-      if (event.phase === 'stable-rap-committed') recorded?.notifyPreferredStableRap();
+      recorded?.reportVideoRecovery(event);
     },
-    onPlaybackDamage() {
+    onMseLayerSwitch(layer) {
+      const video = tracks.get(layer.videoTrackId);
+      const audio = tracks.get(layer.audioTrackId);
+      if (video) {
+        selectedVideo = video.trackId;
+        selectedVideoTrack = video;
+        selectedVideoPacketId = video.packetId;
+      }
+      if (audio) {
+        selectedAudio = audio.trackId;
+        selectedAudioPacketId = audio.packetId;
+      }
+      refreshLayerPair();
+      renderVideoTracks();
+      renderAudioTracks();
+    },
+    onPlaybackDamage(damage) {
       if (liveMode) return;
-      recorded?.reportSourceDamage();
+      void recorded?.reportSourceDamage({
+        damageStartTimeSeconds: damage.startTimeUs === null
+          ? elements.video.currentTime
+          : Number(damage.startTimeUs) / 1000000,
+      });
     },
     onTrack(track) {
       tracks.set(track.trackId, track);
@@ -764,6 +795,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   activeVideoSelectionMode = value => {
     if (value === null) {
       videoSelectionMode = 'auto';
+      refreshLayerPair();
       return Promise.resolve();
     }
     videoSelectionMode = 'fixed';

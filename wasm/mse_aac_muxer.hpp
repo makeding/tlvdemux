@@ -10,6 +10,7 @@ public:
         if (!preserve_history) {
             history_.clear();
             contiguous_emitted_end_us_.reset();
+            output_frontier_us_.reset();
             timeline_offset_us_.reset();
             source_buffer_timestamp_offset_us_ = 0;
         }
@@ -18,6 +19,7 @@ public:
     void activate() {
         clear_resume();
         contiguous_emitted_end_us_.reset();
+        output_frontier_us_.reset();
         BaseMuxer::activate();
     }
 
@@ -60,6 +62,10 @@ public:
     std::optional<std::uint32_t> track_sample_rate() const noexcept {
         return track_.has_value() ? std::optional<std::uint32_t>(track_->sample_rate)
                                   : std::nullopt;
+    }
+
+    std::optional<std::int64_t> output_frontier_us() const noexcept {
+        return output_frontier_us_;
     }
 
     std::optional<std::int64_t> activate_from(
@@ -239,6 +245,11 @@ public:
             }
             timestamp += timestamp_correction_ticks_;
         }
+        if (selected && output_enabled) {
+            output_frontier_us_ = scaled(
+                timestamp + static_cast<std::int64_t>(default_duration()),
+                track_->timescale, 1000000);
+        }
         Sample sample{std::move(frame.data), timestamp, timestamp,
                       default_duration(), true};
         history_.push_back(sample);
@@ -323,6 +334,7 @@ private:
     std::optional<std::int64_t> resume_origin_ticks_;
     bool first_after_resume_ = false;
     std::optional<std::int64_t> contiguous_emitted_end_us_;
+    std::optional<std::int64_t> output_frontier_us_;
     std::int64_t source_buffer_timestamp_offset_us_ = 0;
     std::int64_t timestamp_correction_ticks_ = 0;
     std::optional<std::int64_t> timeline_offset_us_;

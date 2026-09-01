@@ -296,15 +296,9 @@ try {
         if (video.trackId === selectedVideo) return;
         const track = tracks.get(video.trackId);
         if (!track) return;
-        const currentAudio = tracks.get(selectedAudio);
-        const audio = correspondingAudio([...tracks.values()], currentAudio, track);
         selectedVideo = track.trackId;
         selectedVideoTrack = track;
         demuxer.selectTrack('video', selectedVideo);
-        if (audio) {
-          selectedAudio = audio.trackId;
-          demuxer.selectTrack('audio', selectedAudio);
-        }
       },
     });
     try {
@@ -360,6 +354,18 @@ try {
         assert.equal(zeroSplice, undefined,
           `seek ${targetTimeSeconds}s mapped ${type} back to playback entry zero`);
       }
+      const lockedAudio = selectedAudio;
+      const recoveryCountAtCommit = videoRecoveryEvents.length;
+      const sequential = await readRange(result.nextOffset, 512n * 1024n);
+      if (sequential.byteLength) {
+        assert.equal(demuxer.push(sequential), true,
+          `seek ${targetTimeSeconds}s rejected sequential continuation`);
+      }
+      if (callbackError) throw callbackError;
+      assert.equal(selectedAudio, lockedAudio,
+        `seek ${targetTimeSeconds}s changed the selected AAC during video landing`);
+      assert.equal(videoRecoveryEvents.length, recoveryCountAtCommit,
+        `seek ${targetTimeSeconds}s treated its reposition boundary as source damage`);
       let damageStartUs = null;
       let concealed = false;
       for (const event of videoRecoveryEvents) {
@@ -379,6 +385,7 @@ try {
       }
       results.push({
         targetTimeSeconds,
+        selectedAudioPacketId: tracks.get(selectedAudio)?.packetId ?? null,
         videoMode: result.videoMode,
         videoTimeSeconds: result.video.startTimeSeconds,
         restartOffset: String(result.video.restartOffset ?? result.audio.restartOffset),

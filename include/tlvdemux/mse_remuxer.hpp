@@ -110,6 +110,13 @@ struct MseVideoRecoveryEvent {
     std::uint64_t video_track_id = 0;
     std::int64_t presentation_time_us = 0;
     MseVideoRecoveryPhase phase = MseVideoRecoveryPhase::ObservationStarted;
+    std::string continuity_state = "normal";
+    std::optional<std::int64_t> damage_start_us;
+    std::optional<std::int64_t> aac_frontier_us;
+    std::optional<std::int64_t> frozen_through_us;
+    std::optional<std::int64_t> candidate_rap_us;
+    std::optional<std::uint64_t> fallback_track_id;
+    std::optional<std::int64_t> last_video_output_end_us;
 };
 
 struct MseVideoColor {

@@ -132,8 +132,21 @@ input offset で識別した AAC window を最初に確定し、その同じ aud
 3. window より前にある最後の利用可能な decode 可能 IRAP 画面を、元の AAC を一切
    変更せず、単調な映像 DTS/PTS で繰り返す frozen mode
 
-未来の frame を過去へ複製してはいけません。source damage による降雨 fallback は
-次の安定した通常 RAP で自動復帰できます。decoder 性能による fallback は明示 seek
+未来の frame を過去へ複製してはいけません。通常の順次再生中に source damage が
+発生した場合、損傷前の完全な preferred 映像 prefix を封印し、選択 AAC だけを連続
+clock とします。同じ AAC window を覆う closed rainfall GOP があれば映像だけを切替え、
+選択 AAC は変更しません。covering rainfall がない、または 1 AAC window 内に commit
+できない場合、損傷前最後の decode 可能 IRAP／CRA を通常 fragment 大で各 AAC window
+から AAC EOS まで繰り返します。fallback layer や後続の安定 RAP がなくても映像出力を
+停止してはいけません。連続損傷では現在の preferred 候補 GOP だけを破棄し、frozen
+出力を継続します。最初の完全な preferred GOP は過去へ backfill せず観察し、その次の
+無損傷 RAP で real picture へ video-only splice します。
+
+native continuity state は `normal`、`damage-sealed`、`fallback-pending`、`frozen`、
+`preferred-candidate`、`restoring` です。diagnostics は state、damage start、選択 AAC
+frontier、frozen-through、candidate RAP、fallback video track、最後の映像出力 endpoint
+を公開します。quota pressure と単なる `waiting` は映像 recovery の原因として記録せず、
+この state machine に入りません。decoder 性能による fallback は明示 seek
 または reload まで降雨に固定します。明示 decoder／MediaElement error は直ちに、
 または共通 A/V が wall clock で 1 秒以上残る状態で 5 秒 window の dropped frame が
 20% を超える状態が 2 回連続した場合に性能 fallback を開始します。
@@ -155,9 +168,13 @@ compositor が最後に提示した境界より前の完全な history window �
 一度だけ retry します。quota、通常の `waiting`、demand は seek や無制限 retry を
 許可しません。`MSE_RECORDED_SUPPLY_STALLED` は Recorded の有効な結果ではありません。
 
-`start()` と `seek(targetSeconds)` は同じ controller と同じ厳格な 16 MiB
-transaction budget を共有します。seek は選択 AAC target window を先に固定し、
-preferred／rainfall／frozen 映像を解決して一度だけ formal A/V commit します。
+`start()` と `seek(targetSeconds)` は同じ controller を使用し、probe、landing、formal
+commit 全体で同じ厳格な 16 MiB transaction budget を共有します。明示 seek は
+`seek-audio-anchor`、`seek-preferred`、`seek-rainfall`、`seek-prior-frame`、
+`seek-commit`、`seek-resume` の順に進みます。選択 AAC target window を先に固定し、
+preferred／rainfall／prior-frame 映像を解決して一度だけ formal A/V commit します。
+preferred と rainfall の双方が使えない場合は、target 前最後の decode 可能画面を AAC
+landing window 全体に表示します。
 probe 中は要求 `currentTime` を変更せず、明示 seek の commit 後にだけ設定します。
 後続 seek は古い source stream と transaction を cancel します。error は AAC anchor
 未発見、budget 内に preferred／rainfall／過去の decode 可能 frame がない場合、source
@@ -167,7 +184,9 @@ Blob と strict-Range HTTP recording は `stream(offset, {signal})` を公開し
 Blob は順次 stream、HTTP は一つの `Range: bytes=<offset>-` response を使用します。
 Recorded と Live は同じ 512 KiB／25 ms input coalescer を使用します。
 `read(offset, length)` は duration probe と明示 seek 専用です。seek 後は古い stream
-を abort し、commit 済み `nextOffset` から新しい順次 stream を開始します。
+を abort し、実際に commit 済みの `nextOffset` から新しい順次 stream を開始します。
+Recorded の byte reposition／landing 境界を source damage とみなして continuity recovery
+を開始してはいけません。
 
 別の Recorded seek session、damage-recovery seek、audio-only rebuild、resilience
 controller はこの contract に存在しません。単なる `waiting` は消費側にデータがない

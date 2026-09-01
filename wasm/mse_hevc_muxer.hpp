@@ -11,6 +11,30 @@ public:
         output_started_ = false;
         recovery_observation_eligible_ = false;
     }
+    const VideoContinuitySnapshot& continuity_snapshot() const noexcept {
+        return continuity_.snapshot();
+    }
+    void set_source_buffer_timestamp_offset(const std::int64_t offset_us) noexcept {
+        source_buffer_timestamp_offset_us_ = offset_us;
+    }
+    void set_recorded_continuity_enabled(const bool enabled) noexcept {
+        recorded_continuity_enabled_ = enabled;
+        if (!enabled) {
+            continuity_.reset();
+            frozen_next_pts_ticks_.reset();
+        }
+    }
+    void configure_recorded_video_layers(
+        const std::uint64_t preferred_track_id,
+        const std::uint64_t fallback_track_id) noexcept {
+        preferred_video_track_id_ = preferred_track_id;
+        fallback_video_track_id_ = fallback_track_id;
+    }
+    void clear_recorded_video_layers() noexcept {
+        preferred_video_track_id_.reset();
+        fallback_video_track_id_.reset();
+        fallback_video_committed_ = false;
+    }
     void set_sdr_in_hlg(const std::uint64_t track_id, const bool enabled) {
         const auto previous = color_policy(track_id);
         if (enabled) sdr_in_hlg_tracks_.insert(track_id);
@@ -52,12 +76,18 @@ public:
     std::optional<std::int64_t> take_splice_boundary_us() noexcept {
         return std::exchange(splice_boundary_us_, std::nullopt);
     }
-    void stage_next_switch() noexcept {
+    void stage_next_switch(
+        const std::optional<std::uint64_t> fallback_track_id = std::nullopt,
+        const bool preserve_continuity = false) noexcept {
+        if (fallback_track_id) continuity_.awaitFallback(*fallback_track_id);
+        else if (!preserve_continuity) continuity_.reset();
         source_damage_observation_ = SourceDamageObservation::None;
         recovery_candidate_rejected_ = false;
         recovery_episode_reported_ = false;
         recovery_observation_eligible_ = false;
         stage_next_switch_ = true;
+        restoring_layer_switch_ = preserve_continuity &&
+            continuity_.phase() == VideoContinuityPhase::Restoring;
     }
     void cancel_staged_switch() noexcept { stage_next_switch_ = false; }
     void retry_staged_switch() noexcept {
@@ -68,6 +98,7 @@ public:
         no_rasl_output_ = false;
         sequence_start_ = true;
         splice_boundary_us_.reset();
+        continuity_.reset();
         source_damage_observation_ = SourceDamageObservation::None;
         recovery_candidate_rejected_ = false;
         recovery_episode_reported_ = false;
@@ -99,6 +130,84 @@ public:
         flush_at(end_pts - last_closed_picture_->composition_offset);
         return true;
     }
+    bool extend_frozen_through(const std::int64_t aac_frontier_us) {
+        continuity_.noteAacFrontier(aac_frontier_us);
+        if (!recorded_continuity_enabled_ || fallback_video_committed_ ||
+            (continuity_.phase() != VideoContinuityPhase::Frozen &&
+             continuity_.phase() != VideoContinuityPhase::FallbackPending) ||
+            !last_closed_picture_ || !track_) return false;
+        if (!frozen_next_pts_ticks_) {
+            const auto start_us = last_video_source_end_us_
+                .value_or(continuity_.snapshot().damage_start_us.value_or(aac_frontier_us));
+            frozen_next_pts_ticks_ = scaled(start_us, 1000000, track_->timescale);
+        }
+        const auto frontier = scaled(aac_frontier_us, 1000000, track_->timescale);
+        const auto duration = std::max<std::int64_t>(1, default_duration());
+        while (*frozen_next_pts_ticks_ < frontier) {
+            const auto pts = *frozen_next_pts_ticks_;
+            const auto dts = pts - last_closed_picture_->composition_offset;
+            if (dts < 0) return false;
+            auto data = last_closed_picture_->data;
+            if (!enqueue({std::move(data), dts, pts, 0, true})) return false;
+            *frozen_next_pts_ticks_ += duration;
+        }
+        const auto through_us = scaled(
+            *frozen_next_pts_ticks_, track_->timescale, 1000000);
+        continuity_.noteFrozenThrough(through_us);
+        started_ = true;
+        recovery_observation_eligible_ = true;
+        return true;
+    }
+    std::optional<std::int64_t> observe_preferred_candidate(
+        const aribtlv::AccessUnit& unit) {
+        if (!recorded_continuity_enabled_ || !fallback_video_committed_ ||
+            !preferred_video_track_id_ || unit.track_id != *preferred_video_track_id_ ||
+            unit.codec != aribtlv::Codec::Hevc || unit.pts.timescale <= 1) {
+            return std::nullopt;
+        }
+        const auto pts_us = scaled(unit.pts.value, unit.pts.timescale, 1000000);
+        const bool source_damage = unit.discontinuity &&
+            aribtlv::hasDiscontinuityReason(
+                unit.discontinuity_reasons,
+                aribtlv::DiscontinuityReason::SourceDamage);
+        const auto previous_phase = continuity_.phase();
+        const auto decision = continuity_.observePreferred(
+            pts_us, unit.random_access, source_damage);
+        if (previous_phase == VideoContinuityPhase::FallbackPending &&
+            continuity_.phase() == VideoContinuityPhase::PreferredCandidate) {
+            output_.video_recovery(recovery_event(
+                unit.track_id, pts_us,
+                tlvdemux::MseVideoRecoveryPhase::ObservationStarted));
+        }
+        if (decision == PreferredContinuityDecision::CandidateRejected) {
+            output_.video_recovery(recovery_event(
+                unit.track_id, pts_us,
+                tlvdemux::MseVideoRecoveryPhase::CandidateRejected));
+        }
+        if (decision == PreferredContinuityDecision::Restore) return pts_us;
+        return std::nullopt;
+    }
+    void complete_source_damage_layer_switch(
+        const std::uint64_t track_id, const std::int64_t boundary_us) {
+        if (preferred_video_track_id_ && track_id == *preferred_video_track_id_ &&
+            restoring_layer_switch_) {
+            output_.video_recovery(recovery_event(
+                track_id, boundary_us,
+                tlvdemux::MseVideoRecoveryPhase::StableRapCommitted));
+            continuity_.completeRestoration();
+            fallback_video_committed_ = false;
+            restoring_layer_switch_ = false;
+            frozen_next_pts_ticks_.reset();
+            return;
+        }
+        if (fallback_video_track_id_ && track_id == *fallback_video_track_id_) {
+            continuity_.awaitFallback(track_id);
+            fallback_video_committed_ = true;
+            output_.video_recovery(recovery_event(
+                track_id, boundary_us,
+                tlvdemux::MseVideoRecoveryPhase::ObservationStarted));
+        }
+    }
     void clear_last_closed_picture() noexcept { last_closed_picture_.reset(); }
     void observe_source_damage(const aribtlv::DamageSpan& damage) {
         if (damage.kind != aribtlv::TrackKind::Video ||
@@ -109,6 +218,10 @@ public:
                 damage.reasons, aribtlv::DiscontinuityReason::SourceDamage)) return;
         const auto timestamp = damage.start_time.value_or(damage.end_time);
         const auto start_us = scaled(timestamp.value, timestamp.timescale, 1000000);
+        if (recorded_continuity_enabled_) {
+            continuity_.sealDamage(start_us);
+            continuity_.freeze();
+        }
         if (recorded_seek_concealment_target_us_ &&
             concealment_episode_marker_start_us_ &&
             !concealment_episode_start_us_) {
@@ -121,16 +234,14 @@ public:
             const auto boundary_us = start_us >= 0
                 ? start_us / 10000 * 10000
                 : start_us;
-            output_.video_recovery(tlvdemux::MseVideoRecoveryEvent{
+            output_.video_recovery(recovery_event(
                 damage.track_id, boundary_us,
-                tlvdemux::MseVideoRecoveryPhase::ObservationStarted,
-            });
+                tlvdemux::MseVideoRecoveryPhase::ObservationStarted));
             recovery_episode_reported_ = true;
         } else if (recovery_candidate_rejected_) {
-            output_.video_recovery(tlvdemux::MseVideoRecoveryEvent{
+            output_.video_recovery(recovery_event(
                 damage.track_id, start_us,
-                tlvdemux::MseVideoRecoveryPhase::CandidateRejected,
-            });
+                tlvdemux::MseVideoRecoveryPhase::CandidateRejected));
             recovery_candidate_rejected_ = false;
         }
     }
@@ -149,6 +260,11 @@ public:
         input_track_id_.reset();
         splice_boundary_us_.reset();
         stage_next_switch_ = false;
+        restoring_layer_switch_ = false;
+        fallback_video_committed_ = false;
+        continuity_.reset();
+        frozen_next_pts_ticks_.reset();
+        last_video_source_end_us_.reset();
         source_damage_observation_ = SourceDamageObservation::None;
         recovery_candidate_rejected_ = false;
         recovery_episode_reported_ = false;
@@ -207,12 +323,19 @@ public:
              recorded_seek_concealment_target_us_.has_value()) &&
             !track_switch_boundary && !requested_switch_boundary;
         if (track_switch_boundary || requested_switch_boundary) {
+            if (continuity_.phase() != VideoContinuityPhase::FallbackPending &&
+                continuity_.phase() != VideoContinuityPhase::Restoring) {
+                continuity_.reset();
+            }
+            frozen_next_pts_ticks_.reset();
             source_damage_observation_ = SourceDamageObservation::None;
             recovery_candidate_rejected_ = false;
             recovery_episode_reported_ = false;
         } else if (unit.discontinuity && !source_damage) {
             // Reposition and genuine epoch changes keep their existing
             // first-RAP startup contract; they are not source recovery.
+            continuity_.reset();
+            frozen_next_pts_ticks_.reset();
             source_damage_observation_ = SourceDamageObservation::None;
             recovery_candidate_rejected_ = false;
             recovery_episode_reported_ = false;
@@ -221,6 +344,8 @@ public:
                 input_track_id_ = unit.track_id;
             }
             const auto previous_observation = source_damage_observation_;
+            const auto unit_pts_us = scaled(
+                unit.pts.value, unit.pts.timescale, 1000000);
             if (source_damage_observation_ == SourceDamageObservation::None) {
                 // Preserve every complete picture before the loss. Candidate
                 // GOPs are never enqueued, so observation cannot enlarge the
@@ -235,10 +360,9 @@ public:
                         unit.pts.value, unit.pts.timescale, 1000000);
                     concealment_episode_start_us_.reset();
                     if (!recovery_episode_reported_) {
-                        output_.video_recovery(tlvdemux::MseVideoRecoveryEvent{
+                        output_.video_recovery(recovery_event(
                             unit.track_id, *concealment_episode_marker_start_us_,
-                            tlvdemux::MseVideoRecoveryPhase::ObservationStarted,
-                        });
+                            tlvdemux::MseVideoRecoveryPhase::ObservationStarted));
                         recovery_episode_reported_ = true;
                     }
                 } else {
@@ -247,20 +371,35 @@ public:
             } else if (previous_observation == SourceDamageObservation::CandidateGop) {
                 recovery_candidate_rejected_ = true;
             }
+            if (recorded_continuity_enabled_) {
+                continuity_.sealDamage(unit_pts_us);
+                continuity_.freeze();
+                if (previous_observation == SourceDamageObservation::CandidateGop) {
+                    continuity_.observePreferred(unit_pts_us, irap >= 0, true);
+                }
+            }
             started_ = false;
             no_rasl_output_ = false;
             sequence_start_ = true;
             configuration_policy_dirty_ = true;
-            if (irap >= 0 && has_vcl) {
-                source_damage_observation_ = SourceDamageObservation::CandidateGop;
-            } else {
-                source_damage_observation_ = SourceDamageObservation::WaitingForRap;
-            }
+            // A RAP carrying the same damage marker is only the decoder's
+            // immediate restart point. It is not evidence of one complete,
+            // clean candidate GOP.
+            source_damage_observation_ =
+                (previous_observation == SourceDamageObservation::CandidateGop ||
+                 recorded_seek_concealment_target_us_) && irap >= 0 && has_vcl
+                ? SourceDamageObservation::CandidateGop
+                : SourceDamageObservation::WaitingForRap;
             return;
         } else if (source_damage_observation_ ==
                    SourceDamageObservation::WaitingForRap) {
             if (irap >= 0 && has_vcl) {
                 source_damage_observation_ = SourceDamageObservation::CandidateGop;
+                if (recorded_continuity_enabled_) {
+                    continuity_.observePreferred(
+                        scaled(unit.pts.value, unit.pts.timescale, 1000000),
+                        true, false);
+                }
             }
             return;
         } else if (source_damage_observation_ ==
@@ -270,13 +409,16 @@ public:
             // new source-damage marker. Restart at this boundary; the observed
             // GOP itself was intentionally discarded rather than cached.
             source_damage_observation_ = SourceDamageObservation::None;
+            if (recorded_continuity_enabled_) {
+                continuity_.observePreferred(
+                    scaled(unit.pts.value, unit.pts.timescale, 1000000), true, false);
+            }
             recovery_candidate_rejected_ = false;
             recovery_episode_reported_ = false;
-            output_.video_recovery(tlvdemux::MseVideoRecoveryEvent{
+            output_.video_recovery(recovery_event(
                 unit.track_id,
                 scaled(unit.pts.value, unit.pts.timescale, 1000000),
-                tlvdemux::MseVideoRecoveryPhase::StableRapCommitted,
-            });
+                tlvdemux::MseVideoRecoveryPhase::StableRapCommitted));
             if (recorded_seek_concealment_target_us_) {
                 const auto stable_rap_us = scaled(
                     unit.pts.value, unit.pts.timescale, 1000000);
@@ -294,6 +436,14 @@ public:
                     concealment_episode_marker_start_us_.reset();
                     concealment_episode_start_us_.reset();
                 }
+            }
+            if (recorded_continuity_enabled_ && frozen_next_pts_ticks_ && track_) {
+                const auto raw_pts = scaled(
+                    unit.pts.value, unit.pts.timescale, track_->timescale);
+                timeline_offset_ticks_ = *frozen_next_pts_ticks_ - raw_pts;
+                const auto boundary_us = scaled(
+                    *frozen_next_pts_ticks_, track_->timescale, 1000000);
+                output_.video_splice(boundary_us, source_buffer_timestamp_offset_us_);
             }
         }
         if (requested_switch_boundary && !track_) {
@@ -491,6 +641,11 @@ public:
         }
         if (enqueue({std::move(data), dts, pts, 0, irap >= 0})) {
             recovery_observation_eligible_ = true;
+            if (continuity_.phase() == VideoContinuityPhase::Restoring &&
+                !restoring_layer_switch_) {
+                continuity_.completeRestoration();
+                frozen_next_pts_ticks_.reset();
+            }
         }
     }
 
@@ -501,6 +656,24 @@ private:
         Mp4Track track;
     };
 
+    tlvdemux::MseVideoRecoveryEvent recovery_event(
+        const std::uint64_t track_id, const std::int64_t presentation_time_us,
+        const tlvdemux::MseVideoRecoveryPhase phase) const {
+        const auto& snapshot = continuity_.snapshot();
+        tlvdemux::MseVideoRecoveryEvent event;
+        event.video_track_id = track_id;
+        event.presentation_time_us = presentation_time_us;
+        event.phase = phase;
+        event.continuity_state = video_continuity_phase_name(snapshot.phase);
+        event.damage_start_us = snapshot.damage_start_us;
+        event.aac_frontier_us = snapshot.aac_frontier_us;
+        event.frozen_through_us = snapshot.frozen_through_us;
+        event.candidate_rap_us = snapshot.candidate_rap_us;
+        event.fallback_track_id = snapshot.fallback_track_id;
+        event.last_video_output_end_us = snapshot.last_video_output_end_us;
+        return event;
+    }
+
     enum class SourceDamageObservation {
         None,
         WaitingForRap,
@@ -508,7 +681,16 @@ private:
     };
 
     void on_segment_emitted(const std::vector<Sample>& samples) override {
-        if (!samples.empty()) output_started_ = true;
+        if (samples.empty() || !track_) return;
+        output_started_ = true;
+        auto end = samples.front().pts +
+            static_cast<std::int64_t>(samples.front().duration);
+        for (const auto& sample : samples) {
+            end = std::max(end, sample.pts + static_cast<std::int64_t>(sample.duration));
+        }
+        last_video_source_end_us_ = scaled(end, track_->timescale, 1000000);
+        continuity_.noteVideoOutputEnd(
+            *last_video_source_end_us_ + source_buffer_timestamp_offset_us_);
     }
 
     HevcColorPolicy color_policy(const std::uint64_t track_id) const noexcept {
@@ -663,7 +845,16 @@ private:
     std::optional<std::uint64_t> input_track_id_;
     std::optional<std::int64_t> splice_boundary_us_;
     std::optional<FrozenPicture> last_closed_picture_;
+    VideoContinuityState continuity_;
+    std::optional<std::int64_t> frozen_next_pts_ticks_;
+    std::optional<std::int64_t> last_video_source_end_us_;
+    std::int64_t source_buffer_timestamp_offset_us_ = 0;
+    bool recorded_continuity_enabled_ = false;
     bool stage_next_switch_ = false;
+    bool restoring_layer_switch_ = false;
+    bool fallback_video_committed_ = false;
+    std::optional<std::uint64_t> preferred_video_track_id_;
+    std::optional<std::uint64_t> fallback_video_track_id_;
     SourceDamageObservation source_damage_observation_ =
         SourceDamageObservation::None;
     bool recovery_candidate_rejected_ = false;

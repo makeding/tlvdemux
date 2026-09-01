@@ -207,6 +207,19 @@ public:
             phase = "stable-rap-committed";
         }
         event.set("phase", std::string(phase));
+        event.set("continuityState", recovery.continuity_state);
+        event.set("damageStartUs", recovery.damage_start_us
+            ? val(*recovery.damage_start_us) : val::null());
+        event.set("aacFrontierUs", recovery.aac_frontier_us
+            ? val(*recovery.aac_frontier_us) : val::null());
+        event.set("frozenThroughUs", recovery.frozen_through_us
+            ? val(*recovery.frozen_through_us) : val::null());
+        event.set("candidateRapUs", recovery.candidate_rap_us
+            ? val(*recovery.candidate_rap_us) : val::null());
+        event.set("fallbackTrackId", recovery.fallback_track_id
+            ? val(*recovery.fallback_track_id) : val::null());
+        event.set("lastVideoOutputEndUs", recovery.last_video_output_end_us
+            ? val(*recovery.last_video_output_end_us) : val::null());
         emit("onMseVideoRecovery", event);
     }
 

@@ -12,6 +12,14 @@ const STATES = new Set([
   'running', 'ended', 'error',
 ]);
 const VIDEO_MODES = new Set(['preferred', 'rainfall', 'frozen']);
+const SEEK_STATES = new Set([
+  'seek-audio-anchor', 'seek-preferred', 'seek-rainfall',
+  'seek-prior-frame', 'seek-commit', 'seek-resume',
+]);
+const CONTINUITY_STATES = new Set([
+  'normal', 'damage-sealed', 'fallback-pending', 'frozen',
+  'preferred-candidate', 'restoring',
+]);
 // ISO BMFF timescale conversion can round the first mapped AAC sample up by a
 // handful of microseconds.  Keep the formal MSE splice just inside the exact
 // requested clock without changing MediaElement.currentTime.
@@ -128,6 +136,7 @@ export function createMseRecordedWindowLocator({
   };
   const locate = async ({
     targetTimeSeconds, readBudgetBytes, signal, transition,
+    seekTransition = () => {},
     waitForQueues = () => Promise.all([...queues.values()].map(queue =>
       queue.waitStable?.() ?? queue.waitIdle?.())),
   }) => {
@@ -228,6 +237,7 @@ export function createMseRecordedWindowLocator({
       }
     };
 
+    seekTransition('seek-audio-anchor');
     transition('locating-audio');
     await demuxer.setMseOutputEnabled(false);
     await demuxer.clearLastClosedVideoPicture?.();
@@ -356,6 +366,7 @@ export function createMseRecordedWindowLocator({
           lastOffset: offset.toString(),
         });
     }
+    seekTransition('seek-preferred');
     if (!choice && bytesRead < budget) {
       const futureRaps = videoRaps.filter(rap =>
         rap.trackId === lockedPreferredVideoTrack &&
@@ -402,8 +413,11 @@ export function createMseRecordedWindowLocator({
           bytesRead: bytesRead.toString(),
         });
     }
+    if (choice.mode !== 'preferred') seekTransition('seek-rainfall');
+    if (choice.mode === 'frozen') seekTransition('seek-prior-frame');
 
     await activateVideoTrack(choice.mode, choice.video);
+    seekTransition('seek-commit');
     // The video RAP can precede the AAC anchor by many MiB.  Start the formal
     // landing from the later restart point and repeat the already parsed
     // closed picture over the selected AAC window; re-reading the whole GOP
@@ -517,8 +531,16 @@ export function createMseRecordedPlaybackController({
   if (!(highWallSeconds > lowWallSeconds)) throw new TypeError('highWallSeconds must exceed lowWallSeconds.');
 
   let state = 'idle';
+  let seekState = null;
   let videoMode = 'preferred';
+  let continuityState = 'normal';
   let fallbackReason = null;
+  let damageStart = null;
+  let aacFrontier = null;
+  let frozenThrough = null;
+  let candidateRap = null;
+  let fallbackTrack = null;
+  let lastVideoOutputEnd = null;
   let nextOffset = BigInt(initialOffset);
   let bytesRead = 0n;
   let intent = 0;
@@ -547,7 +569,9 @@ export function createMseRecordedPlaybackController({
   };
 
   const snapshot = () => ({
-    state, videoMode, fallbackReason, intent, nextOffset: nextOffset.toString(),
+    state, seekState, continuityState, videoMode, fallbackReason,
+    damageStart, aacFrontier, frozenThrough, candidateRap, fallbackTrack,
+    lastVideoOutputEnd, intent, nextOffset: nextOffset.toString(),
     bytesRead: bytesRead.toString(), playbackRate, presentedTime,
     playbackStarted, quotaLimitedStartup,
     commonAhead: commonAhead(), queueStates: Object.fromEntries([...queues].map(([type, queue]) => [type, {
@@ -566,9 +590,23 @@ export function createMseRecordedPlaybackController({
     state = next;
     onStateChange(snapshot());
   };
+  const transitionSeek = next => {
+    if (next !== null && !SEEK_STATES.has(next)) {
+      throw new TypeError(`Unknown Recorded seek state ${next}.`);
+    }
+    seekState = next;
+    onStateChange(snapshot());
+  };
+  const transitionContinuity = next => {
+    if (!CONTINUITY_STATES.has(next)) {
+      throw new TypeError(`Unknown Recorded continuity state ${next}.`);
+    }
+    continuityState = next;
+    onStateChange(snapshot());
+  };
   const setMode = (mode, reason) => {
     if (!VIDEO_MODES.has(mode)) throw new TypeError(`Unknown Recorded video mode ${mode}.`);
-    if (videoMode === mode && fallbackReason === reason) return;
+    if (videoMode === mode && fallbackReason === reason) return videoModeSwitch;
     videoMode = mode;
     fallbackReason = reason;
     try {
@@ -577,6 +615,7 @@ export function createMseRecordedPlaybackController({
       videoModeSwitch = Promise.reject(error);
     }
     onStateChange(snapshot());
+    return videoModeSwitch;
   };
   const wakeProgress = () => {
     const wake = progressWaiter;
@@ -665,6 +704,7 @@ export function createMseRecordedPlaybackController({
     await waitForQueues(generation);
     if (!active(generation)) throw abortError();
     transition('running');
+    if (seekState === 'seek-resume') transitionSeek(null);
     startPlayback(false);
   };
   const feed = async generation => {
@@ -715,6 +755,7 @@ export function createMseRecordedPlaybackController({
   };
   const locateTransaction = async (target, generation, installClock) => {
     transition('locating-audio');
+    if (installClock) transitionSeek('seek-audio-anchor');
     const transactionController = new AbortController();
     streamController = transactionController;
     await demuxer.beginMseRecordedSeek?.();
@@ -724,6 +765,7 @@ export function createMseRecordedPlaybackController({
         readBudgetBytes: BigInt(readBudgetBytes),
         signal: transactionController.signal,
         transition: next => transition(next),
+        seekTransition: installClock ? next => transitionSeek(next) : () => {},
         waitForQueues: () => waitForQueues(generation),
       });
       if (!result || result.nextOffset === undefined || !VIDEO_MODES.has(result.videoMode)) {
@@ -736,6 +778,7 @@ export function createMseRecordedPlaybackController({
           MSE_RECORDED_AUDIO_ANCHOR_NOT_FOUND,
           'The AAC target window exceeded the 16 MiB transaction budget.', snapshot());
       }
+      if (installClock) transitionSeek('seek-commit');
       transition('committing');
       await waitForQueues(generation);
       if (!active(generation)) throw abortError();
@@ -744,12 +787,14 @@ export function createMseRecordedPlaybackController({
       bytesRead += BigInt(result.bytesRead ?? 0n);
       setMode(result.videoMode, result.videoMode === 'preferred' ? null : 'source-damage');
       if (installClock) media.currentTime = target;
+      if (installClock) transitionSeek('seek-resume');
       transition('running');
       startPlayback(false);
       if (streamController === transactionController) streamController = null;
       return result;
     } catch (error) {
       await demuxer.cancelMseRecordedSeek?.();
+      if (installClock) transitionSeek(null);
       throw error;
     }
   };
@@ -784,9 +829,69 @@ export function createMseRecordedPlaybackController({
       wakeProgress();
     },
     notifyConsumption() { wakeProgress(); },
-    reportSourceDamage() { setMode('rainfall', 'source-damage'); },
+    reportSourceDamage({damageStartTimeSeconds = media.currentTime,
+      fallbackVideoTrack = null} = {}) {
+      damageStart = finiteNonNegative(damageStartTimeSeconds, 'damageStartTimeSeconds');
+      candidateRap = null;
+      transitionContinuity('damage-sealed');
+      fallbackTrack = fallbackVideoTrack;
+      if (fallbackVideoTrack === null || fallbackVideoTrack === undefined) {
+        transitionContinuity('frozen');
+        return setMode('frozen', 'source-damage');
+      }
+      transitionContinuity('fallback-pending');
+      return setMode('rainfall', 'source-damage').then(accepted => {
+        if (accepted === false && fallbackReason === 'source-damage') {
+          fallbackTrack = null;
+          transitionContinuity('frozen');
+          return setMode('frozen', 'source-damage');
+        }
+        return accepted;
+      });
+    },
+    reportVideoRecovery(event = {}) {
+      if (event.damageStartUs !== null && event.damageStartUs !== undefined) {
+        damageStart = Number(BigInt(event.damageStartUs)) / 1000000;
+      }
+      if (event.aacFrontierUs !== null && event.aacFrontierUs !== undefined) {
+        aacFrontier = Number(BigInt(event.aacFrontierUs)) / 1000000;
+      }
+      if (event.frozenThroughUs !== null && event.frozenThroughUs !== undefined) {
+        frozenThrough = Number(BigInt(event.frozenThroughUs)) / 1000000;
+      }
+      if (event.candidateRapUs !== null && event.candidateRapUs !== undefined) {
+        candidateRap = Number(BigInt(event.candidateRapUs)) / 1000000;
+      }
+      if (event.fallbackTrackId !== null && event.fallbackTrackId !== undefined) {
+        fallbackTrack = event.fallbackTrackId;
+      }
+      if (event.lastVideoOutputEndUs !== null && event.lastVideoOutputEndUs !== undefined) {
+        lastVideoOutputEnd = Number(BigInt(event.lastVideoOutputEndUs)) / 1000000;
+      }
+      if (event.continuityState && CONTINUITY_STATES.has(event.continuityState)) {
+        transitionContinuity(event.continuityState);
+      }
+      if (event.continuityState === 'fallback-pending' && fallbackTrack !== null) {
+        void setMode('rainfall', 'source-damage');
+      } else if (event.continuityState === 'frozen') {
+        void setMode('frozen', 'source-damage');
+      }
+      if (event.phase === 'candidate-rejected') transitionContinuity('frozen');
+      if (event.phase === 'stable-rap-committed') {
+        transitionContinuity('restoring');
+        void setMode('preferred', null).then(() => {
+          transitionContinuity('normal');
+          damageStart = null;
+          frozenThrough = null;
+          candidateRap = null;
+          fallbackTrack = null;
+        });
+      }
+    },
     notifyPreferredStableRap() {
-      if (fallbackReason === 'source-damage') setMode('preferred', null);
+      if (fallbackReason === 'source-damage') {
+        this.reportVideoRecovery({phase: 'stable-rap-committed'});
+      }
     },
     reportPlaybackQuality({totalFrames, droppedFrames, durationSeconds = 5, mediaError = null}) {
       if (mediaError) {
@@ -826,6 +931,7 @@ export function createMseRecordedPlaybackController({
       await cancelFeed();
       qualityFailures = 0;
       fallbackReason = null;
+      continuityState = 'normal';
       const generation = intent;
       try {
         const result = await locateTransaction(target, generation, true);
