@@ -51,7 +51,7 @@ const PLAYBACK_CHUNK = 2n * MiB;
 const FORWARD_BUFFER_HIGH_SECONDS = 15;
 const FORWARD_BUFFER_LOW_SECONDS = 8;
 const LIVE_STARTUP_BUFFER_SECONDS = 0.5;
-const BACK_BUFFER_SECONDS = 3;
+const BACK_BUFFER_SECONDS = 8;
 const SOURCE_QUEUE_HIGH_BYTES = 4 * 1024 * 1024;
 const SOURCE_QUEUE_HARD_BYTES = 32 * 1024 * 1024;
 const LIVE_PUSH_TARGET_BYTES = 512 * 1024;
@@ -1808,11 +1808,8 @@ function bindPlaybackMediaEvents(media) {
           return `${track}=${formatBytes(BigInt(bytes))}` + (detail
             ? `/current=${formatBytes(BigInt(detail.currentBytes))}` +
               `/pending=${detail.pendingOperations}/updating=${detail.updating}` +
-              `/state=${detail.state}/updateend=${detail.updateEndCount}` +
-              `/quota=${detail.quotaExceededCount}/retry=${detail.retryScheduled}` +
-              `/appendAge=${detail.millisecondsSinceAppendStarted ?? '-'}ms` +
-              `/updateAge=${detail.millisecondsSinceUpdateEnd ?? '-'}ms` +
-              `/quotaAge=${detail.millisecondsSinceQuotaExceeded ?? '-'}ms`
+              `/updateend=${detail.updateEndCount}` +
+              `/appendAge=${detail.millisecondsSinceAppendStarted ?? '-'}ms`
             : '');
         })
         .join(',')

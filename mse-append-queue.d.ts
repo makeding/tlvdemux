@@ -32,10 +32,8 @@ export declare class MseAppendQueue {
   currentBytes: number;
   readonly currentOperation: unknown | null;
   updateEndCount: number;
-  quotaExceededCount: number;
   lastAppendStartedAtMilliseconds: number | null;
   lastUpdateEndAtMilliseconds: number | null;
-  lastQuotaExceededAtMilliseconds: number | null;
   readonly committedMediaRanges: MseBufferedRange[];
   readonly waiters: unknown[];
   error: Error | null;
@@ -67,20 +65,15 @@ export declare class MseAppendQueue {
   bufferedRanges(): MseBufferedRange[];
   committedRanges(): MseBufferedRange[];
   diagnostics(nowMilliseconds?: number): {
-    state: 'running' | 'quiescing' | 'idle' | 'destroyed';
     queuedBytes: number;
     currentBytes: number;
     pendingOperations: number;
     updating: boolean;
     currentOperation: string | null;
     updateEndCount: number;
-    quotaExceededCount: number;
-    retryScheduled: boolean;
     millisecondsSinceAppendStarted: number | null;
     millisecondsSinceUpdateEnd: number | null;
-    millisecondsSinceQuotaExceeded: number | null;
   };
-  notifyDemand(): boolean;
   trimBefore(time: number, force?: boolean): void;
   waitBelow(limit: number): Promise<void>;
   isStable(): boolean;

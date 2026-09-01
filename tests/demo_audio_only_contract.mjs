@@ -130,11 +130,6 @@ assert.match(supplyFlow,
 assert.match(demo,
   /queueHighBytes: SOURCE_QUEUE_HIGH_BYTES,[\s\S]{0,80}queueHardBytes: SOURCE_QUEUE_HARD_BYTES/,
   'the demo does not install the bounded soft/hard queue pressure contract');
-assert.match(demo, /const BACK_BUFFER_SECONDS = 3;/,
-  'recorded 8K playback retains an excessive active SourceBuffer back buffer');
-assert.match(demo,
-  /quota=\$\{detail\.quotaExceededCount\}\/retry=\$\{detail\.retryScheduled\}/,
-  'waiting diagnostics cannot distinguish idle quota retry from a stuck updateend');
 
 {
   const supplyModule = await import(

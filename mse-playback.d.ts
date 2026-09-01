@@ -49,7 +49,7 @@ export interface MseMediaClock { currentTime: number; playbackRate?: number; }
 export type MsePlaybackQueue = Pick<
   MseAppendQueue,
   'bufferedRanges' | 'committedRanges' | 'trimBefore' | 'waitStable'
-> & Pick<Partial<MseAppendQueue>, 'queuedBytes' | 'error' | 'diagnostics' | 'notifyDemand'>;
+> & Pick<Partial<MseAppendQueue>, 'queuedBytes' | 'error' | 'diagnostics'>;
 export type MsePlaybackQueues = Map<string, MsePlaybackQueue>;
 
 export interface MsePlaybackFlowControlOptions {

@@ -356,41 +356,6 @@ for (const mime of [
 }
 
 {
-  const sourceBuffer = new FakeSourceBuffer();
-  const mediaSource = new FakeMediaSource(sourceBuffer);
-  const media = {currentTime: 0, error: null, buffered: sourceBuffer.buffered};
-  const queue = new MseAppendQueue(mediaSource, media, 'video/mp4', null, {
-    retryDelayMilliseconds: 60_000,
-  });
-  queue.append(new Uint8Array(1024).fill(1), {
-    startTimeSeconds: 0, endTimeSeconds: 1,
-  });
-  queue.append(new Uint8Array(1024).fill(2), {
-    startTimeSeconds: 1, endTimeSeconds: 2,
-  });
-  sourceBuffer.appendFailures.push(new DOMException('quota', 'QuotaExceededError'));
-  sourceBuffer.complete();
-  assert.equal(sourceBuffer.updating, false,
-    'quota-pressure setup unexpectedly left SourceBuffer updating');
-  assert.equal(queue.currentOperation, null,
-    'quota-pressure setup unexpectedly retained a current append');
-  assert.equal(queue.queue.length, 1,
-    'quota-pressure setup did not retain the pending video operation');
-  assert.equal(queue.diagnostics().retryScheduled, true,
-    'quota-pressure setup did not defer its normal retry');
-  assert.equal(queue.notifyDemand(), true,
-    'playback demand did not synchronously pump an idle required queue');
-  assert.equal(sourceBuffer.updating, true,
-    'playback demand left the runnable SourceBuffer idle');
-  assert.equal(queue.diagnostics().retryScheduled, false,
-    'playback demand left a stale quota retry armed');
-  sourceBuffer.complete();
-  await queue.waitIdle();
-  assert.deepEqual(queue.committedRanges(), [{start: 0, end: 2}],
-    'demand-driven quota recovery lost committed coded coverage');
-}
-
-{
   const sourceBuffer = new FakeSourceBuffer([[0, 20]]);
   const mediaSource = new FakeMediaSource(sourceBuffer);
   const media = {currentTime: 10, error: null, buffered: sourceBuffer.buffered};

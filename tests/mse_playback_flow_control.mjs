@@ -293,28 +293,9 @@ const queue = (ranges, committed = ranges, queuedBytes = 0) => ({
       audio.queuedBytes = 31 * 1024 * 1024;
     },
   });
-  let trimCalls = 0;
-  audio.trimBefore = () => { trimCalls += 1; };
   await flow.afterPush(2 * 1024 * 1024);
   assert.equal(waits, 1,
     'the 32 MiB hard queue limit did not bound starved sequential input');
-  assert.ok(trimCalls >= 2,
-    'hard-pressure wait did not continue retiring the moving back buffer');
-}
-
-{
-  const media = {currentTime: 15.554, playbackRate: 2};
-  const video = queue([{start: 0, end: 25.254}], undefined, 33.2 * 1024 * 1024);
-  const audio = queue([{start: 0, end: 25.254}]);
-  let demandPumps = 0;
-  video.notifyDemand = () => { demandPumps += 1; return true; };
-  const flow = createMsePlaybackFlowControl({
-    media,
-    queues: new Map([['video', video], ['audio', audio]]),
-  });
-  flow.notifyDemand();
-  assert.equal(demandPumps, 1,
-    '15.554s waiting did not kick the idle video queue with 24 pending operations');
 }
 
 {
