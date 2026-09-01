@@ -158,9 +158,7 @@ impossible under normal flow control. The authoritative
 the parser eight seconds ahead and must complete rainfall-to-preferred
 restoration before source presentation time 460 seconds. It must also retain
 exact common A/V seek coverage at displayed time 11:37 (697 seconds) and at the
-near-boundary 820-second target within the shared 16 MiB budget. A one-second
-grid through the sample's common A/V interval, media times 1 through 1573
-seconds inclusive, must satisfy that same exact-target and budget contract.
+near-boundary 820-second target within the shared 16 MiB budget.
 Damage on the rainfall layer follows the same rule in the opposite direction.
 
 `onMseLayerSwitchStarted`, `onMseLayerSwitch`, and
@@ -260,13 +258,9 @@ observed RAP not later than the target without waiting for an unobserved layer.
 Probe interpolation seeds its earlier anchor from the public
 union start at source offset zero, then retains the closest observations before
 and after the target instead of an access-unit history whose anchors can age
-out. Each candidate reads at most one two-second probe window before the next
-interpolation, and observed RAPs remain eligible across those candidates. This
-prevents a variable-bitrate estimate on the wrong side of the target from
-turning into an unbounded sequential scan. If one side is still unavailable,
-the next bounded probe moves backward by one probe window. It must not bisect
-toward the file head and spend the shared budget in an unrelated earlier
-interval. An A/V landing requires its
+out; if one side is still unavailable, the next bounded probe moves backward
+by one probe window. It must not bisect toward the file head and spend the
+shared budget in an unrelated earlier interval. An A/V landing requires its
 chosen RAP to precede the target by at least one second; a closer RAP triggers one
 bounded earlier probe so AAC begins before the exact target. The recording's
 earliest available RAP is the only exception when no earlier input exists. At
