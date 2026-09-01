@@ -49,7 +49,7 @@ export interface MseMediaClock { currentTime: number; playbackRate?: number; }
 export type MsePlaybackQueue = Pick<
   MseAppendQueue,
   'bufferedRanges' | 'committedRanges' | 'trimBefore' | 'waitStable'
-> & Pick<Partial<MseAppendQueue>, 'queuedBytes' | 'error' | 'diagnostics'>;
+> & Pick<Partial<MseAppendQueue>, 'queuedBytes' | 'error'>;
 export type MsePlaybackQueues = Map<string, MsePlaybackQueue>;
 
 export interface MsePlaybackFlowControlOptions {
@@ -88,7 +88,6 @@ export interface MsePlaybackFlowControl {
     hardLimitBytes: number;
     limitBytes: number;
     tracks: Record<string, number>;
-    details: Record<string, ReturnType<MseAppendQueue['diagnostics']> | null>;
   };
   notifyDemand(): void;
   afterPush(byteLength: number, isActive?: () => boolean): Promise<{

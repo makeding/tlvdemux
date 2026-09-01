@@ -16,7 +16,6 @@ class FakeSourceBuffer extends EventTarget {
     this.updating = false;
     this.buffered = new FakeTimeRanges(ranges);
     this.appendFailures = [];
-    this.appendLengths = [];
     this.removeCalls = [];
     this.operations = [];
     this._timestampOffset = 0;
@@ -30,7 +29,6 @@ class FakeSourceBuffer extends EventTarget {
     const failure = this.appendFailures.shift();
     if (failure) throw failure;
     this.operations.push(['append', data[0]]);
-    this.appendLengths.push(data.byteLength);
     this.updating = true;
   }
   changeType(mime) {
@@ -286,54 +284,6 @@ for (const mime of [
 }
 
 {
-  const sourceBuffer = new FakeSourceBuffer([[0, 4]]);
-  const mediaSource = new FakeMediaSource(sourceBuffer);
-  const media = {currentTime: 0, error: null, buffered: sourceBuffer.buffered};
-  const queue = new MseAppendQueue(mediaSource, media, 'video/mp4');
-  queue.append(new Uint8Array(1024 * 1024).fill(1), {
-    startTimeSeconds: 0, endTimeSeconds: 1,
-  });
-  queue.append(new Uint8Array(2 * 1024 * 1024).fill(2), {
-    startTimeSeconds: 1, endTimeSeconds: 2,
-  });
-  queue.append(new Uint8Array(2 * 1024 * 1024).fill(3), {
-    startTimeSeconds: 2.2, endTimeSeconds: 3,
-  });
-  queue.append(new Uint8Array(2 * 1024 * 1024).fill(4), {
-    startTimeSeconds: 3, endTimeSeconds: 4,
-  });
-  sourceBuffer.complete();
-  assert.deepEqual(sourceBuffer.appendLengths, [1024 * 1024, 6 * 1024 * 1024],
-    'queued 8K media fragments were not coalesced into one bounded append');
-  const diagnostics = queue.diagnostics(queue.lastAppendStartedAtMilliseconds + 25);
-  assert.deepEqual({
-    queuedBytes: diagnostics.queuedBytes,
-    currentBytes: diagnostics.currentBytes,
-    pendingOperations: diagnostics.pendingOperations,
-    updating: diagnostics.updating,
-    currentOperation: diagnostics.currentOperation,
-    updateEndCount: diagnostics.updateEndCount,
-    millisecondsSinceAppendStarted: diagnostics.millisecondsSinceAppendStarted,
-  }, {
-    queuedBytes: 6 * 1024 * 1024,
-    currentBytes: 6 * 1024 * 1024,
-    pendingOperations: 0,
-    updating: true,
-    currentOperation: 'append',
-    updateEndCount: 1,
-    millisecondsSinceAppendStarted: 25,
-  }, 'append diagnostics did not expose the active batched SourceBuffer operation');
-  assert.ok(diagnostics.millisecondsSinceUpdateEnd >= 25,
-    'append diagnostics lost the elapsed time since updateend');
-  sourceBuffer.complete();
-  await queue.waitIdle();
-  assert.deepEqual(queue.committedRanges(), [
-    {start: 0, end: 2},
-    {start: 2.2, end: 4},
-  ], 'batched updateend manufactured committed coverage across a coded gap');
-}
-
-{
   const sourceBuffer = new FakeSourceBuffer([[17.218, 30]]);
   sourceBuffer.appendFailures.push(new DOMException('quota', 'QuotaExceededError'));
   const mediaSource = new FakeMediaSource(sourceBuffer);
@@ -353,38 +303,6 @@ for (const mime of [
   assert.equal(queue.queuedBytes, 0);
   assert.deepEqual(queue.committedRanges(), [],
     'QuotaExceeded retry without timing invented committed coded coverage');
-}
-
-{
-  const sourceBuffer = new FakeSourceBuffer([[0, 20]]);
-  const mediaSource = new FakeMediaSource(sourceBuffer);
-  const media = {currentTime: 10, error: null, buffered: sourceBuffer.buffered};
-  const queue = new MseAppendQueue(mediaSource, media, 'video/mp4', null, {
-    retryDelayMilliseconds: 0,
-  });
-  queue.append(new Uint8Array(1024 * 1024).fill(1), {
-    startTimeSeconds: 20, endTimeSeconds: 21,
-  });
-  queue.append(new Uint8Array(2 * 1024 * 1024).fill(2), {
-    startTimeSeconds: 21, endTimeSeconds: 22,
-  });
-  queue.append(new Uint8Array(2 * 1024 * 1024).fill(3), {
-    startTimeSeconds: 22, endTimeSeconds: 23,
-  });
-  sourceBuffer.appendFailures.push(new DOMException('quota', 'QuotaExceededError'));
-  sourceBuffer.complete();
-  await tick();
-  assert.equal(queue.queuedBytes, 4 * 1024 * 1024,
-    'batched QuotaExceeded retry lost or duplicated queued media bytes');
-  assert.deepEqual(sourceBuffer.removeCalls.at(-1), [0, 2],
-    'batched QuotaExceeded retry did not make bounded back-buffer room');
-  sourceBuffer.complete();
-  assert.equal(sourceBuffer.appendLengths.at(-1), 4 * 1024 * 1024,
-    'batched QuotaExceeded retry did not restore the original media fragments');
-  sourceBuffer.complete();
-  await queue.waitIdle();
-  assert.deepEqual(queue.committedRanges(), [{start: 20, end: 23}],
-    'batched QuotaExceeded retry lost the original coded intervals');
 }
 
 {

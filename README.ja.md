@@ -204,24 +204,12 @@ queue ごとの 4 MiB は pending append の soft watermark です。共通 A/V 
 未満なら、sequential reader はこの soft limit を迂回し、required queue ごとの有界な 32 MiB hard limit まで
 読み進めます。soft limit で既に sleep 中の reader も、低い共通 A/V を報告する `waiting` で直ちに再評価し、
 その queue が 4 MiB 未満になるまで待ってはいけません。per-queue limit は pending append byte だけを制限し、
-共通 A/V が枯渇しているのに source read が停止する状態を許可しません。fresh recorded playback は
-`play()` 前に rate 換算後の共通 high watermark、つまり 1x では 15 media 秒、2x では 30 media 秒へ
-到達しなければなりません。low watermark は再生開始後の供給再開 threshold だけであり、startup target
-ではありません。2x を選択または default にした場合は、両 SourceBuffer に最初の 30 秒が append されるまで
-2x を維持します。4.8 GiB の
-`20260731-102-170000_272b7cdc-8d85-4f77-91df-b935f3ae0e96.mmts` regression では、16 秒の low
-watermark で再生を開始すると、表示映像が約 6 秒で枯渇し、`15.525s` 付近の `waiting` で共通 A/V が約 1 秒、
-pending video が 32.5 MiB になります。これは startup underbuffer failure であり、許容される hard-limit
-steady state ではありません。共通 A/V が rate 換算後の low watermark 未満の `waiting` は
+共通 A/V が枯渇しているのに source read が停止する状態を許可しません。fresh recorded playback は `play()` 前に少なくとも rate 換算後の
+共通 low watermark を buffer します。2x を選択または default にした場合は 2x を維持し、共通 media-time ahead
+を 16 秒確保します。共通 A/V が rate 換算後の low watermark 未満の `waiting` は
 供給失敗として、queue local timer を待たず同じ sequential source-read loop を直ちに再開します。
 再生入口を覆う共通区間がない間は、進捗なしに読み込める playback input を
 16 MiB に制限し、使い切った場合は録画を EOF まで取得せず `MSE_STARTUP_NO_COMMON_AV` で失敗します。
-
-append queue は隣接して queue 済みの media fragment を最大 8 MiB の一回の append にまとめます。ただし
-initialization segment、codec change、timestamp-offset mutation、splice、remove、trim operation を跨いでは
-いけません。一回の `updateend` は batch 内の元の coded interval を個別に commit し、source gap を跨ぐ
-coverage を作ってはいけません。これにより copy memory を有界にしたまま、8K の最初の 30 秒を数百回の
-個別 `appendBuffer()` transaction に分割しません。
 
 Live 再生には timestamp 0 の入口はありません。起動入口は現在の stream が生成した最初の共通
 A/V buffered 区間であり、設定した live 起動 buffer が成立した後だけ media clock をその区間へ

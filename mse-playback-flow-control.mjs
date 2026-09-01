@@ -135,9 +135,6 @@ export function createMsePlaybackFlowControl({
         tracks: Object.fromEntries([...requiredQueues()].map(([track, queue]) => [
           track, queuedBytes(queue),
         ])),
-        details: Object.fromEntries([...requiredQueues()].map(([track, queue]) => [
-          track, queue.diagnostics?.() ?? null,
-        ])),
       };
     },
     notifyDemand() {

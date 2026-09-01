@@ -656,7 +656,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     elements.probeState.textContent = liveMode ? 'Live 再生中' : '再生中';
     if (liveMode) appendLog(`Live 共通バッファ ${started.commonAhead.toFixed(1)}s で再生開始 (1×)`);
     else appendLog(describeRecordedSupplyStart(
-      started.commonAhead, elements.video.playbackRate, playbackFlow.highWatermarkSeconds()));
+      started.commonAhead, elements.video.playbackRate, playbackFlow.lowWatermarkSeconds()));
     started.playResult.catch(() => {
       appendLog('自動再生がブロックされました。再生ボタンを押してください');
     });
@@ -1803,15 +1803,7 @@ function bindPlaybackMediaEvents(media) {
     const pressure = supply?.pressure;
     const queueDetail = pressure
       ? Object.entries(pressure.tracks)
-        .map(([track, bytes]) => {
-          const detail = pressure.details[track];
-          return `${track}=${formatBytes(BigInt(bytes))}` + (detail
-            ? `/current=${formatBytes(BigInt(detail.currentBytes))}` +
-              `/pending=${detail.pendingOperations}/updating=${detail.updating}` +
-              `/updateend=${detail.updateEndCount}` +
-              `/appendAge=${detail.millisecondsSinceAppendStarted ?? '-'}ms`
-            : '');
-        })
+        .map(([track, bytes]) => `${track}=${formatBytes(BigInt(bytes))}`)
         .join(',')
       : '';
     appendLog(`MediaElement waiting ${media.currentTime.toFixed(3)}s` +

@@ -244,29 +244,14 @@ reader already sleeping at the soft limit must re-evaluate immediately when a
 `waiting` event reports low common A/V; it must not wait for that queue to fall
 back below 4 MiB. Per-queue limits therefore bound pending append bytes but
 never authorize stopped source reads while common A/V is starved. Fresh
-recorded playback must reach the rate-adjusted common high watermark before
-calling `play()`: 15 media seconds at 1x and 30 media seconds at 2x. The low
-watermark is only the resume threshold after playback has started; it is not a
-startup target. Selecting or defaulting to 2x must retain 2x while the initial
-30 seconds are appended to both SourceBuffers. In the 4.8 GiB
-`20260731-102-170000_272b7cdc-8d85-4f77-91df-b935f3ae0e96.mmts` regression,
-starting from the 16-second low watermark exhausts the picture reserve after
-about six visible seconds and reaches `waiting` near `15.525s` with only about
-one second of common A/V and 32.5 MiB of pending video; that state is a startup
-underbuffer failure, not an acceptable hard-limit steady state. `waiting` with common A/V
+recorded playback buffers at least that rate-adjusted common low watermark
+before calling `play()`; selecting or defaulting to 2x must retain 2x and obtain
+the required 16 seconds of common media-time ahead. `waiting` with common A/V
 below the rate-adjusted low watermark is a supply failure and immediately resumes
 the same sequential source-read loop instead of waiting for a queue-local
 timer. Before any common interval covers the playback entry,
 at most 16 MiB of playback input may be read without progress; exhaustion fails
 with `MSE_STARTUP_NO_COMMON_AV` instead of fetching the recording to EOF.
-
-The append queue coalesces adjacent queued media fragments into an append of at
-most 8 MiB without crossing an initialization segment, codec change,
-timestamp-offset mutation, splice, remove, or trim operation. One successful
-`updateend` commits every original coded interval in that batch independently;
-batching must not manufacture coverage across a source gap. This bounds copy
-memory while avoiding hundreds of individual `appendBuffer()` transactions for
-the first 30 seconds of 8K media.
 
 Live playback has no timestamp-zero entry. Its startup entry is the first common
 A/V buffered interval produced by the current stream, and the media clock is
