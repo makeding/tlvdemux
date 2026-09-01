@@ -597,6 +597,13 @@ void tlvdemux::MseRemuxer::setOutputEnabled(const bool enabled) {
     const bool was_enabled = impl_->enabled;
     impl_->enabled = enabled;
     impl_->output.set_enabled(enabled);
+    if (enabled && !was_enabled && impl_->recorded_seek_active) {
+        // The cached AAC muxer re-emits its init from activate(). Publish both
+        // formal landing splices first, matching setTimestampOffset() when
+        // output was already enabled.
+        impl_->output.video_splice(0, impl_->mse_timestamp_offset_us);
+        impl_->output.audio_splice(0, impl_->mse_timestamp_offset_us);
+    }
     if (enabled && !was_enabled && impl_->active_audio) {
         impl_->active_audio->activate();
     }

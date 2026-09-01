@@ -421,8 +421,11 @@ export function createMseRecordedWindowLocator({
       : BigInt(Math.round(
         (targetTimeSeconds - audio.startTimeSeconds) * 1000000)) -
         MSE_TIMESTAMP_ROUNDING_GUARD_US;
-    await demuxer.setMseOutputEnabled(true);
     await demuxer.setMseTimestampOffset?.(landingTimestampOffsetUs);
+    // Enabling output re-emits an already-discovered AAC init. Arm the formal
+    // A/V splice first so neither cached init can escape ahead of its landing
+    // boundary at the worker/output-pipeline edge.
+    await demuxer.setMseOutputEnabled(true);
     if (choice.mode === 'frozen') {
       const repeated = await demuxer.repeatLastClosedVideoWindow(
         BigInt(Math.round(audio.startTimeSeconds * 1000000)),
