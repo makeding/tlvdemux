@@ -77,11 +77,6 @@ void VideoLayerStateMachine::clearUnrecoveredDamage() noexcept {
     fallback_.unrecovered_damage.reset();
 }
 
-void VideoLayerStateMachine::discardDeferredDecision() noexcept {
-    discardDeferredDecision(preferred_);
-    discardDeferredDecision(fallback_);
-}
-
 void VideoLayerStateMachine::switchCompleted(
     const std::uint64_t video_track_id) noexcept {
     selected_video_id_ = video_track_id;
@@ -235,16 +230,6 @@ void VideoLayerStateMachine::markDamaged(
     tracker.video.healthy = false;
     tracker.video.clean_since_dts_us = end_time_us;
     tracker.recent_breaks = std::max(tracker.recent_breaks, kBreakThreshold);
-    tracker.recent_raps.clear();
-    tracker.recent_audio_pts_us.clear();
-}
-
-void VideoLayerStateMachine::discardDeferredDecision(
-    LayerTracker& tracker) noexcept {
-    tracker.unrecovered_damage.reset();
-    tracker.recent_breaks = 0;
-    tracker.last_break_dts_us.reset();
-    tracker.last_rap.reset();
     tracker.recent_raps.clear();
     tracker.recent_audio_pts_us.clear();
 }
@@ -448,12 +433,6 @@ VideoLayerObservation VideoLayerStateMachine::observeDamage(
     tracker->unrecovered_damage = damage;
     result = decide();
     if (result.switch_request.has_value()) return result;
-
-    // A recorded-seek fence suspends decisions while observations continue.
-    // Retain a recovered severe episode until resume()/reevaluate() so the
-    // exact committed target, rather than a fresh-startup health fallback,
-    // owns the one post-seek decision.
-    if (!enabled_ && pair_.has_value()) return result;
 
     if (damage.action == PlaybackRecoveryAction::Seek &&
         damage.recovery_time_us.has_value()) {

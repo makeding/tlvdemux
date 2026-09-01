@@ -1190,6 +1190,57 @@ void test_source_damage_prefers_accepted_automatic_layer_switch() {
           "completed source-damage layer switch leaked the held seek advice");
 }
 
+void test_recorded_seek_fence_defers_automatic_switch_until_exact_commit() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.configureAutomaticLayerSwitch({2, 1, 3, 9});
+    warm_automatic_layer_pair(remuxer);
+
+    remuxer.beginMseRecordedSeek();
+    check(!remuxer.observeDamage(severe_source_damage(2)).has_value() &&
+              sink.layer_switch_starts.empty() && sink.layer_switches.empty() &&
+              sink.playback_damage.empty(),
+          "recorded-seek fence leaked an automatic switch or recovery decision");
+    remuxer.finishMseRecordedSeek(5'000'000);
+    check(sink.layer_switch_starts.size() == 1 &&
+              sink.layer_switch_starts.front().reason ==
+                  tlvdemux::MseLayerSwitchReason::SourceDamage &&
+              sink.layer_switch_starts.front().earliest_presentation_time_us > 0,
+          "exact seek commit did not perform one target-clock reevaluation");
+
+    remuxer.beginMseRecordedSeek();
+    check(sink.layer_switch_cancellations.size() == 1 &&
+              sink.layer_switch_cancellations.front().reason ==
+                  tlvdemux::MseLayerSwitchCancelReason::Reposition,
+          "replacement recorded seek did not cancel its pending layer switch");
+    remuxer.reposition();
+    remuxer.cancelMseRecordedSeek();
+    check(sink.layer_switch_starts.size() == 1 &&
+              sink.layer_switches.empty(),
+          "cancelled recorded seek committed a stale automatic decision");
+}
+
+void test_recorded_seek_cancel_does_not_commit_startup_fallback() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.configureAutomaticLayerSwitch({2, 1, 3, 9});
+    remuxer.beginMseRecordedSeek();
+    for (std::int64_t index = 0; index < 120; ++index) {
+        remuxer.push(audio_unit(9, index * 1024));
+    }
+    remuxer.push(hevc_unit(3, 100000, 100000, true, true));
+    remuxer.push(hevc_unit(3, 133367, 133367, false, false));
+    check(sink.layer_switch_starts.empty(),
+          "startup fallback started while recorded seek was fenced");
+    remuxer.cancelMseRecordedSeek();
+    check(sink.layer_switch_starts.empty(),
+          "cancelled recorded seek committed a cached startup fallback");
+}
+
 void test_source_damage_waits_then_seeks_at_real_recovery_rap() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
@@ -1916,6 +1967,8 @@ int main() {
     test_startup_fallback_stages_splice_init_media_without_preferred_video();
     test_manual_startup_layer_switch_maps_to_playback_entry();
     test_source_damage_prefers_accepted_automatic_layer_switch();
+    test_recorded_seek_fence_defers_automatic_switch_until_exact_commit();
+    test_recorded_seek_cancel_does_not_commit_startup_fallback();
     test_source_damage_waits_then_seeks_at_real_recovery_rap();
     test_fixed_mode_keeps_immediate_source_damage_seek();
     test_reposition_discards_retained_source_damage();

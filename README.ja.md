@@ -214,8 +214,6 @@ append、commit の全区間で fence されます。既存の pending switch �
 できません。automatic mode の再評価は exact target の commit 後に一度だけ行います。seek は
 通常または降雨 layer の RAP と対応 AAC を landing source として直接選べますが、これは明示
 seek の一部であり automatic layer switch ではありません。要求された
-seek が失敗、置換、終了した場合、`cancelMseRecordedSeek()` は未 commit transaction 内で蓄積した
-startup、health、damage decision を後続 input で再生せずに fence を解除します。
 `MediaElement.currentTime`、一度だけの formal landing、共有 16 MiB budget を維持し、0 以外の
 seek を playback entry zero に写像してはいけません。
 landing の append 中に、それより前の部分的な common range から MediaElement の再生を開始しては
@@ -225,9 +223,6 @@ commit でのみ設定し、再生開始もその commit 後だけ許可しま�
 `tlvdemux/mse-playback` SDK が所有します。integration は明示 seek、layer switch、recovery candidate
 ごとに token を作り、すべての非同期 read／commit の前後で token と固定 demux identity を検証します。
 demo は browser event を転送し、SDK が許可した結果を install するだけです。
-worker が `reposition()` 後に track catalogue を再通知した場合、選択済みの non-null video／audio
-track を同じ ID で確認しても idempotent であり、進行中の seek landing を reset、flush、破棄しては
-いけません。
 probe と landing が重なる範囲は再利用し、budget 消費後は source request を発行しません。head discovery、
 probe、landing は 1 MiB 単位で読み、stable recovery RAP に届く前に一度の粗い read が共有 budget の
 8 分の 1 を消費しないようにします。要求時刻より

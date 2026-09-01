@@ -298,20 +298,6 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME tlvdemux-mse-remuxer-tests COMMAND tlvdemux-mse-remuxer-tests)
 
-    add_executable(tlvdemux-mse-recorded-seek-fence-tests
-        tests/mse_recorded_seek_fence_tests.cpp)
-    target_link_libraries(tlvdemux-mse-recorded-seek-fence-tests
-        PRIVATE tlvdemux::tlvdemux)
-    if(MSVC)
-        target_compile_options(tlvdemux-mse-recorded-seek-fence-tests
-            PRIVATE /W4 /permissive-)
-    else()
-        target_compile_options(tlvdemux-mse-recorded-seek-fence-tests
-            PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
-    add_test(NAME tlvdemux-mse-recorded-seek-fence-tests
-        COMMAND tlvdemux-mse-recorded-seek-fence-tests)
-
     add_executable(tlvdemux-mse-recorded-seek-concealment-tests
         tests/mse_recorded_seek_concealment_tests.cpp)
     target_link_libraries(tlvdemux-mse-recorded-seek-concealment-tests

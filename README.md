@@ -256,9 +256,6 @@ but cannot start, complete, or resume an automatic switch, and automatic mode is
 reevaluated only after the exact target is committed. The seek may choose a RAP
 and matching AAC from either member of the automatic pair as its landing source;
 that choice is part of the explicit seek and is not an automatic layer switch.
-If the seek fails, is replaced, or terminates, `cancelMseRecordedSeek()` releases
-the fence without replaying startup, health, or damage decisions accumulated by
-that uncommitted transaction on later input.
 It must still preserve the requested `MediaElement.currentTime`, perform one
 formal landing, share the single 16 MiB budget, and never map a nonzero seek back
 to playback entry zero.
@@ -272,9 +269,6 @@ create tokens for explicit seeks, layer switches, and recovery candidates and
 must validate the token and fixed demux identity around every asynchronous read
 or commit. The demo only forwards browser events and installs the SDK-approved
 result.
-When a worker replays its track catalogue after `reposition()`, acknowledging
-the already selected non-null video or audio track is idempotent and must not
-reset, flush, or discard the in-flight seek landing.
 Overlapping probe and landing ranges are reused, and no source request is issued
 after exhaustion. Head discovery, probes, and landing use 1 MiB reads so a
 single coarse read cannot consume one eighth of that shared budget before the
