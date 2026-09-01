@@ -303,15 +303,15 @@ head discovery through backward planning and the final A/V preroll,
 single-landing -> committing`, uses 1 MiB chunks, and starts with a 16 MiB
 source-read budget. Bootstrap and unevidenced backward planning may consume at
 most 9 MiB, so at least 7 MiB remains for the formal landing. Without an index, the planner
-first reads a one-chunk coarse Range near the estimated target. Once AAC or the
+first reads a bounded coarse Range in a conservative pre-target window. Once AAC or the
 broadcast clock establishes a time-to-byte anchor, it projects the preceding
 long-GOP candidate using the observed local byte rate where available, then
 expands that same candidate Range contiguously in 1 MiB steps until a usable
 preceding RAP is exposed or the planning allowance is exhausted. When that
 timed evidence proves a different bounded candidate Range but the base planning
 allowance cannot expose its RAP, planning alone may extend from 9 MiB to at most
-12 MiB; this evidence path is independent of resolution and remains inside the
-16 MiB base transaction. Before the single landing,
+the full 16 MiB base transaction; this evidence path is independent of
+resolution. Empty or untimed probes cannot use it. Before the single landing,
 the chosen RAP-to-target byte span may authorize one budget extension. If that
 proved total would leave less than the fixed 7 MiB landing guard inside the
 16 MiB base, the session selects the smallest tier that contains that proved
@@ -373,8 +373,11 @@ The authoritative fixed seek set is media time `0`, `1`, `60`, `139.276545`,
 remain unchanged and complete inside its candidate-proved tier, never above
 64 MiB, without `MSE_SEEK_NO_COMMON_AV` or a hidden seek. Deterministic random
 targets remain a separate release gate: a long GOP that cannot fit the 64 MiB
-hard tier must fail explicitly until the next planning increment, never move
-the target or exceed the tier. Real Chrome runs the fixed and random sets at
+hard tier must fail explicitly until a larger tier or a persisted RecordingIndex
+is deliberately adopted, never move the target or exceed the tier. The seeded
+`274.188091s` target currently reaches the correct preceding RAP inside the
+evidence-planning allowance, but its continuous RAP-to-target A/V span still
+crosses 64 MiB and therefore remains such an explicit failure. Real Chrome runs the fixed and random sets at
 1x and the existing default 2x; full 1x/2x EOS and the real Live entry remain
 separate release gates.
 

@@ -8,7 +8,6 @@ import {createMsePlaybackFlowControl} from './mse-playback-flow-control.mjs';
 
 const DEFAULT_CHUNK_BYTES = 1024 * 1024;
 const DEFAULT_LANDING_RESERVE_BYTES = 7 * 1024 * 1024;
-const DEFAULT_EVIDENCE_PLANNING_BYTES = 12 * 1024 * 1024;
 const BUDGET_TIERS_BYTES = [32, 48, 64].map(value => value * 1024 * 1024);
 const LONG_GOP_LOOKBACK_US = 5_000_000n;
 
@@ -106,7 +105,7 @@ export function createMseRecordedSeekSession({
   const maximumBudget = BigInt(maxReadBudgetBytes);
   const landingReserve = BigInt(landingReserveBytes);
   const basePlanningLimit = baseBudget - landingReserve;
-  const evidencePlanningLimit = baseBudget - 4n * chunkSize;
+  const evidencePlanningLimit = baseBudget;
   if (chunkSize <= 0n || landingReserve < chunkSize || landingReserve >= baseBudget) {
     throw new RangeError('The recorded seek landing reserve must fit inside the read budget.');
   }
@@ -140,8 +139,7 @@ export function createMseRecordedSeekSession({
   const ensureActive = () => { if (!active()) throw abortError(); };
   const hasVideo = () => requiredTracks.includes('video');
   const planningLimit = () => planningRangeExtended
-    ? (evidencePlanningLimit < BigInt(DEFAULT_EVIDENCE_PLANNING_BYTES)
-      ? evidencePlanningLimit : BigInt(DEFAULT_EVIDENCE_PLANNING_BYTES))
+    ? evidencePlanningLimit
     : basePlanningLimit;
 
   const observePlanningAnchor = anchor => {

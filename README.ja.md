@@ -217,12 +217,13 @@ A/V buffered 区間であり、設定した live 起動 buffer が成立した�
 `bootstrap -> backward-plan -> single-landing -> committing` という一つの transaction です。
 1 MiB chunk と初期 16 MiB source-read budget を使います。bootstrap と backward planning が使えるのは
 時刻 evidence がない間は最大 9 MiB で、正式 landing 用に最低 7 MiB を予約します。index がない場合、planner はまず推定 target
-付近の 1 chunk の coarse Range を読みます。AAC または broadcast clock が time-to-byte anchor を確立したら、
+前方の保守的な window で bounded coarse Range を読みます。AAC または broadcast clock が time-to-byte anchor を確立したら、
 利用できる場合は観測した局所 byte rate で前置 long-GOP candidate を投影し、利用可能な前置 RAP が現れるか
 planning allowance を使い切るまで、その同じ candidate Range を 1 MiB 単位で連続して拡張します。
 その時刻 evidence が別の bounded candidate Range を証明したのに base planning allowance では RAP を公開できない
-場合だけ、planning は 9 MiB から最大 12 MiB へ拡張できます。この evidence path は分解能に依存せず、
-16 MiB の base transaction 内に留まります。その一度だけの landing の直前に、選択した
+場合だけ、planning は 9 MiB から最大で 16 MiB の base transaction 全体まで拡張できます。この evidence
+path は分解能に依存せず、空または時刻 evidence のない probe はこの拡張を
+使えません。その一度だけの landing の直前に、選択した
 RAP から target までの byte span が必要量を証明した場合だけ一度だけ budget を拡張できます。その証明済み
 total では 16 MiB 内の固定 7 MiB landing guard を残せない場合に、証明済み total と guard を収める
 最小の 32／48／64 MiB tier を選びます。long-GOP 4K と高 bitrate の
@@ -272,7 +273,10 @@ sequential-start path を使います。
 `197.260826`、`300`、`450` 秒です。各固定 target は不変のまま candidate が証明した tier 内、かつ
 64 MiB 以下で完了し、`MSE_SEEK_NO_COMMON_AV` も hidden seek も発生してはいけません。固定 seed の
 任意 target は別の release gate のままです。64 MiB に収まらない long GOP は次の planning increment が
-完成するまで明示的に失敗し、target の置換や tier 超過をしてはいけません。実 Chrome は固定／任意集合を
+完成しても、より大きい tier または永続 RecordingIndex を明示的に採用するまでは失敗し、target の置換や
+tier 超過をしてはいけません。固定 seed の `274.188091s` は evidence-planning allowance 内で正しい前置 RAP
+まで到達しますが、連続 RAP-to-target A/V span 自体が 64 MiB を越えるため、この明示的 failure のままです。
+実 Chrome は固定／任意集合を
 1x と既存の default 2x で実行します。1x／2x の完全 EOS と実 Live entry は別の release gate のままです。
 
 自動の 2 映像 track を持つ録画では、public な録画 timeline は通常映像と降雨映像の

@@ -199,7 +199,7 @@ function fixture({
     sourceSize: 128 * MiB,
     estimateBytes: 64 * MiB,
     bootstrapRapUs: 60_000_000n,
-    planRapAfterPlanningBytes: 10 * MiB,
+    planRapAfterPlanningBytes: 14 * MiB,
     planningClocksByPush: [
       {ptsUs: 53_000_000n, offset: 60n * BigInt(MiB)},
       ...Array.from({length: 11}, () =>
@@ -209,7 +209,7 @@ function fixture({
   const result = await seek.session.run();
   const planningBytes = seek.requests.filter(request => request.phase !== 'single-landing')
     .reduce((total, request) => total + request.length, 0n);
-  assert.ok(planningBytes > 9n * BigInt(MiB) && planningBytes <= 12n * BigInt(MiB),
+  assert.ok(planningBytes > 9n * BigInt(MiB) && planningBytes <= 16n * BigInt(MiB),
     `timed candidate evidence used ${planningBytes} bytes at ${JSON.stringify(
       seek.operations, (_, value) => typeof value === 'bigint' ? value.toString() : value)}`);
   assert.equal(result.rapPresentationTimeUs, 49_000_000n);
