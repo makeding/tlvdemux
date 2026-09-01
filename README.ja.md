@@ -216,7 +216,13 @@ A/V buffered 区間であり、設定した live 起動 buffer が成立した�
 正式な A/V preroll は `createMseRecordedSeekSession()` の
 `bootstrap -> backward-plan -> single-landing -> committing` という一つの transaction です。
 1 MiB chunk と初期 16 MiB source-read budget を使います。bootstrap と backward planning が使えるのは
-最大 9 MiB で、正式 landing 用に最低 7 MiB を予約します。その一度だけの landing の直前に、選択した
+時刻 evidence がない間は最大 9 MiB で、正式 landing 用に最低 7 MiB を予約します。index がない場合、planner はまず推定 target
+付近の 1 chunk の coarse Range を読みます。AAC または broadcast clock が time-to-byte anchor を確立したら、
+利用できる場合は観測した局所 byte rate で前置 long-GOP candidate を投影し、利用可能な前置 RAP が現れるか
+planning allowance を使い切るまで、その同じ candidate Range を 1 MiB 単位で連続して拡張します。
+その時刻 evidence が別の bounded candidate Range を証明したのに base planning allowance では RAP を公開できない
+場合だけ、planning は 9 MiB から最大 12 MiB へ拡張できます。この evidence path は分解能に依存せず、
+16 MiB の base transaction 内に留まります。その一度だけの landing の直前に、選択した
 RAP から target までの byte span が必要量を証明した場合だけ一度だけ budget を拡張できます。その証明済み
 total では 16 MiB 内の固定 7 MiB landing guard を残せない場合に、証明済み total と guard を収める
 最小の 32／48／64 MiB tier を選びます。long-GOP 4K と高 bitrate の
@@ -228,8 +234,8 @@ playback rate は tier を変更しません。
 再利用 demuxer は確立済み track／timeline と RecordingIndex `previousSync()` を使い、file head を
 再読込しません。index がなければ target 前方の保守的な byte window から後方へ計画し、利用可能な
 前置 RAP を観測した時点で停止します。最初の sparse window で target 後方の broadcast-clock または
-AAC access-unit frontier が確立した場合、未来 RAP まで probe を消費せず、直ちに約 5.6 秒の
-long-GOP lookback へ投影します。
+AAC access-unit frontier が確立した場合、未来 RAP まで probe を消費せず、直ちに約 5 秒と bounded
+parser guard の long-GOP lookback へ投影します。
 probe reposition は media clock を変更せず、正式 landing だけが
 playback を一度 reposition します。
 

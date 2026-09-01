@@ -8,7 +8,9 @@ import {createMsePlaybackFlowControl} from './mse-playback-flow-control.mjs';
 
 const DEFAULT_CHUNK_BYTES = 1024 * 1024;
 const DEFAULT_LANDING_RESERVE_BYTES = 7 * 1024 * 1024;
+const DEFAULT_EVIDENCE_PLANNING_BYTES = 12 * 1024 * 1024;
 const BUDGET_TIERS_BYTES = [32, 48, 64].map(value => value * 1024 * 1024);
+const LONG_GOP_LOOKBACK_US = 5_000_000n;
 
 function abortError() {
   if (typeof DOMException === 'function') return new DOMException('The seek was superseded.', 'AbortError');
@@ -28,6 +30,10 @@ function clampBigInt(value, minimum, maximum) {
 
 function roundUp(value, alignment) {
   return (value + alignment - 1n) / alignment * alignment;
+}
+
+function roundDown(value, alignment) {
+  return value / alignment * alignment;
 }
 
 /**
@@ -99,6 +105,8 @@ export function createMseRecordedSeekSession({
   const baseBudget = BigInt(readBudgetBytes);
   const maximumBudget = BigInt(maxReadBudgetBytes);
   const landingReserve = BigInt(landingReserveBytes);
+  const basePlanningLimit = baseBudget - landingReserve;
+  const evidencePlanningLimit = baseBudget - 4n * chunkSize;
   if (chunkSize <= 0n || landingReserve < chunkSize || landingReserve >= baseBudget) {
     throw new RangeError('The recorded seek landing reserve must fit inside the read budget.');
   }
@@ -113,12 +121,16 @@ export function createMseRecordedSeekSession({
   const plannedRaps = new Map();
   const futureRaps = new Map();
   const damageEpisodes = [];
+  const planningTrace = [];
   let anchorBefore = {ptsUs: BigInt(presentationStartUs), offset: 0n};
   let anchorAfter = null;
+  let anchorBeforeObserved = false;
+  let timedObservationRevision = 0;
   let phase = 'idle';
   let bytesRead = 0n;
   let authorizedBudget = baseBudget;
   let budgetAuthorization = null;
+  let planningRangeExtended = false;
   let currentPushOffset = 0n;
   let bootstrapTimelineReady = timelineEstablished;
 
@@ -126,8 +138,23 @@ export function createMseRecordedSeekSession({
 
   const active = () => !signal?.aborted && isActive();
   const ensureActive = () => { if (!active()) throw abortError(); };
-  const candidates = () => [...tracks.values()].filter(candidateVideoTrack);
   const hasVideo = () => requiredTracks.includes('video');
+  const planningLimit = () => planningRangeExtended
+    ? (evidencePlanningLimit < BigInt(DEFAULT_EVIDENCE_PLANNING_BYTES)
+      ? evidencePlanningLimit : BigInt(DEFAULT_EVIDENCE_PLANNING_BYTES))
+    : basePlanningLimit;
+
+  const observePlanningAnchor = anchor => {
+    timedObservationRevision += 1;
+    if (anchor.ptsUs <= sourceTargetUs && anchor.ptsUs > anchorBefore.ptsUs) {
+      anchorBefore = anchor;
+      anchorBeforeObserved = true;
+    }
+    if (anchor.ptsUs > sourceTargetUs &&
+        (!anchorAfter || anchor.ptsUs < anchorAfter.ptsUs)) {
+      anchorAfter = anchor;
+    }
+  };
 
   const observeTrack = track => tracks.set(track.trackId, track);
   const observeTrackRemoved = track => tracks.delete(track.trackId);
@@ -151,11 +178,7 @@ export function createMseRecordedSeekSession({
     const unitInputOffset = unit.inputOffset ?? unit.restartOffset;
     if (phase === 'backward-plan' && track.kind === 'audio' && unit.codec === 'aac-latm' &&
         unitInputOffset !== undefined) {
-      const anchor = {ptsUs, offset: BigInt(unitInputOffset)};
-      if (ptsUs <= sourceTargetUs && ptsUs > anchorBefore.ptsUs) anchorBefore = anchor;
-      if (ptsUs > sourceTargetUs && (!anchorAfter || ptsUs < anchorAfter.ptsUs)) {
-        anchorAfter = anchor;
-      }
+      observePlanningAnchor({ptsUs, offset: BigInt(unitInputOffset)});
     }
     if (!candidateVideoTrack(track)) return;
     if (track.kind === 'video' && unit.codec !== 'hevc') return;
@@ -226,11 +249,7 @@ export function createMseRecordedSeekSession({
           clock.inputOffset !== undefined) {
         const ptsUs = BigInt(clock.mediaTimeValue) * 1000000n /
           BigInt(clock.mediaTimeTimescale);
-        const anchor = {ptsUs, offset: BigInt(clock.inputOffset)};
-        if (ptsUs <= sourceTargetUs && ptsUs > anchorBefore.ptsUs) anchorBefore = anchor;
-        if (ptsUs > sourceTargetUs && (!anchorAfter || ptsUs < anchorAfter.ptsUs)) {
-          anchorAfter = anchor;
-        }
+        observePlanningAnchor({ptsUs, offset: BigInt(clock.inputOffset)});
       }
     }
   };
@@ -248,10 +267,20 @@ export function createMseRecordedSeekSession({
     .filter(rap => tracks.has(rap.trackId) && rap.discoveredDuring === 'backward-plan')
     .sort((left, right) => left.ptsUs < right.ptsUs ? -1 : left.ptsUs > right.ptsUs ? 1 : 0)[0] ?? null;
   const projectedTargetOffset = () => {
-    if (!anchorAfter || anchorAfter.ptsUs <= anchorBefore.ptsUs ||
-        anchorAfter.offset <= anchorBefore.offset) return null;
-    return anchorBefore.offset + (anchorAfter.offset - anchorBefore.offset) *
-      (sourceTargetUs - anchorBefore.ptsUs) / (anchorAfter.ptsUs - anchorBefore.ptsUs);
+    if (anchorBeforeObserved && anchorAfter && anchorAfter.ptsUs > anchorBefore.ptsUs &&
+        anchorAfter.offset > anchorBefore.offset) {
+      return anchorBefore.offset + (anchorAfter.offset - anchorBefore.offset) *
+        (sourceTargetUs - anchorBefore.ptsUs) / (anchorAfter.ptsUs - anchorBefore.ptsUs);
+    }
+    return null;
+  };
+  const bytesForDuration = duration => {
+    if (anchorBeforeObserved && anchorAfter && anchorAfter.ptsUs > anchorBefore.ptsUs &&
+        anchorAfter.offset > anchorBefore.offset) {
+      return (anchorAfter.offset - anchorBefore.offset) * duration /
+        (anchorAfter.ptsUs - anchorBefore.ptsUs);
+    }
+    return source.size * duration / BigInt(durationUs);
   };
   const targetOffsetEstimate = async () => {
     const value = estimateOffset === null
@@ -342,78 +371,93 @@ export function createMseRecordedSeekSession({
     if (presentationStartRap && BigInt(targetUs) === 0n) {
       return {chosen: presentationStartRap, estimate};
     }
-    const estimatedWindow = source.size * 2_000_000n / BigInt(durationUs);
-    const planStep = clampBigInt(estimatedWindow, chunkSize, 6n * chunkSize);
-    const initialPlanningBytes = baseBudget - landingReserve - bytesRead;
     const maximumCandidate = source.size > chunkSize ? source.size - chunkSize : 0n;
-    const initialDistance = initialPlanningBytes + estimatedWindow;
-    let candidate = clampBigInt(
-      estimate > initialDistance ? estimate - initialDistance : 0n,
-      0n,
-      maximumCandidate,
-    );
+    const alignCandidate = value => clampBigInt(roundDown(value, chunkSize), 0n, maximumCandidate);
+    const estimatedTwoSecondBytes = bytesForDuration(2_000_000n);
+    const initialDistance = basePlanningLimit - bytesRead + estimatedTwoSecondBytes;
+    // First perform a coarse seek in a conservative pre-target Range. Keeping
+    // that observation on the landing side of the target lets the formal
+    // RAP-to-target pass reuse it instead of paying for an isolated future
+    // Range that cannot contribute to continuous decode.
+    // Once it exposes an AAC or broadcast-clock timestamp, use that evidence
+    // to project a preceding long-GOP candidate. The candidate's file range is
+    // then expanded contiguously, one chunk at a time, instead of spending the
+    // plan on unrelated sparse windows or a resolution-specific allowance.
+    let candidate = alignCandidate(estimate > initialDistance ? estimate - initialDistance : 0n);
     const visited = new Set();
-    let backwardStride = planStep;
-    while (bytesRead + chunkSize <= baseBudget - landingReserve) {
+    let fallbackStride = 8n * chunkSize;
+    const evidenceCandidate = () => {
+      const projected = projectedTargetOffset();
+      if (projected !== null) {
+        // Leave a two-chunk guard before the projected GOP boundary. Sparse
+        // signalling commonly exposes its timestamp after the actual RAP
+        // byte, so starting exactly at the projection can skip the RAP and
+        // waste the remaining plan expanding on its later side.
+        const lookbackBytes = bytesForDuration(LONG_GOP_LOOKBACK_US) + 7n * chunkSize;
+        return alignCandidate(projected > lookbackBytes ? projected - lookbackBytes : 0n);
+      }
+      const futureRap = closestFutureRap();
+      if (futureRap) {
+        const lookbackUs = futureRap.ptsUs - sourceTargetUs + LONG_GOP_LOOKBACK_US;
+        const lookbackBytes = bytesForDuration(lookbackUs) + 7n * chunkSize;
+        return alignCandidate(futureRap.restartOffset > lookbackBytes
+          ? futureRap.restartOffset - lookbackBytes : 0n);
+      }
+      // A lone pre-target anchor proves that this Range is on the legal side
+      // of the target, but it cannot prove a better byte position. Keep
+      // extending this Range until it exposes a RAP; applying the global
+      // bitrate as though it were a local pair can jump across the useful GOP.
+      return null;
+    };
+    while (bytesRead + chunkSize <= planningLimit()) {
       ensureActive();
       if (visited.has(candidate)) break;
       visited.add(candidate);
       await demuxer.reposition(candidate, true);
-      // An estimate only chooses a sparse observation point. Empty media-free
-      // windows do not earn a forward scan; the next bounded observation is
-      // farther backward and the formal landing budget stays untouched.
-      const remainingPlan = baseBudget - landingReserve - bytesRead;
-      const activeSpan = remainingPlan < planStep ? remainingPlan : planStep;
-      const locateEnd = candidate + activeSpan < source.size ? candidate + activeSpan : source.size;
-      const futureRapCountBefore = futureRaps.size;
-      const anchorAfterOffsetBefore = anchorAfter?.offset ?? null;
       let offset = candidate;
-      while (offset < locateEnd) {
-        const data = await read(offset, locateEnd - offset < chunkSize ? locateEnd - offset : chunkSize);
+      let nextCandidate = null;
+      let windowHasTimedEvidence = false;
+      while (offset < source.size && bytesRead + chunkSize <= planningLimit()) {
+        const observationBefore = timedObservationRevision;
+        const data = await read(offset, chunkSize);
         await push(data, offset);
         offset += BigInt(data.byteLength);
-        if (bestRap() || futureRaps.size > futureRapCountBefore ||
-            (anchorAfter?.offset !== anchorAfterOffsetBefore &&
-              projectedTargetOffset() !== null)) break;
-      }
-      const chosen = bestRap();
-      if (chosen) return {chosen, estimate};
-      if (candidate === 0n) break;
-      const projected = projectedTargetOffset();
-      if (projected !== null) {
-        const longGopLookback = source.size * 5_600_000n / BigInt(durationUs) + chunkSize;
-        const projectedCandidate = clampBigInt(
-          projected > longGopLookback ? projected - longGopLookback : 0n,
-          0n,
-          maximumCandidate,
-        );
-        if (projectedCandidate < candidate && !visited.has(projectedCandidate)) {
-          candidate = projectedCandidate;
-          backwardStride = planStep;
-          continue;
+        const chosen = bestRap();
+        if (chosen) return {chosen, estimate};
+        windowHasTimedEvidence ||= timedObservationRevision > observationBefore;
+
+        const refined = evidenceCandidate();
+        if (refined !== null && planningLimit() < evidencePlanningLimit) {
+          planningRangeExtended = true;
         }
-      }
-      const futureRap = closestFutureRap();
-      if (futureRap) {
-        // When the estimate lands just before a future RAP, spend the remaining
-        // sparse window near the preceding GOP rather than exhaust it walking
-        // byte-by-byte toward a RAP that cannot legally land this target.
-        const lookbackUs = futureRap.ptsUs - sourceTargetUs + 5_000_000n;
-        const lookbackBytes = source.size * lookbackUs / BigInt(durationUs) + chunkSize;
-        const futureCandidate = futureRap.restartOffset > lookbackBytes
-          ? futureRap.restartOffset - lookbackBytes : 0n;
-        if (futureCandidate < candidate && !visited.has(futureCandidate)) {
-          candidate = futureCandidate;
-          backwardStride = planStep;
-          continue;
+        if (planningTrace.length < 32) planningTrace.push({
+          candidate, offset, refined, windowHasTimedEvidence,
+          beforePtsUs: anchorBefore.ptsUs, beforeOffset: anchorBefore.offset,
+          afterPtsUs: anchorAfter?.ptsUs ?? null, afterOffset: anchorAfter?.offset ?? null,
+        });
+        const refinedOutsideWindow = refined !== null &&
+          (refined + chunkSize < candidate || refined >= offset);
+        const refinementDistance = refined === null ? 0n
+          : refined < candidate ? candidate - refined : refined - candidate;
+        // A local refinement within a few chunks is less valuable than
+        // continuing the parser's current contiguous Range: the RAP may be in
+        // bytes already supplied but not exposed until the following chunk.
+        const refinementNeedsReposition = refinementDistance > 4n * chunkSize;
+        if (windowHasTimedEvidence && refinedOutsideWindow && refinementNeedsReposition &&
+            !visited.has(refined)) {
+          nextCandidate = refined;
+          break;
         }
+        if (!windowHasTimedEvidence) break;
       }
-      // Empty parser windows have no timestamp meaning. Move the *next
-      // locate start* behind both this window and an exponentially growing
-      // safety distance, never back toward the duration-linear estimate.
-      const nextDistance = backwardStride + 8n * chunkSize;
-      candidate = candidate > nextDistance ? candidate - nextDistance : 0n;
-      backwardStride = backwardStride * 2n;
+      if (nextCandidate !== null) {
+        candidate = nextCandidate;
+        fallbackStride = 8n * chunkSize;
+        continue;
+      }
+      if (windowHasTimedEvidence || candidate === 0n) break;
+      candidate = candidate > fallbackStride ? candidate - fallbackStride : 0n;
+      fallbackStride *= 2n;
     }
     const chosen = bestRap({allowBootstrap: true});
     if (chosen) return {chosen, estimate};
@@ -476,6 +520,12 @@ export function createMseRecordedSeekSession({
         evidence = await nativeLandingEvidence();
         if (heldFrameEvidence(evidence)) mode = 'held-frame';
         if (mode) break;
+        // The coarse target Range belongs to the same transaction. Reaching
+        // the source-read ceiling does not exhaust already cached bytes: let
+        // the landing bridge into that Range before deciding it needs another
+        // source read. This is what makes locate-then-expand useful for a GOP
+        // whose continuous landing span reaches the coarse observation.
+        if (cachedAt(offset)) continue;
         if (bytesRead < authorizedBudget) continue;
         if (!sealed) {
           sealed = true;
@@ -533,6 +583,7 @@ export function createMseRecordedSeekSession({
           bytesRead: bytesRead.toString(), budgetBytes: authorizedBudget.toString(),
           baseBudgetBytes: baseBudget.toString(),
           maximumBudgetBytes: maximumBudget.toString(),
+          planningRangeExtended,
           budgetAuthorization: budgetAuthorization === null ? null : Object.fromEntries(
             Object.entries(budgetAuthorization).map(([key, value]) => [
               key, typeof value === 'bigint' ? value.toString() : value,
@@ -544,6 +595,11 @@ export function createMseRecordedSeekSession({
               ptsUs: anchorAfter.ptsUs.toString(), offset: anchorAfter.offset.toString(),
             },
           },
+          planningTrace: planningTrace.map(item => Object.fromEntries(
+            Object.entries(item).map(([key, value]) => [
+              key, typeof value === 'bigint' ? value.toString() : value,
+            ]),
+          )),
           tracks: Object.fromEntries(requiredTracks.map(type => {
             const queue = queues.get(type);
             return [type, {

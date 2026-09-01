@@ -301,8 +301,17 @@ An explicit recorded seek is a separate public playback-entry contract. From
 head discovery through backward planning and the final A/V preroll,
 `createMseRecordedSeekSession()` executes `bootstrap -> backward-plan ->
 single-landing -> committing`, uses 1 MiB chunks, and starts with a 16 MiB
-source-read budget. Bootstrap and backward planning may consume at most 9 MiB,
-so at least 7 MiB remains for the formal landing. Before that single landing,
+source-read budget. Bootstrap and unevidenced backward planning may consume at
+most 9 MiB, so at least 7 MiB remains for the formal landing. Without an index, the planner
+first reads a one-chunk coarse Range near the estimated target. Once AAC or the
+broadcast clock establishes a time-to-byte anchor, it projects the preceding
+long-GOP candidate using the observed local byte rate where available, then
+expands that same candidate Range contiguously in 1 MiB steps until a usable
+preceding RAP is exposed or the planning allowance is exhausted. When that
+timed evidence proves a different bounded candidate Range but the base planning
+allowance cannot expose its RAP, planning alone may extend from 9 MiB to at most
+12 MiB; this evidence path is independent of resolution and remains inside the
+16 MiB base transaction. Before the single landing,
 the chosen RAP-to-target byte span may authorize one budget extension. If that
 proved total would leave less than the fixed 7 MiB landing guard inside the
 16 MiB base, the session selects the smallest tier that contains that proved
@@ -319,8 +328,8 @@ demuxer uses its established tracks, timeline, and RecordingIndex
 moves backward from a conservative pre-target window and stops as soon as a
 usable preceding RAP is observed. If that first sparse window establishes a
 broadcast-clock or AAC access-unit frontier after the target, planning
-immediately projects an approximately 5.6-second long-GOP lookback instead of
-spending the probe on a future RAP. Probe repositioning never changes the
+immediately projects an approximately five-second long-GOP lookback with a
+bounded parser guard instead of spending the probe on a future RAP. Probe repositioning never changes the
 media clock, and only the formal landing repositions playback.
 
 The requested time is immutable. Successful landing is `exact` when real

@@ -25,7 +25,8 @@ function fixture({
   reusedIndex = false, estimateBytes = 16 * MiB, indexedRestartBytes = 12 * MiB,
   videoWidth = 3840, videoHeight = 2160,
   landingAfterPushes = 1, planRaps = null, damageEpisode = null,
-  planRapsByPush = null,
+  planRapsByPush = null, planningClocksByPush = null,
+  planRapAfterPlanningBytes = null,
   abortAfterReads = null, endAfterReads = null, failAfterReads = null,
 } = {}) {
   const media = {currentTime: targetTimeSeconds};
@@ -78,6 +79,14 @@ function fixture({
       } : null;
     },
     async reposition(offset) { operations.push([session.phase, offset]); position = offset; },
+    async broadcastClock() {
+      const clock = planningClocksByPush?.[backwardPushes - 1];
+      return clock ? {
+        mediaTimeValue: clock.ptsUs,
+        mediaTimeTimescale: 1_000_000,
+        inputOffset: clock.offset ?? position,
+      } : null;
+    },
     async setMseRecordedSeekConcealmentTarget() {},
     async getMseRecordedSeekLandingEvidence() {
       return landing === 'held-frame'
@@ -99,8 +108,11 @@ function fixture({
           startTimeUs: damageEpisode.startUs,
           recoveryTimeUs: damageEpisode.endUs,
         });
-        const observedRaps = planRapsByPush?.[backwardPushes - 1] ??
-          (planRapsByPush ? [] : planRaps ?? [51_000_000n]);
+        const observedRaps = planRapAfterPlanningBytes === null
+          ? planRapsByPush?.[backwardPushes - 1] ??
+            (planRapsByPush ? [] : planRaps ?? [51_000_000n])
+          : session.bytesRead >= BigInt(planRapAfterPlanningBytes)
+            ? [49_000_000n] : backwardPushes === 1 ? [53_000_000n] : [];
         for (const [index, ptsValue] of observedRaps.entries()) {
           session.observeAccessUnit({
             codec: 'hevc', trackId: 1, ptsValue, ptsTimescale: 1_000_000,
@@ -158,6 +170,60 @@ function fixture({
     get flushAudioCalls() { return flushAudioCalls; },
     get flushLandingCalls() { return flushLandingCalls; },
   };
+}
+
+{
+  const seek = fixture({
+    planRapsByPush: [[], [], [], [], [49_000_000n]],
+    planningClocksByPush: [
+      {ptsUs: 53_000_000n, offset: 16n * BigInt(MiB)},
+      {ptsUs: 48_000_000n, offset: 13n * BigInt(MiB)},
+      {ptsUs: 49_000_000n, offset: 14n * BigInt(MiB)},
+      {ptsUs: 50_000_000n, offset: 15n * BigInt(MiB)},
+    ],
+  });
+  const result = await seek.session.run();
+  const planRequests = seek.requests.filter(request => request.phase === 'backward-plan');
+  assert.equal(result.rapPresentationTimeUs, 49_000_000n);
+  assert.ok(planRequests.slice(2).some((request, index, requests) => index > 0 &&
+    request.offset === requests[index - 1].offset + requests[index - 1].length),
+  'the projected candidate Range was not expanded contiguously');
+  const planningBytes = seek.requests.filter(request => request.phase !== 'single-landing')
+    .reduce((total, request) => total + request.length, 0n);
+  assert.ok(planningBytes <= 9n * BigInt(MiB),
+    'coarse location and candidate expansion invaded the landing reserve');
+}
+
+{
+  const seek = fixture({
+    sourceSize: 128 * MiB,
+    estimateBytes: 64 * MiB,
+    bootstrapRapUs: 60_000_000n,
+    planRapAfterPlanningBytes: 10 * MiB,
+    planningClocksByPush: [
+      {ptsUs: 53_000_000n, offset: 60n * BigInt(MiB)},
+      ...Array.from({length: 11}, () =>
+        ({ptsUs: 48_000_000n, offset: 50n * BigInt(MiB)})),
+    ],
+  });
+  const result = await seek.session.run();
+  const planningBytes = seek.requests.filter(request => request.phase !== 'single-landing')
+    .reduce((total, request) => total + request.length, 0n);
+  assert.ok(planningBytes > 9n * BigInt(MiB) && planningBytes <= 12n * BigInt(MiB),
+    `timed candidate evidence used ${planningBytes} bytes at ${JSON.stringify(
+      seek.operations, (_, value) => typeof value === 'bigint' ? value.toString() : value)}`);
+  assert.equal(result.rapPresentationTimeUs, 49_000_000n);
+  assert.equal(result.requestedTimeSeconds, 50);
+}
+
+{
+  const seek = fixture({planRap: false, bootstrapRapUs: 60_000_000n});
+  await assert.rejects(seek.session.run(), error =>
+    error.code === MSE_SEEK_NO_COMMON_AV && error.reason === 'no-rap');
+  const planningBytes = seek.requests.filter(request => request.phase !== 'single-landing')
+    .reduce((total, request) => total + request.length, 0n);
+  assert.ok(planningBytes <= 9n * BigInt(MiB),
+    'an untimed empty probe expanded beyond the reserved landing budget');
 }
 
 {
