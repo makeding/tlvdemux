@@ -92,6 +92,80 @@ assert.equal(resolveRecordedVideoWindow({
     'Recorded output was enabled before the formal A/V splice was armed');
 }
 
+{
+  // A backward refinement inserts its AAC units before a later probe in the
+  // locator's globally time-sorted observation list.  The next refinement
+  // must follow the current reposition epoch rather than an obsolete array
+  // index, otherwise a valid target can consume all 16 MiB as a false
+  // AUDIO_ANCHOR_NOT_FOUND.
+  const selections = [];
+  let locator;
+  let cursor = 0n;
+  const ranges = {video: [], audio: []};
+  const demuxer = {
+    async setMseOutputEnabled() {},
+    async setMseTimestampOffset() {},
+    async clearLastClosedVideoPicture() {},
+    async reposition(offset) {
+      cursor = BigInt(offset);
+      selections.push(cursor);
+    },
+    async selectTrack() {},
+    estimateOffset() { return 800n; },
+    async push(data) {
+      const start = selections.length === 0 ? 0
+        : selections.length === 1 ? 72 + Number(cursor - 720n) / 20
+          : 19 + Number(cursor - 200n) / 20;
+      locator.observeAccessUnit({
+        codec: 'aac-latm', trackId: 2n,
+        ptsValue: BigInt(Math.round(start * 1000000)), ptsTimescale: 1000000,
+        inputOffset: cursor, restartOffset: cursor,
+      });
+      locator.observeAccessUnit({
+        codec: 'aac-latm', trackId: 2n,
+        ptsValue: BigInt(Math.round((start + 0.1) * 1000000)), ptsTimescale: 1000000,
+        inputOffset: cursor + 2n, restartOffset: cursor,
+      });
+      locator.observeAccessUnit({
+        codec: 'hevc', trackId: 1n,
+        ptsValue: BigInt(Math.round(Math.max(0, start - 1) * 1000000)),
+        ptsTimescale: 1000000, inputOffset: cursor, restartOffset: cursor,
+        randomAccess: true, closedRandomAccess: true,
+      });
+      cursor += BigInt(data.byteLength);
+      ranges.video = [{start: 0, end: 100}];
+      ranges.audio = [{start: 0, end: 100}];
+      return true;
+    },
+  };
+  locator = createMseRecordedWindowLocator({
+    source: {
+      size: 1000n,
+      async read(_offset, length) { return new Uint8Array(Number(length)); },
+    },
+    demuxer,
+    queues: new Map(['video', 'audio'].map(type => [type, {
+      committedRanges: () => ranges[type],
+      async waitStable() {},
+    }])),
+    presentationEndUs: 100000000n,
+    selectedAudioTrack: () => 2n,
+    preferredVideoTrack: () => 1n,
+    chunkBytes: 10,
+  });
+  const result = await locator.locate({
+    targetTimeSeconds: 50,
+    readBudgetBytes: 400n,
+    signal: new AbortController().signal,
+    transition() {},
+  });
+  assert.ok(result.audio.startTimeSeconds >= 49.9 &&
+    result.audio.startTimeSeconds <= 50.1,
+  'multi-epoch AAC refinement did not converge on the requested window');
+  assert.ok(selections.some((offset, index) => index > 0 && offset < selections[index - 1]),
+    'synthetic seek did not exercise a backward AAC refinement');
+}
+
 function streamSource(chunks) {
   return {
     size: BigInt(chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)),

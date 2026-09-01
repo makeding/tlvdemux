@@ -274,10 +274,15 @@ export function createMseRecordedWindowLocator({
       audioEstimate = BigInt(Math.max(0, Math.floor(projected)));
     }
     const videoEstimate = await demuxer.estimateOffset?.(targetUs, source.size) ?? null;
-    let estimate = audioEstimate === null
-      ? (videoEstimate ?? await demuxer.estimateRecordedAudioOffset?.(targetUs, source.size) ?? 0n)
-      : videoEstimate === null ? audioEstimate
-        : audioEstimate < BigInt(videoEstimate) ? audioEstimate : BigInt(videoEstimate);
+    const indexedAudioEstimate = await demuxer.estimateRecordedAudioOffset?.(
+      targetUs, source.size) ?? null;
+    // A few AAC frames from the file head describe local packet density, not
+    // the recording's byte/time slope.  In particular, signalling bursts can
+    // make that short extrapolation land hundreds of MiB before the target.
+    // Prefer the duration-aware video index, then the sampled AAC index; the
+    // short head extrapolation is only a last resort when neither index can
+    // provide an estimate.
+    let estimate = videoEstimate ?? indexedAudioEstimate ?? audioEstimate ?? 0n;
     const estimatedOffset = BigInt(estimate);
     const coarseBytesPerSecond = sourceTargetSeconds > 0
       ? Number(videoEstimate ?? estimatedOffset) / sourceTargetSeconds : 0;
@@ -297,7 +302,6 @@ export function createMseRecordedWindowLocator({
     let offset = BigInt(estimate);
     if (offset >= source.size) offset = source.size > chunk ? source.size - chunk : 0n;
     await repositionWithLockedTracks(offset);
-    let probeAudioStart = audioUnits.length;
     let probeBudgetStart = bytesRead;
     let refinements = 0;
     let audio = null;
@@ -312,23 +316,44 @@ export function createMseRecordedWindowLocator({
         transition('resolving-video');
         choice = resolve(audio);
       } else if (refinements < 4 && bytesRead - probeBudgetStart >= chunk) {
-        const observed = audioUnits.slice(probeAudioStart)
-          .filter(unit => unit.trackId === lockedAudioTrack);
+        // insert() keeps the global list sorted by presentation time, so a
+        // length captured before reposition cannot delimit newly inserted
+        // units: a backward refinement inserts before that old index.  Epoch
+        // identity is the only reliable boundary between probe landings.
+        const observed = audioUnits.filter(unit =>
+          unit.trackId === lockedAudioTrack &&
+          unit.probeEpoch === currentProbeEpoch);
         const first = observed[0];
         const last = observed[observed.length - 1];
         if (first && last &&
             (sourceTargetSeconds < first.startTimeSeconds - 0.1 ||
              sourceTargetSeconds > last.startTimeSeconds + 0.1)) {
           refinements += 1;
-          const localRate = last.startTimeSeconds > first.startTimeSeconds + 0.02 &&
-            last.inputOffset > first.inputOffset
-            ? Number(last.inputOffset - first.inputOffset) /
-              (last.startTimeSeconds - first.startTimeSeconds)
-            : null;
-          const bytesPerSecond = localRate ?? coarseBytesPerSecond;
-          const anchor = localRate === null ? last : first;
-          const projected = Number(anchor.inputOffset) +
-            (sourceTargetSeconds - anchor.startTimeSeconds) * bytesPerSecond;
+          const selectedObserved = audioUnits.filter(unit =>
+            unit.trackId === lockedAudioTrack);
+          const before = [...selectedObserved].reverse().find(unit =>
+            unit.startTimeSeconds <= sourceTargetSeconds);
+          const after = selectedObserved.find(unit =>
+            unit.startTimeSeconds >= sourceTargetSeconds);
+          let projected;
+          if (before && after &&
+              after.startTimeSeconds > before.startTimeSeconds + 0.02 &&
+              after.inputOffset > before.inputOffset) {
+            const ratio = (sourceTargetSeconds - before.startTimeSeconds) /
+              (after.startTimeSeconds - before.startTimeSeconds);
+            projected = Number(before.inputOffset) +
+              Number(after.inputOffset - before.inputOffset) * ratio;
+          } else {
+            // AAC packet offsets inside one 512 KiB probe are bursty and are
+            // not a stable bitrate estimate.  Use the nearest observation
+            // with the duration-aware coarse slope until probes bracket the
+            // target on both sides.
+            const anchor = [first, last].sort((left, right) =>
+              Math.abs(left.startTimeSeconds - sourceTargetSeconds) -
+              Math.abs(right.startTimeSeconds - sourceTargetSeconds))[0];
+            projected = Number(anchor.inputOffset) +
+              (sourceTargetSeconds - anchor.startTimeSeconds) * coarseBytesPerSecond;
+          }
           // Land before the projected AAC frame so signalling/bootstrap and
           // the complete target window are available in the same transaction.
           const backtrack = Number(8n * chunk);
@@ -337,7 +362,6 @@ export function createMseRecordedWindowLocator({
           if (refined + chunk < offset || refined > offset + chunk) {
             offset = refined;
             await repositionWithLockedTracks(offset);
-            probeAudioStart = audioUnits.length;
             probeBudgetStart = bytesRead;
           }
         }
