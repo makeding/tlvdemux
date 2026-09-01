@@ -258,11 +258,6 @@ class WorkerDemuxer extends WorkerObject {
   setMseRecordedSeekConcealmentTarget(presentationTimeUs) {
     return this.call('setMseRecordedSeekConcealmentTarget', [presentationTimeUs]);
   }
-  beginMseRecordedSeek() { return this.call('beginMseRecordedSeek'); }
-  finishMseRecordedSeek(playbackPositionUs) {
-    return this.call('finishMseRecordedSeek', [playbackPositionUs]);
-  }
-  cancelMseRecordedSeek() { return this.call('cancelMseRecordedSeek'); }
   setMsePlaybackPosition(presentationTimeUs) {
     return this.call('setMsePlaybackPosition', [presentationTimeUs]);
   }

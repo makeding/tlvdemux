@@ -246,9 +246,6 @@ export interface MseSeekDemuxer {
   reposition(offset: bigint, preserveIndex: boolean): unknown | Promise<unknown>;
   setMseOutputEnabled(enabled: boolean): unknown | Promise<unknown>;
   setMseRecordedSeekConcealmentTarget(presentationTimeUs: bigint | null): unknown | Promise<unknown>;
-  beginMseRecordedSeek(): unknown | Promise<unknown>;
-  finishMseRecordedSeek(playbackPositionUs: bigint): unknown | Promise<unknown>;
-  cancelMseRecordedSeek(): unknown | Promise<unknown>;
   setIndexDuration(durationUs: bigint): boolean | Promise<boolean>;
   estimateOffset(targetUs: bigint, sourceSize: bigint): bigint | null | Promise<bigint | null>;
 }

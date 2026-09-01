@@ -247,18 +247,6 @@ same 16 MiB no-progress limit still stops input with
 An explicit recorded seek is a separate public playback-entry contract. From
 head discovery through every RAP probe and the final A/V preroll,
 `createMseRecordedSeekSession()` shares one hard 16 MiB source-read budget.
-From the first explicit-seek intent until exact selected-video and selected-audio
-coverage has been appended and committed, that seek owns the demux/MSE
-transaction. Automatic layer switching is fenced for the complete probe,
-landing, append, and commit interval: an already pending switch is cancelled,
-new health or damage observations may warm the same preferred/rainfall trackers
-but cannot start, complete, or resume an automatic switch, and automatic mode is
-reevaluated only after the exact target is committed. The seek may choose a RAP
-and matching AAC from either member of the automatic pair as its landing source;
-that choice is part of the explicit seek and is not an automatic layer switch.
-It must still preserve the requested `MediaElement.currentTime`, perform one
-formal landing, share the single 16 MiB budget, and never map a nonzero seek back
-to playback entry zero.
 Overlapping probe and landing ranges are reused, and no source request is issued
 after exhaustion. Head discovery, probes, and landing use 1 MiB reads so a
 single coarse read cannot consume one eighth of that shared budget before the

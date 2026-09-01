@@ -34,7 +34,6 @@ function fixture({
   const controller = new AbortController();
   const requests = [];
   const operations = [];
-  const seekLifecycle = [];
   const concealmentTargets = [];
   const source = {
     size: 32n * BigInt(MiB),
@@ -51,9 +50,6 @@ function fixture({
   const track = {kind: 'video', codec: 'hevc', trackId: 1, priority: 0};
   const audioTrack = {kind: 'audio', codec: 'aac-latm', trackId: 2};
   const demuxer = {
-    async beginMseRecordedSeek() { seekLifecycle.push(['begin']); },
-    async finishMseRecordedSeek(target) { seekLifecycle.push(['finish', target]); },
-    async cancelMseRecordedSeek() { seekLifecycle.push(['cancel']); },
     async setMseOutputEnabled(enabled) { this.output = enabled; return true; },
     async setIndexDuration(value) { indexCalls.push(['duration', value]); return true; },
     async estimateOffset(value) { indexCalls.push(['target', value]); return estimatedOffset; },
@@ -118,14 +114,14 @@ function fixture({
   });
   return {
     session, requests, controller, flowControl, indexCalls, media,
-    operations, concealmentTargets, seekLifecycle,
+    operations, concealmentTargets,
   };
 }
 
 {
   const {
     session, requests, flowControl, indexCalls, media,
-    operations, concealmentTargets, seekLifecycle,
+    operations, concealmentTargets,
   } = fixture();
   const result = await session.run();
   assert.equal(result.rapPresentationTimeUs, 51000000n,
@@ -150,8 +146,6 @@ function fixture({
   'concealment target was armed before the final landing reposition reset');
   assert.equal(media.currentTime, 50,
     'recorded seek changed the user-requested MediaElement time');
-  assert.deepEqual(seekLifecycle, [['begin'], ['finish', 50_000_000n]],
-    'recorded seek did not fence the complete transaction at the exact media clock');
 }
 
 {
@@ -200,9 +194,6 @@ function fixture({
   const repositionOffsets = [];
   let session;
   const demuxer = {
-    async beginMseRecordedSeek() {},
-    async finishMseRecordedSeek() {},
-    async cancelMseRecordedSeek() {},
     async setMseOutputEnabled() { return true; },
     async setIndexDuration() { return true; },
     async estimateOffset() { return 24n * BigInt(MiB); },
@@ -285,13 +276,11 @@ for (const landingRanges of [
   () => ({video: [{start: 51, end: 53}], audio: [{start: 51, end: 53}]}),
   () => ({video: [{start: 48, end: 51}], audio: [{start: 51.1, end: 53}]}),
 ]) {
-  const {session, concealmentTargets, seekLifecycle} = fixture({landingRanges});
+  const {session, concealmentTargets} = fixture({landingRanges});
   await assert.rejects(session.run(), error =>
     error.code === MSE_SEEK_NO_COMMON_AV && error.name !== 'MseStartupBufferError');
   assert.deepEqual(concealmentTargets, [52_000_000n, null],
     'a failed landing retained its one-shot concealment target');
-  assert.deepEqual(seekLifecycle, [['begin'], ['cancel']],
-    'a failed landing committed or retained its recorded-seek fence');
 }
 
 {
@@ -319,11 +308,9 @@ for (const landingRanges of [
 }
 
 {
-  const {session, requests, seekLifecycle} = fixture({abortOnRead: true});
+  const {session, requests} = fixture({abortOnRead: true});
   await assert.rejects(session.run(), error => error.name === 'AbortError');
   assert.equal(requests.length, 1, 'a superseded seek issued another source request');
-  assert.deepEqual(seekLifecycle, [['begin'], ['cancel']],
-    'a superseded seek did not release its fence without committing');
 }
 
 {
@@ -342,9 +329,6 @@ for (const landingRanges of [
   };
   const audioTrack = {kind: 'audio', codec: 'aac-latm', trackId: 2};
   const demuxer = {
-    async beginMseRecordedSeek() {},
-    async finishMseRecordedSeek() {},
-    async cancelMseRecordedSeek() {},
     async setMseOutputEnabled() { return true; },
     async setIndexDuration() { return true; },
     async estimateOffset() { return 16n * BigInt(MiB); },

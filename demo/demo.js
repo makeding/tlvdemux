@@ -30,8 +30,6 @@ import {createMseVideoRecoveryLogger, createRecordedMseTransitionManager,
   from './recorded-mse-transition.js?v=recorded-seek-concealment-v1';
 import {commitDemoMseCandidate, createMediaElementProxy, formatBytes, openDetachedMseMedia}
   from './mse-media-transaction.js?v=recorded-seek-concealment-v1';
-import {createPlaybackIntentCoordinator}
-  from './playback-intent.js?v=recorded-seek-fence-v1';
 import {
   RangeUnsupportedError,
   createBlobRecordedSource,
@@ -113,8 +111,7 @@ let activeQueues = [];
 let activeQueueByType = new Map();
 let runGeneration = 0;
 let cachedProbe = null;
-const playbackIntents = createPlaybackIntentCoordinator();
-let activeDemuxIdentity = null;
+let seekTimer = null;
 let internalSeekTarget = null;
 let currentLiveMode = false;
 let activeVideoSwitch = null;
@@ -509,7 +506,6 @@ function timestampMilliseconds(value, timescale) {
 }
 
 function releaseMedia() {
-  playbackIntents.invalidate();
   subtitleRendererRequest += 1;
   if (playbackQualityTimer !== null) clearInterval(playbackQualityTimer);
   playbackQualityTimer = null;
@@ -539,7 +535,6 @@ function releaseMedia() {
 }
 
 function stopPlayback(quiet = false, preserveMedia = false) {
-  playbackIntents.invalidate();
   runGeneration += 1;
   activeController?.abort();
   void activeProbe?.cancel();
@@ -547,7 +542,6 @@ function stopPlayback(quiet = false, preserveMedia = false) {
   activeController = null;
   activeProbe = null;
   activeDemuxer = null;
-  activeDemuxIdentity = null;
   activeAudioSwitch = null;
   activeVideoSwitch = null;
   activeVideoSelectionMode = null;

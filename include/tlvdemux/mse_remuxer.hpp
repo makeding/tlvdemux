@@ -211,12 +211,6 @@ public:
     /** Arm or clear the one-shot source target for recorded-seek concealment. */
     void setRecordedSeekConcealmentTarget(
         std::optional<std::int64_t> presentation_time_us);
-    /** Fence automatic layer decisions for one explicit recorded seek. */
-    void beginMseRecordedSeek();
-    /** Commit exact coverage and resume automatic decisions at the target clock. */
-    void finishMseRecordedSeek(std::int64_t playback_position_us);
-    /** Release a failed or superseded seek without committing an old decision. */
-    void cancelMseRecordedSeek();
     /** Report the real media playhead used to authorize rainfall recovery. */
     void setPlaybackPosition(std::int64_t presentation_time_us);
     // Reinterpret an explicitly identified HLG video track as UHD SDR.

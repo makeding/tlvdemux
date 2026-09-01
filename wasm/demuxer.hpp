@@ -189,18 +189,6 @@ public:
             optional_number<std::int64_t>(presentation_time_us));
     }
 
-    void beginMseRecordedSeek() {
-        if (mse_enabled_) mse_remuxer_.beginMseRecordedSeek();
-    }
-
-    void finishMseRecordedSeek(const std::int64_t playback_position_us) {
-        if (mse_enabled_) mse_remuxer_.finishMseRecordedSeek(playback_position_us);
-    }
-
-    void cancelMseRecordedSeek() {
-        if (mse_enabled_) mse_remuxer_.cancelMseRecordedSeek();
-    }
-
     void setMsePlaybackPosition(const std::int64_t presentation_time_us) {
         if (mse_enabled_) mse_remuxer_.setPlaybackPosition(presentation_time_us);
     }
