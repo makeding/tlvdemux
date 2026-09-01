@@ -325,11 +325,6 @@ void WasmMseRemuxer::setTimestampOffset(const std::int64_t timestamp_offset_us) 
     impl_->remuxer().setTimestampOffset(timestamp_offset_us);
 }
 
-bool WasmMseRemuxer::repeatLastClosedVideoWindow(
-    const std::int64_t start_time_us, const std::int64_t end_time_us) {
-    return impl_->remuxer().repeatLastClosedVideoWindow(start_time_us, end_time_us);
-}
-
 void WasmMseRemuxer::setRecordedSeekConcealmentTarget(
     const std::optional<std::int64_t> presentation_time_us) {
     impl_->remuxer().setRecordedSeekConcealmentTarget(presentation_time_us);

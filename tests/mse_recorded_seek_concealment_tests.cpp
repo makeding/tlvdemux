@@ -271,36 +271,11 @@ void test_target_outside_damage_is_unchanged() {
           "target outside damage changed normal output");
 }
 
-void test_closed_picture_repeats_over_audio_window() {
-    TestSink sink;
-    tlvdemux::MseRemuxer remuxer(sink);
-    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
-    remuxer.push(hevc_unit(2, 1'000'000, 1'000'000, true, true));
-    remuxer.push(hevc_unit(2, 1'033'367, 1'033'367, false, false));
-    check(remuxer.repeatLastClosedVideoWindow(2'000'000, 2'100'000),
-          "last closed picture could not cover the canonical AAC window");
-    remuxer.flush();
-
-    const auto video = segments_of(sink.segments, "video");
-    const auto timestamps = composition_timestamps(video);
-    check(timestamps == std::vector<std::int64_t>{
-              1'000'000, 1'033'367, 2'000'000, 2'033'367, 2'066'734},
-          "frozen video timestamps are not strictly monotonic across the AAC window");
-    std::vector<std::vector<std::uint8_t>> payloads;
-    for (const auto& segment : video) {
-        payloads.insert(payloads.end(), segment.payloads.begin(), segment.payloads.end());
-    }
-    check(payloads.size() == 5 && payloads[0] == payloads[2] &&
-              payloads[2] == payloads[3] && payloads[3] == payloads[4],
-          "frozen samples are not byte-identical copies of the prior closed picture");
-}
-
 } // namespace
 
 int main() {
     test_previous_frame_fill_and_continuous_aac();
     test_stable_rap_fill_without_previous_frame();
     test_target_outside_damage_is_unchanged();
-    test_closed_picture_repeats_over_audio_window();
-    std::cout << "MSE Recorded frozen-window tests passed\n";
+    std::cout << "MSE recorded-seek concealment tests passed\n";
 }

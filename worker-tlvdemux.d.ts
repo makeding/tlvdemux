@@ -56,7 +56,6 @@ export interface WorkerDemuxer {
   suspendAutomaticLayerSwitch(preferredVideoTrackId: bigint, preferredAudioTrackId: bigint, fallbackVideoTrackId: bigint, fallbackAudioTrackId: bigint): Promise<void>;
   clearAutomaticLayerSwitch(): Promise<void>;
   setMseTimestampOffset(timestampOffsetUs: bigint): Promise<void>;
-  repeatLastClosedVideoWindow(startTimeUs: bigint, endTimeUs: bigint): Promise<boolean>;
   setMseRecordedSeekConcealmentTarget(presentationTimeUs: bigint | null): Promise<void>;
   beginMseRecordedSeek(): Promise<void>;
   finishMseRecordedSeek(playbackPositionUs: bigint): Promise<void>;
@@ -75,8 +74,6 @@ export interface WorkerDemuxer {
   finalizeIndex(): Promise<boolean>;
   setIndexDuration(durationUs: bigint): Promise<boolean>;
   estimateOffset(targetUs: bigint, sourceSize: bigint): Promise<bigint | null>;
-  recordedAudioWindowFor(targetUs: bigint): Promise<createTlvDemuxModule.RecordedAudioWindow | null>;
-  estimateRecordedAudioOffset(targetUs: bigint, sourceSize: bigint): Promise<bigint | null>;
   seekPointCount(): Promise<number>;
   indexState(): Promise<createTlvDemuxModule.IndexState>;
   applicationEntry(contextId: number): string | null;

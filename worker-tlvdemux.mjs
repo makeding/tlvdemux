@@ -255,9 +255,6 @@ class WorkerDemuxer extends WorkerObject {
   setMseTimestampOffset(timestampOffsetUs) {
     return this.call('setMseTimestampOffset', [timestampOffsetUs]);
   }
-  repeatLastClosedVideoWindow(startTimeUs, endTimeUs) {
-    return this.call('repeatLastClosedVideoWindow', [startTimeUs, endTimeUs]);
-  }
   setMseRecordedSeekConcealmentTarget(presentationTimeUs) {
     return this.call('setMseRecordedSeekConcealmentTarget', [presentationTimeUs]);
   }
@@ -294,12 +291,6 @@ class WorkerDemuxer extends WorkerObject {
   setIndexDuration(duration) { return this.call('setIndexDuration', [duration]); }
   estimateOffset(target, sourceSize) {
     return this.call('estimateOffset', [target, sourceSize]);
-  }
-  recordedAudioWindowFor(target) {
-    return this.call('recordedAudioWindowFor', [target]);
-  }
-  estimateRecordedAudioOffset(target, sourceSize) {
-    return this.call('estimateRecordedAudioOffset', [target, sourceSize]);
   }
   seekPointCount() { return this.call('seekPointCount'); }
   indexState() { return this.call('indexState'); }

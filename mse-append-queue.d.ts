@@ -1,12 +1,10 @@
 export interface MseAppendQueueOptions {
+  retryDelayMilliseconds?: number;
   backBufferSeconds?: number;
+  forwardBufferHighSeconds?: number;
   trimGranularitySeconds?: number;
   getMediaError?: (media: HTMLMediaElement) => string;
   destroyOnSourceClose?: boolean;
-}
-
-export declare class MseAppendQuotaError extends Error {
-  readonly code: 'MSE_APPEND_QUOTA';
 }
 
 export interface MseBufferedRange {
@@ -36,8 +34,7 @@ export declare class MseAppendQueue {
   readonly committedMediaRanges: MseBufferedRange[];
   readonly waiters: unknown[];
   error: Error | null;
-  quotaBlocked: boolean;
-  quotaError: MseAppendQuotaError | null;
+  retryTimer: ReturnType<typeof setTimeout> | null;
   trimBeforeTime: number | null;
   forceTrim: boolean;
   state: 'running' | 'quiescing' | 'idle' | 'destroyed';
@@ -64,8 +61,6 @@ export declare class MseAppendQueue {
   bufferedRanges(): MseBufferedRange[];
   committedRanges(): MseBufferedRange[];
   trimBefore(time: number, force?: boolean): void;
-  canRetryQuotaAfterRemove(removeEnd: number): boolean;
-  retryQuotaAfterRemove(removeEnd: number): boolean;
   waitBelow(limit: number): Promise<void>;
   isForwardBlocked(): boolean;
   isStable(): boolean;

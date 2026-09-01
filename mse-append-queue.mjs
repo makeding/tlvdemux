@@ -1,13 +1,7 @@
+const DEFAULT_RETRY_DELAY_MILLISECONDS = 250;
 const DEFAULT_BACK_BUFFER_SECONDS = 8;
+const DEFAULT_FORWARD_BUFFER_HIGH_SECONDS = 15;
 const DEFAULT_TRIM_GRANULARITY_SECONDS = 2;
-
-export class MseAppendQuotaError extends Error {
-  constructor(message = 'SourceBuffer quota requires a safe presented-history removal.') {
-    super(message);
-    this.name = 'MseAppendQuotaError';
-    this.code = 'MSE_APPEND_QUOTA';
-  }
-}
 
 function snapshotTimeRanges(ranges) {
   const result = [];
@@ -81,14 +75,15 @@ export class MseAppendQueue {
     this.committedMediaRanges = [];
     this.waiters = [];
     this.error = null;
-    this.quotaBlocked = false;
-    this.quotaError = null;
+    this.retryTimer = null;
     this.trimBeforeTime = null;
     this.forceTrim = false;
     this.state = 'running';
     this.onUpdateEnd = onUpdateEnd;
     this.scheduledTimestampOffsetSeconds = this.sourceBuffer.timestampOffset || 0;
+    this.retryDelayMilliseconds = options.retryDelayMilliseconds ?? DEFAULT_RETRY_DELAY_MILLISECONDS;
     this.backBufferSeconds = options.backBufferSeconds ?? DEFAULT_BACK_BUFFER_SECONDS;
+    this.forwardBufferHighSeconds = options.forwardBufferHighSeconds ?? DEFAULT_FORWARD_BUFFER_HIGH_SECONDS;
     this.trimGranularitySeconds = options.trimGranularitySeconds ?? DEFAULT_TRIM_GRANULARITY_SECONDS;
     this.getMediaError = options.getMediaError ?? defaultMediaError;
     this.destroyOnSourceClose = options.destroyOnSourceClose ?? true;
@@ -110,10 +105,6 @@ export class MseAppendQueue {
         );
       }
       this.currentBytes = 0;
-      if (operation?.kind === 'append') {
-        this.quotaBlocked = false;
-        this.quotaError = null;
-      }
       this.recountQueuedBytes();
       try {
         if (this.state === 'quiescing') this.state = 'idle';
@@ -226,13 +217,6 @@ export class MseAppendQueue {
     if (this.state !== 'running') {
       throw new DOMException(`SourceBuffer queue is ${this.state}`, 'InvalidStateError');
     }
-    const pendingFragments = this.queue.filter(operation =>
-      operation.kind === 'append' && operation.mime === null).length;
-    if (item.mime === null && pendingFragments >= 1) {
-      throw new DOMException(
-        'Each SourceBuffer may retain only one pending media fragment.', 'QuotaExceededError');
-    }
-    item.quotaRetries = 0;
     this.enqueueOperation(item);
     this.queuedBytes += item.data.byteLength;
     this.pump();
@@ -243,7 +227,7 @@ export class MseAppendQueue {
   }
 
   pump() {
-    if (this.error || this.quotaBlocked || this.state !== 'running' || this.sourceBuffer.updating) return;
+    if (this.error || this.state !== 'running' || this.sourceBuffer.updating) return;
     const mediaFailure = this.getMediaError(this.mediaElement);
     if (mediaFailure) {
       this.fail(new Error(mediaFailure));
@@ -273,6 +257,13 @@ export class MseAppendQueue {
       }
     }
     if (!this.queue.length) return;
+    const next = this.queue[0];
+    if (next.kind === 'append' &&
+        this.bufferedAhead() >= this.forwardBufferHighSeconds) {
+      this.scheduleRetry();
+      return;
+    }
+
     const item = this.queue.shift();
     if (item.kind === 'timestamp-offset') {
       this.sourceBuffer.timestampOffset = item.offsetSeconds;
@@ -318,9 +309,8 @@ export class MseAppendQueue {
       this.currentBytes = 0;
       this.recountQueuedBytes();
       if (error?.name === 'QuotaExceededError') {
-        this.quotaBlocked = true;
-        this.quotaError = new MseAppendQuotaError();
-        this.resolveWaiters();
+        this.trimBefore(this.mediaElement.currentTime - this.backBufferSeconds, true);
+        this.scheduleRetry();
       } else {
         this.fail(error);
       }
@@ -357,28 +347,19 @@ export class MseAppendQueue {
     }
     this.trimBeforeTime = this.trimBeforeTime === null ? time : Math.max(this.trimBeforeTime, time);
     this.forceTrim ||= force;
-    this.pump();
+    this.scheduleRetry();
   }
 
-  canRetryQuotaAfterRemove(removeEnd) {
-    if (!this.quotaBlocked || this.state !== 'running') return false;
-    const failed = this.queue[0];
-    if (!failed || failed.kind !== 'append' || failed.quotaRetries >= 1) return false;
-    const start = this.bufferedRanges()[0]?.start;
-    return Number.isFinite(start) && Number.isFinite(removeEnd) &&
-      removeEnd > start;
-  }
-
-  retryQuotaAfterRemove(removeEnd) {
-    if (!this.canRetryQuotaAfterRemove(removeEnd)) return false;
-    const failed = this.queue[0];
-    const start = this.bufferedRanges()[0]?.start;
-    failed.quotaRetries += 1;
-    this.queue.unshift({kind: 'remove', startTimeSeconds: start, endTimeSeconds: removeEnd});
-    this.quotaBlocked = false;
-    this.quotaError = null;
-    this.pump();
-    return true;
+  scheduleRetry() {
+    if (this.retryTimer !== null || this.state !== 'running') return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      try {
+        this.pump();
+      } catch (error) {
+        this.fail(error);
+      }
+    }, this.retryDelayMilliseconds);
   }
 
   waitBelow(limit) {
@@ -388,7 +369,9 @@ export class MseAppendQueue {
   }
 
   isForwardBlocked() {
-    return false;
+    return !this.sourceBuffer.updating && this.queue.length > 0 &&
+      this.queue[0].kind === 'append' &&
+      this.bufferedAhead() >= this.forwardBufferHighSeconds;
   }
 
   isStable() {
@@ -397,7 +380,6 @@ export class MseAppendQueue {
 
   waitStable() {
     if (this.error) return Promise.reject(this.error);
-    if (this.quotaBlocked) return Promise.reject(this.quotaError);
     if (this.isStable()) return Promise.resolve();
     return new Promise((resolve, reject) =>
       this.waiters.push({stable: true, resolve, reject}));
@@ -428,6 +410,8 @@ export class MseAppendQueue {
   async quiesce() {
     if (this.error) throw this.error;
     this.state = 'quiescing';
+    if (this.retryTimer !== null) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
     this.trimBeforeTime = null;
     this.forceTrim = false;
     this.queue = [];
@@ -452,6 +436,8 @@ export class MseAppendQueue {
   }
 
   destroy(error = new Error('SourceBuffer queue stopped')) {
+    if (this.retryTimer !== null) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
     this.state = 'destroyed';
     this.error ||= error;
     this.queue = [];
@@ -461,8 +447,6 @@ export class MseAppendQueue {
     this.committedMediaRanges = [];
     this.trimBeforeTime = null;
     this.forceTrim = false;
-    this.quotaBlocked = false;
-    this.quotaError = null;
     this.resolveWaiters();
   }
 
@@ -481,7 +465,6 @@ export class MseAppendQueue {
     this.waiters = [];
     for (const waiter of pending) {
       if (this.error) waiter.reject(this.error);
-      else if (this.quotaBlocked) waiter.reject(this.quotaError);
       else if (waiter.flowLimit !== undefined ? this.isFlowControlled(waiter.flowLimit)
         : waiter.stable ? this.isStable()
         : waiter.idle ? this.isIdle()

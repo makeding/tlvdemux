@@ -95,18 +95,6 @@ declare namespace createTlvDemuxModule {
     second: SeekPoint | null;
   }
 
-  interface RecordedAudioAnchor {
-    trackId: bigint;
-    presentationTimeUs: bigint;
-    restartOffset: bigint;
-    inputOffset: bigint;
-  }
-
-  interface RecordedAudioWindow {
-    first: RecordedAudioAnchor;
-    second: RecordedAudioAnchor | null;
-  }
-
   interface BroadcastClock {
     mediaTimeValue: bigint;
     mediaTimeTimescale: number;
@@ -411,7 +399,6 @@ declare namespace createTlvDemuxModule {
     restartOffset: bigint;
     inputOffset: bigint;
     randomAccess: boolean;
-    closedRandomAccess: boolean;
     discontinuity: boolean;
     /** Bitmask of libaribtlv discontinuity reasons. */
     discontinuityReasons: number;
@@ -814,7 +801,7 @@ declare namespace createTlvDemuxModule {
     onAccessUnitView?: (unit: AccessUnit) => void;
     /**
      * Callback-lifetime TTML payloads plus payload-free HEVC RAP/discontinuity
-     * and every selected AAC access-unit anchor used by Recorded playback.
+     * and AAC discontinuity events, intended for browser playback control.
      */
     onPlaybackAccessUnitView?: (unit: AccessUnit) => void;
     onError?: (error: DemuxError) => void;
@@ -877,7 +864,6 @@ declare namespace createTlvDemuxModule {
     ): void;
     clearAutomaticLayerSwitch(): void;
     setMseTimestampOffset(timestampOffsetUs: bigint): void;
-    repeatLastClosedVideoWindow(startTimeUs: bigint, endTimeUs: bigint): boolean;
     setMseRecordedSeekConcealmentTarget(presentationTimeUs?: bigint | null): void;
     beginMseRecordedSeek(): void;
     finishMseRecordedSeek(playbackPositionUs: bigint): void;
@@ -926,8 +912,6 @@ declare namespace createTlvDemuxModule {
     previousSync(targetUs: bigint): SeekPoint | null;
     seekPointsFor(targetUs: bigint): SeekPointPair | null;
     estimateOffset(targetUs: bigint, sourceSize: bigint): bigint | null;
-    recordedAudioWindowFor(targetUs: bigint): RecordedAudioWindow | null;
-    estimateRecordedAudioOffset(targetUs: bigint, sourceSize: bigint): bigint | null;
     applicationResources(contextId?: number | null): ApplicationResourceMetadata[];
     applicationResource(contextId: number, path: string): ApplicationResource | null;
     applicationEntry(contextId: number): string | null;

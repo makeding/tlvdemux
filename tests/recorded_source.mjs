@@ -13,17 +13,14 @@ assert.equal(parseContentRange('bytes */12'), null);
 const blobSource = createBlobRecordedSource(new Blob([Uint8Array.of(1, 2, 3, 4)]));
 assert.deepEqual([...await blobSource.read(1n, 2n)], [2, 3]);
 await assert.rejects(blobSource.read(3n, 2n), RangeError);
-const blobStream = [];
-for await (const chunk of blobSource.stream(2n)) blobStream.push(...chunk);
-assert.deepEqual(blobStream, [3, 4], 'Blob sequential stream ignored its committed offset');
 
 const payload = Uint8Array.from({length: 16}, (_, index) => index);
 const requestedRanges = [];
 const rangeFetch = async (_url, {headers}) => {
-  const match = /^bytes=(\d+)-(\d*)$/.exec(headers.get('Range'));
+  const match = /^bytes=(\d+)-(\d+)$/.exec(headers.get('Range'));
   assert.ok(match);
   const start = Number(match[1]);
-  const end = match[2] === '' ? payload.byteLength - 1 : Number(match[2]);
+  const end = Number(match[2]);
   requestedRanges.push([start, end]);
   return new Response(payload.slice(start, end + 1), {
     status: 206,
@@ -34,17 +31,6 @@ const httpSource = await openHttpRecordedSource({url: 'https://example.invalid/a
 assert.equal(httpSource.size, 16n);
 assert.deepEqual([...await httpSource.read(5n, 4n)], [5, 6, 7, 8]);
 assert.deepEqual(requestedRanges, [[0, 0], [5, 8]]);
-const httpStream = [];
-for await (const chunk of httpSource.stream(9n)) httpStream.push(...chunk);
-assert.deepEqual(httpStream, [9, 10, 11, 12, 13, 14, 15]);
-assert.deepEqual(requestedRanges.at(-1), [9, 15],
-  'HTTP sequential playback did not use one open-ended Range request');
-
-const streamController = new AbortController();
-streamController.abort();
-await assert.rejects(async () => {
-  for await (const _ of blobSource.stream(0n, {signal: streamController.signal})) {}
-}, error => error?.name === 'AbortError');
 
 await assert.rejects(
   openHttpRecordedSource({
