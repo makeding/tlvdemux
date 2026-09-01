@@ -8,13 +8,13 @@ import {
   resolveLayerPair,
   sameVideoLayerGroup,
   selectionLevel,
+  shouldReprobeVideoLayerForSeek,
   shouldRenderSubtitleTrack,
   subtitleTrackKind,
 } from '../track-selection.mjs?v=public-selection-v1';
 import { coalesceReadableStream } from '../stream-input.mjs?v=public-stream-v1';
 import {
   commonBufferedRanges,
-  createMsePlaybackIntentCoordinator,
   createMsePlaybackFlowControl,
   createMseRecordedSeekSession,
   startMsePlayback,
@@ -30,6 +30,8 @@ import {createMseVideoRecoveryLogger, createRecordedMseTransitionManager,
   from './recorded-mse-transition.js?v=recorded-seek-concealment-v1';
 import {commitDemoMseCandidate, createMediaElementProxy, formatBytes, openDetachedMseMedia}
   from './mse-media-transaction.js?v=recorded-seek-concealment-v1';
+import {createPlaybackIntentCoordinator}
+  from './playback-intent.js?v=recorded-seek-fence-v1';
 import {
   RangeUnsupportedError,
   createBlobRecordedSource,
@@ -111,9 +113,8 @@ let activeQueues = [];
 let activeQueueByType = new Map();
 let runGeneration = 0;
 let cachedProbe = null;
-const playbackIntents = createMsePlaybackIntentCoordinator();
+const playbackIntents = createPlaybackIntentCoordinator();
 let activeDemuxIdentity = null;
-let bufferedSeekFence = null;
 let internalSeekTarget = null;
 let currentLiveMode = false;
 let activeVideoSwitch = null;
@@ -509,7 +510,6 @@ function timestampMilliseconds(value, timescale) {
 
 function releaseMedia() {
   playbackIntents.invalidate();
-  bufferedSeekFence = null;
   subtitleRendererRequest += 1;
   if (playbackQualityTimer !== null) clearInterval(playbackQualityTimer);
   playbackQualityTimer = null;
@@ -540,7 +540,6 @@ function releaseMedia() {
 
 function stopPlayback(quiet = false, preserveMedia = false) {
   playbackIntents.invalidate();
-  bufferedSeekFence = null;
   runGeneration += 1;
   activeController?.abort();
   void activeProbe?.cancel();
@@ -788,9 +787,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   let msePipeline = null;
   let liveTransitionManager = null;
   let recordedTransitionManager = null;
-  let demuxIdentity = null;
-  const resumePlaybackIntent = (target = elements.video.currentTime) =>
-    playbackIntents.begin({generation, demuxIdentity, kind: 'playback', target});
   let activeDemuxOperation = Promise.resolve();
   const withActiveDemux = operation => {
     const pending = activeDemuxOperation.then(operation);
@@ -799,19 +795,12 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   };
   const scheduleRecordedRebuild = (mode, target) => {
     if (liveMode || generation !== runGeneration || !recordedTransitionManager) return null;
-    const token = playbackIntents.begin({
-      generation, demuxIdentity, kind: 'recovery-candidate', target,
-    });
     appendLog(`${mode === MsePlaybackMode.AUDIO_ONLY ? '純音声' : 'A/V'} candidate を ` +
       `${target.toFixed(3)}s から準備します（旧 MSE 維持、seek 上限 16 MiB）`);
-    return recordedTransitionManager.transition(mode, target, {token, demuxIdentity}).then(result => {
-      if (playbackIntents.isCurrent(token)) resumePlaybackIntent(target);
-      return result;
-    }).catch(error => {
+    return recordedTransitionManager.transition(mode, target).catch(error => {
       if (error.name !== 'AbortError') {
         appendLog(`録画 candidate を破棄しました: ${error.message || error}`);
       }
-      if (playbackIntents.isCurrent(token)) resumePlaybackIntent();
       throw error;
     });
   };
@@ -844,19 +833,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     playbackStateElement: elements.probeState,
     appendLog,
     scheduleRecordedRebuild,
-    requestLiveTransition: (mode, target) => {
-      const token = playbackIntents.begin({
-        generation, demuxIdentity, kind: 'recovery-candidate', target,
-      });
-      return liveTransitionManager.transition(mode, target, {token, demuxIdentity})
-        .then(result => {
-          if (playbackIntents.isCurrent(token)) resumePlaybackIntent(target);
-          return result;
-        }, error => {
-          if (playbackIntents.isCurrent(token)) resumePlaybackIntent();
-          throw error;
-        });
-    },
+    requestLiveTransition: (mode, target) => liveTransitionManager.transition(mode, target),
   });
   activeGapRecovery = gapRecovery;
   const observeVideoRecovery = createMseVideoRecoveryLogger({
@@ -943,31 +920,23 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       `output=${splice.outputBoundarySeconds.toFixed(6)}s`),
   });
   const commitMseCandidate = async (candidate, sourceLabel) => {
-    const token = candidate.context?.token;
-    if (generation !== runGeneration || !token ||
-        candidate.context.demuxIdentity !== demuxIdentity ||
-        !playbackIntents.isCurrent(token)) {
+    if (generation !== runGeneration) {
       throw new DOMException('Transition superseded.', 'AbortError');
     }
-    candidate.intentTarget = token.target;
-    await playbackIntents.runCommit(token, async assertCurrent => commitDemoMseCandidate({
+    await commitDemoMseCandidate({
       candidate, sourceLabel, previousMedia: elements.video, previousUrl: activeObjectUrl,
       previousQueues: queues, liveMode,
       async beforeCommit(item, previousMedia) {
         if (liveMode || !item.seekResult) return;
         await withActiveDemux(async () => {
-          assertCurrent();
           if (previousMedia.paused) {
             throw new DOMException('Transition paused by the user.', 'AbortError');
           }
           const previousDemuxer = demuxer;
           const adopted = item.adoptDemuxer(demuxCallbacks); demuxer = adopted.demuxer;
-          assertCurrent();
           previousDemuxer.delete();
           for (const track of adopted.tracks) demuxCallbacks.onTrack?.(track);
           await demuxer.setMseOutputEnabled(true); offset = item.seekResult.nextOffset;
-          demuxIdentity = Object.freeze({generation, demuxer, sourceIdentity: source.identity});
-          activeDemuxIdentity = demuxIdentity;
           activeDemuxer = demuxer;
         });
       },
@@ -990,8 +959,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       createSubtitleRenderer, gapRecovery,
       transitionManagers: [liveTransitionManager, recordedTransitionManager],
       onQueueUpdate: onMseUpdateEnd, appendLog,
-      assertCurrent,
-    }));
+    });
   };
   if (liveMode) {
     liveTransitionManager = createLiveMseTransitionManager({
@@ -1038,7 +1006,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   }
   const onMseInit = init => {
     try {
-      if (!playbackIntents.isCurrentDemux(demuxIdentity)) return;
       liveTransitionManager?.observeInit(init);
       msePipeline.onMseInit(init);
     }
@@ -1046,7 +1013,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   };
   const onMseSegment = segment => {
     try {
-      if (!playbackIntents.isCurrentDemux(demuxIdentity)) return;
       liveTransitionManager?.observeSegment(segment);
       msePipeline.onMseSegment(segment);
     }
@@ -1054,7 +1020,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   };
   const onMseAudioSplice = splice => {
     try {
-      if (!playbackIntents.isCurrentDemux(demuxIdentity)) return;
       liveTransitionManager?.observeSplice('audio', splice);
       msePipeline.onMseAudioSplice(splice);
     }
@@ -1062,7 +1027,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   };
   const onMseVideoSplice = splice => {
     try {
-      if (!playbackIntents.isCurrentDemux(demuxIdentity)) return;
       liveTransitionManager?.observeSplice('video', splice);
       msePipeline.onMseVideoSplice(splice);
     }
@@ -1071,15 +1035,12 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const onMseLayerSwitch = layer => {
     try {
       const pending = pendingLayerSwitch;
-      if (!pending?.token || !playbackIntents.isCurrent(pending.token) ||
-          pending.demuxIdentity !== demuxIdentity) return;
       const video = pending?.video.trackId === layer.videoTrackId
         ? pending.video : tracks.get(layer.videoTrackId);
       const audio = pending?.audio.trackId === layer.audioTrackId
         ? pending.audio : tracks.get(layer.audioTrackId);
       pendingLayerSwitch = null;
       switchInFlight = false;
-      resumePlaybackIntent();
       if (!video || !audio) return;
       selectedVideo = video.trackId;
       selectedVideoTrack = video;
@@ -1107,11 +1068,8 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const onMseLayerSwitchCancelled = cancelled => {
     try {
       const pending = pendingLayerSwitch;
-      if (!pending?.token || !playbackIntents.isCurrent(pending.token) ||
-          pending.demuxIdentity !== demuxIdentity) return;
       pendingLayerSwitch = null;
       switchInFlight = false;
-      resumePlaybackIntent();
       renderVideoTracks();
       renderAudioTracks();
       const reason = {
@@ -1127,12 +1085,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   };
   const onMseLayerSwitchStarted = started => {
     try {
-      const token = playbackIntents.begin({
-        generation,
-        demuxIdentity,
-        kind: 'layer-switch',
-        target: Number(started.earliestPresentationTimeUs) / 1000000,
-      });
       gapRecovery.notifyTrackSwitch(generation);
       switchInFlight = true;
       const video = tracks.get(started.videoTrackId);
@@ -1144,8 +1096,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         groupIdentification: audio.assetGroups?.find(group =>
           group.selectionLevel === selectionLevel(video))?.groupIdentification ?? null,
         reason: started.reason,
-        token,
-        demuxIdentity,
       };
       const automatic = started.reason !== 'manual';
       appendLog(`${automatic ? '自動 · ' : ''}${videoTrackLabel(video)} への切替開始 ` +
@@ -1197,8 +1147,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
 
   const refreshAutomaticLayerPair = () => {
     if (!demuxer) return Promise.resolve(null);
-    const refreshDemuxer = demuxer;
-    const refreshIdentity = demuxIdentity;
     const currentAudio = [...knownAudioTracks.values()].find(
       track => track.trackId === selectedAudio,
     );
@@ -1207,14 +1155,10 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       selectedVideoTrack, currentAudio, selectedAudioGroupId,
     ) : null;
     const update = automaticLayerPairUpdate.then(async () => {
-      if (generation !== runGeneration || demuxer !== refreshDemuxer ||
-          demuxIdentity !== refreshIdentity) return automaticLayerPairSignature;
       const previous = automaticLayerPairSignature;
       const signature = await configureSdkAutomaticLayerPair(
-        refreshDemuxer, pair, previous, {manual: videoSelectionMode === 'fixed'},
+        demuxer, pair, previous, {manual: videoSelectionMode === 'fixed'},
       );
-      if (generation !== runGeneration || demuxer !== refreshDemuxer ||
-          demuxIdentity !== refreshIdentity) return automaticLayerPairSignature;
       automaticLayerPairSignature = signature;
       if (pair?.fallback && signature !== previous) {
         appendLog(`C++ 降雨対応候補を登録（切替未実行） ` +
@@ -1524,14 +1468,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     },
   };
   demuxer = new wasmModule.TlvDemuxer(demuxCallbacks);
-  demuxIdentity = Object.freeze({generation, demuxer, sourceIdentity: source.identity});
-  activeDemuxIdentity = demuxIdentity;
-  playbackIntents.begin({
-    generation,
-    demuxIdentity,
-    kind: startTimeSeconds > 0 ? 'explicit-seek' : 'playback',
-    target: startTimeSeconds,
-  });
   [currentHlgSdrLut, prototypeHlgSdrLut] = await Promise.all([
     demuxer.hlgSdrColorLut(), demuxer.hlgSdrPrototypeColorLut(),
   ]);
@@ -1749,7 +1685,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     if (generation !== runGeneration) return;
     offset = result.nextOffset;
     playbackBytes = result.bytesRead;
-    resumePlaybackIntent(startTimeSeconds);
     appendLog(`シーク ${startTimeSeconds.toFixed(3)}s -> 推定 ` +
       `${formatBytes(result.estimateOffset)}、RAP ` +
       `${(Number(result.rapPresentationTimeUs) / 1000000).toFixed(3)}s @ ` +
@@ -2026,62 +1961,29 @@ function bindPlaybackMediaEvents(media) {
     if (internalSeekTarget !== null && Math.abs(target - internalSeekTarget) < 0.1) return;
     internalSeekTarget = null;
     activeGapRecovery?.notifyExplicitSeek(runGeneration);
-    activeRecordedTransitionManager?.destroy();
-    activeRecordedTransitionManager = null;
-    const automaticMode = automaticLayerSwitchEnabled(parsePacketId());
-    const generation = runGeneration;
-    const demuxIdentity = activeDemuxIdentity;
-    const token = playbackIntents.begin({
-      generation, demuxIdentity, kind: 'explicit-seek', target,
-    });
-    const fencedDemuxer = activeDemuxer;
-    void fencedDemuxer?.beginMseRecordedSeek().catch(error => {
-      if (playbackIntents.isCurrent(token)) {
-        appendLog(`シーク fence エラー ${error.message || error}`);
-      }
-    });
-    if (isTimeBuffered(target) && !automaticMode) {
-      bufferedSeekFence = {token, target, demuxer: fencedDemuxer, demuxIdentity};
-      return;
-    }
-    bufferedSeekFence = null;
-    activeController?.abort();
-    playbackIntents.schedule(token, 120, async current => {
-      if (!activeMediaSource || generation !== runGeneration ||
-          current.demuxIdentity !== activeDemuxIdentity) return;
+    const currentVideoTrack = knownVideoTracks.get(selectedVideoPacketId);
+    const automaticFallbackActive = shouldReprobeVideoLayerForSeek(
+      currentVideoTrack, parsePacketId());
+    if (isTimeBuffered(target) && !automaticFallbackActive) return;
+    clearTimeout(seekTimer);
+    seekTimer = setTimeout(() => {
+      if (!activeMediaSource) return;
       appendLog(`ユーザーシーク ${target.toFixed(3)}s` +
-        (automaticMode ? '、自動映像層を新しい MSE transaction で再評価します' : ''));
+        (automaticFallbackActive ? '、映像層を再評価します' : ''));
       // A SourceBuffer that has already changed from the preferred 4K decoder
       // configuration to the rainfall 1080p configuration is unsafe to reuse
       // for a backwards seek into 4K. Chromium retains per-frame decoder config
       // history, and overlapping the old timeline can eventually surface as
       // VideoToolbox -17694. Rebuild MSE only for this cross-layer seek.
-      const reuseMedia = false;
+      const reuseMedia = !automaticFallbackActive;
       stopPlayback(true, reuseMedia);
-      await loadAndPlay(current.target, reuseMedia);
-    });
+      loadAndPlay(target, reuseMedia);
+    }, 120);
   }, options);
   media.addEventListener('seeked', () => {
     if (internalSeekTarget !== null &&
         Math.abs(media.currentTime - internalSeekTarget) < 0.1) {
       internalSeekTarget = null;
-    }
-    const fence = bufferedSeekFence;
-    if (fence && playbackIntents.isCurrent(fence.token) &&
-        fence.demuxIdentity === activeDemuxIdentity &&
-        Math.abs(media.currentTime - fence.target) < 0.1) {
-      bufferedSeekFence = null;
-      void fence.demuxer.finishMseRecordedSeek(
-        BigInt(Math.round(fence.target * 1000000)),
-      ).then(() => {
-        if (!playbackIntents.isCurrent(fence.token)) return;
-        playbackIntents.begin({
-          generation: runGeneration,
-          demuxIdentity: activeDemuxIdentity,
-          kind: 'playback',
-          target: fence.target,
-        });
-      }).catch(error => appendLog(`buffered seek fence エラー ${error.message || error}`));
     }
     activeGapRecovery?.notifyBufferedChange();
   }, options);

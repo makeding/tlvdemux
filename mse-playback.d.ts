@@ -314,38 +314,6 @@ export interface MseRecordedSeekSession {
   readonly bytesRead: bigint;
   readonly budgetBytes: bigint;
 }
-export type MsePlaybackIntentKind =
-  | 'playback' | 'explicit-seek' | 'layer-switch' | 'recovery-candidate';
-export interface MsePlaybackIntentToken {
-  readonly generation: number;
-  readonly serial: number;
-  readonly demuxIdentity: object;
-  readonly kind: MsePlaybackIntentKind;
-  readonly target: number | null;
-}
-export interface MsePlaybackIntentCoordinator {
-  begin(intent: Omit<MsePlaybackIntentToken, 'serial'>): MsePlaybackIntentToken;
-  current(): MsePlaybackIntentToken | null;
-  isCurrent(token: MsePlaybackIntentToken | null): boolean;
-  isCurrentDemux(demuxIdentity: object): boolean;
-  assertCurrent(token: MsePlaybackIntentToken): void;
-  schedule(
-    token: MsePlaybackIntentToken,
-    delayMilliseconds: number,
-    operation: (token: MsePlaybackIntentToken) => unknown | Promise<unknown>,
-  ): void;
-  runCommit<T>(
-    token: MsePlaybackIntentToken,
-    operation: (assertCurrent: () => void) => T | Promise<T>,
-  ): Promise<T>;
-  cancelScheduled(): void;
-  complete(token: MsePlaybackIntentToken): boolean;
-  invalidate(): void;
-}
-export declare function createMsePlaybackIntentCoordinator(options?: {
-  setTimer?: (callback: () => void, delayMilliseconds: number) => unknown;
-  clearTimer?: (timer: unknown) => void;
-}): MsePlaybackIntentCoordinator;
 export declare function createMseRecordedSeekSession(
   options: MseRecordedSeekSessionOptions,
 ): MseRecordedSeekSession;
