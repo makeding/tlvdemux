@@ -258,24 +258,18 @@ public:
             (unit.pts.timescale <= 1 || unit.dts.timescale <= 1)) return std::nullopt;
         if (unit.codec == aribtlv::Codec::Hevc) {
             std::optional<std::int64_t> preferred_restore_boundary;
-            // Keep the latest parameter sets and complete GOPs for every
-            // layer, including the selected one. A later source-damage
-            // fallback must be able to return at a preferred RAP without
-            // waiting for parameter sets to be broadcast again.
-            video_history.push(unit);
             if (video_id && unit.track_id == *video_id) {
                 push_selected_video(unit);
                 automatic_layers.setSelectedOutputStarted(video.output_started());
             } else {
+                video_history.push(unit);
                 if (source_damage_fallback_active) {
                     preferred_restore_boundary =
                         video.observe_preferred_candidate(unit);
                 }
             }
             const auto automatic = automatic_layers.observe(unit);
-            if (!recorded_seek_active && !pending_layer &&
-                !video.recorded_continuity_enabled() &&
-                automatic.playback_damage) {
+            if (!recorded_seek_active && !pending_layer && automatic.playback_damage) {
                 sink.onPlaybackDamage(*automatic.playback_damage);
             }
             if (pending_layer) return std::nullopt;
@@ -331,9 +325,7 @@ public:
                 iterator->second.flush();
             }
             const auto automatic = automatic_layers.observe(unit);
-            if (!recorded_seek_active && !pending_layer &&
-                !video.recorded_continuity_enabled() &&
-                automatic.playback_damage) {
+            if (!recorded_seek_active && !pending_layer && automatic.playback_damage) {
                 sink.onPlaybackDamage(*automatic.playback_damage);
             }
             if (pending_layer && unit.track_id == pending_layer->audio_track_id) {
@@ -357,12 +349,10 @@ public:
         const auto observation = automatic_layers.observeDamage(*playback_damage);
         if (recorded_seek_active) return std::nullopt;
         if (!observation.playback_damage && !observation.switch_request) {
-            if (video.recorded_continuity_enabled()) return std::nullopt;
             sink.onPlaybackDamage(*playback_damage);
             return std::nullopt;
         }
-        if (!pending_layer && !video.recorded_continuity_enabled() &&
-            observation.playback_damage) {
+        if (!pending_layer && observation.playback_damage) {
             sink.onPlaybackDamage(*observation.playback_damage);
         }
         if (pending_layer) return std::nullopt;

@@ -627,7 +627,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     automaticLayerConfiguration = automaticLayerConfiguration.then(async () => {
       automaticLayerSignature = await configureAutomaticLayerPair(
         demuxer, layerPair, automaticLayerSignature,
-        {manual: liveMode && videoSelectionMode === 'fixed'},
+        {manual: videoSelectionMode === 'fixed'},
       );
     }).catch(error => { callbackError = error; });
   };
