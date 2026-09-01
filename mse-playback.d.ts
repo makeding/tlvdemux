@@ -32,11 +32,6 @@ export declare class MseRecordedSeekError extends Error {
 export interface MseRecordedSeekDiagnostics {
   targetTimeSeconds: number;
   sourceTargetUs: string;
-  phase: string;
-  entryCovered: boolean;
-  entryRange: MseBufferedRange | null;
-  flowEntryTimeSeconds: number;
-  flowRequiredTracks: MseRequiredTrack[];
   bytesRead: string;
   budgetBytes: string;
   tracks: Record<string, {

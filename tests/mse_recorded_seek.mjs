@@ -29,7 +29,6 @@ function fixture({
   cachedEstimateOffset = null,
   estimatedOffset = 16n * BigInt(MiB),
   probeRapUs = 51_000_000n,
-  coverOnCancel = false,
 } = {}) {
   const media = {currentTime: 50};
   const video = queue();
@@ -59,13 +58,7 @@ function fixture({
     async finishMseRecordedSeek(target) {
       seekLifecycle.push(['finish', target, session?.phase]);
     },
-    async cancelMseRecordedSeek() {
-      seekLifecycle.push(['cancel', session?.phase]);
-      if (coverOnCancel) {
-        video.ranges = [{start: 49, end: 51}];
-        audio.ranges = [{start: 49, end: 51}];
-      }
-    },
+    async cancelMseRecordedSeek() { seekLifecycle.push(['cancel', session?.phase]); },
     async setMseOutputEnabled(enabled) { this.output = enabled; return true; },
     async setIndexDuration(value) { indexCalls.push(['duration', value]); return true; },
     async estimateOffset(value) { indexCalls.push(['target', value]); return estimatedOffset; },
@@ -132,23 +125,6 @@ function fixture({
     session, requests, controller, flowControl, indexCalls, media,
     operations, concealmentTargets, seekLifecycle,
   };
-}
-
-{
-  const {session} = fixture({
-    landingRanges: () => ({video: [], audio: []}),
-    coverOnCancel: true,
-  });
-  await assert.rejects(session.run(), error => {
-    assert.equal(error.diagnostics.phase, 'landing');
-    assert.equal(error.diagnostics.entryCovered, false);
-    assert.equal(error.diagnostics.entryRange, null);
-    assert.equal(error.diagnostics.flowEntryTimeSeconds, 50);
-    assert.deepEqual(error.diagnostics.flowRequiredTracks, ['video', 'audio']);
-    assert.deepEqual(error.diagnostics.tracks.video.committed, [],
-      'failure diagnostics were captured after cancellation changed queue state');
-    return error.code === MSE_SEEK_NO_COMMON_AV;
-  });
 }
 
 {

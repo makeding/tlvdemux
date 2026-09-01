@@ -3,7 +3,7 @@ import {createMseOutputPipeline} from './mse-output-pipeline.mjs';
 import {
   MsePlaybackMode,
   createMsePlaybackFlowControl,
-} from './mse-playback.mjs?v=recorded-seek-entry-fence-v2';
+} from './mse-playback.mjs?v=recorded-seek-concealment-v1';
 
 const TRANSITION_QUEUE_LIMIT_BYTES = 4 * 1024 * 1024;
 

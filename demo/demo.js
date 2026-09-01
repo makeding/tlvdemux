@@ -18,18 +18,18 @@ import {
   createMsePlaybackFlowControl,
   createMseRecordedSeekSession,
   startMsePlayback,
-} from '../mse-playback.mjs?v=recorded-seek-entry-fence-v2';
+} from '../mse-playback.mjs?v=recorded-seek-concealment-v1';
 import { createWorkerTlvDemuxModule } from '../worker-tlvdemux.mjs';
-import {MseAppendQueue} from '../mse-append-queue.mjs?v=recorded-seek-entry-fence-v2';
+import {MseAppendQueue} from '../mse-append-queue.mjs?v=recorded-seek-concealment-v1';
 import {createMseOutputPipeline} from '../mse-output-pipeline.mjs?v=audio-only-resilience-v1';
 import {MsePlaybackMode, createDemoPlaybackResilience}
-  from './playback-resilience.js?v=recorded-seek-entry-fence-v2';
-import {createLiveMseTransitionManager} from '../mse-live-transition.mjs?v=recorded-seek-entry-fence-v2';
+  from './playback-resilience.js?v=recorded-seek-concealment-v1';
+import {createLiveMseTransitionManager} from '../mse-live-transition.mjs?v=recorded-seek-concealment-v1';
 import {createMseVideoRecoveryLogger, createRecordedMseTransitionManager,
   createRecordedSeekConcealmentLogger}
-  from './recorded-mse-transition.js?v=recorded-seek-entry-fence-v2';
+  from './recorded-mse-transition.js?v=recorded-seek-concealment-v1';
 import {commitDemoMseCandidate, createMediaElementProxy, formatBytes, openDetachedMseMedia}
-  from './mse-media-transaction.js?v=recorded-seek-entry-fence-v2';
+  from './mse-media-transaction.js?v=recorded-seek-concealment-v1';
 import {MSE_MAX_AUDIO_CHANNELS, createDemoTrackControls}
   from './track-controls.js?v=recorded-seek-fence-v1';
 import {
@@ -717,10 +717,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     initialRestoreTarget: initialPlaybackMode === MsePlaybackMode.RESTORING_VIDEO
       ? startTimeSeconds : null,
     liveMode,
-    isActive: () => generation === runGeneration && !suppressOutput &&
-      (!seekSession || seekSession.phase === 'complete'),
-    playbackEntryLocked: () => startTimeSeconds > 0 &&
-      (!seekSession || seekSession.phase !== 'complete'),
+    isActive: () => generation === runGeneration && !suppressOutput,
     isCurrentLayer: damage => damage.videoTrackId === selectedVideo,
     switchInFlight: () => switchInFlight,
     seek: (target, previousTime, detail) => {

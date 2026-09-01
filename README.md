@@ -283,12 +283,7 @@ owned by the public `tlvdemux/mse-playback` SDK, not by the demo. Integrations
 create tokens for explicit seeks, layer switches, and recovery candidates and
 must validate the token and fixed demux identity around every asynchronous read
 or commit. The demo only forwards browser events and installs the SDK-approved
-result. Playback resilience is inactive for the complete explicit-seek fence;
-landing-time recovery observations may be logged and used by the one-shot
-concealment path, but must not change required tracks or replace the frozen
-seek entry clock. The `758.179369s` regression covers this ownership rule: its
-committed video interval `758.107362..760.242818s` and committed audio interval
-`756.298716..761.162716s` cover the target and must commit as A/V.
+result.
 When a worker replays its track catalogue after `reposition()`, acknowledging
 the already selected non-null video or audio track is idempotent and must not
 reset, flush, or discard the in-flight seek landing.
@@ -334,10 +329,9 @@ No usable pre-damage frame and no stable following RAP, no RAP, EOF, remaining
 disjoint A/V, or budget exhaustion fails with `MSE_SEEK_NO_COMMON_AV` and stops
 reading. It must never be reported as `MSE_STARTUP_NO_COMMON_AV`, cause a hidden
 media-element seek, or fall back to scanning the complete recording.
-Every recorded-seek failure snapshots the requested target, phase, exact-entry
-decision, committed coded A/V ranges, real browser-buffered A/V ranges, and
-shared-budget consumption before cancellation so the failed boundary can be
-distinguished without another instrumented rerun.
+Every recorded-seek failure reports the requested target, committed coded A/V
+ranges, real browser-buffered A/V ranges, and shared-budget consumption so the
+failed boundary can be distinguished without another instrumented rerun.
 
 For automatic dual-video recordings, the public recorded timeline is the union
 of the preferred and rainfall video presentation ranges. The recording start is

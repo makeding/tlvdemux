@@ -1,5 +1,5 @@
 import {promoteMseCandidateMedia}
-  from '../mse-live-transition.mjs?v=recorded-seek-entry-fence-v2';
+  from '../mse-live-transition.mjs?v=recorded-seek-concealment-v1';
 
 export function createMediaElementProxy(getMedia) {
   return {

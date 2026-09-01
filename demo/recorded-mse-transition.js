@@ -1,9 +1,9 @@
 import {
   MsePlaybackMode,
   createMseRecordedSeekSession,
-} from '../mse-playback.mjs?v=recorded-seek-entry-fence-v2';
+} from '../mse-playback.mjs?v=recorded-seek-concealment-v1';
 import {createLiveMseTransitionManager}
-  from '../mse-live-transition.mjs?v=recorded-seek-entry-fence-v2';
+  from '../mse-live-transition.mjs?v=recorded-seek-concealment-v1';
 
 export function createRecordedSeekConcealmentLogger({
   targetSeconds, presentationStartUs, appendLog,
