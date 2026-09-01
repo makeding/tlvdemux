@@ -199,6 +199,46 @@ const locateAtStart = async () => ({
 });
 
 {
+  // The real 7680x4320 recording lands with only one short AAC interval and
+  // reaches the two-wall-second reserve at 52,428,800 bytes. Startup must use
+  // the bounded playable-entry threshold while supply continues toward that
+  // reserve; otherwise Chromium displays the first decoded frame indefinitely.
+  let commonAhead = 0.02;
+  let playbackStarts = 0;
+  let pushed = 0;
+  let pushedAtStart = null;
+  const controller = createMseRecordedPlaybackController({
+    source: streamSource([
+      Uint8Array.of(1), Uint8Array.of(2), Uint8Array.of(3), Uint8Array.of(4),
+      Uint8Array.of(5), Uint8Array.of(6),
+    ]),
+    media: {currentTime: 0, playbackRate: 2},
+    queues: new Map([['video', queue()], ['audio', queue()]]),
+    demuxer: {
+      push: async () => {
+        pushed += 1;
+        commonAhead += 0.25;
+      },
+    },
+    commonAhead: () => commonAhead,
+    locateSeekWindow: locateAtStart,
+    play: () => {},
+    onPlaybackStart: event => {
+      playbackStarts += 1;
+      pushedAtStart = pushed;
+      assert.equal(event.quotaLimited, false);
+      assert.ok(commonAhead >= 1 && commonAhead < 4,
+        '2x startup waited for the full reserve instead of one playable entry');
+    },
+  });
+  await controller.start();
+  assert.equal(playbackStarts, 1,
+    'a playable 2x 8K entry remained on its first frame until the full reserve');
+  assert.equal(pushedAtStart, 4, '2x startup did not begin at the playable entry threshold');
+  assert.equal(pushed, 6, 'startup stopped sequential reserve filling after play began');
+}
+
+{
   const source = streamSource([Uint8Array.of(1), Uint8Array.of(2)]);
   const media = {currentTime: 0, playbackRate: 1};
   const pushes = [];
@@ -265,6 +305,7 @@ const locateAtStart = async () => ({
   let waits = 0;
   let retries = 0;
   let playbackStarts = 0;
+  let commonAhead = 0.1;
   const video = {
     quotaBlocked: false,
     bufferedRanges: () => [{start: 0, end: 1}],
@@ -289,7 +330,8 @@ const locateAtStart = async () => ({
   };
   const controller = createMseRecordedPlaybackController({
     source, media, queues: new Map([['video', video], ['audio', queue()]]),
-    demuxer: {push: async () => {}}, commonAhead: () => 1,
+    demuxer: {push: async () => { commonAhead = 1; }},
+    commonAhead: () => commonAhead,
     locateSeekWindow: locateAtStart,
     play: () => {},
     onPlaybackStart: event => {

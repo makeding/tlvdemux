@@ -96,7 +96,7 @@ export declare function createMseRecordedPlaybackController(options: {
   initialOffset?: bigint;
   highWallSeconds?: number;
   lowWallSeconds?: number;
-  quotaStartWallSeconds?: number;
+  startupWallSeconds?: number;
   readBudgetBytes?: number;
   commonAhead?: () => number;
   locateSeekWindow: (options: {
