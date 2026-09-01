@@ -81,25 +81,20 @@ public:
     }
     bool repeat_last_closed_picture(const std::int64_t start_time_us,
                                     const std::int64_t end_time_us) {
-        if (!last_closed_picture_ || end_time_us <= start_time_us) return false;
-        if (!track_) replace_track(last_closed_picture_->track);
-        started_ = true;
-        recovery_observation_eligible_ = true;
+        if (!track_ || !last_closed_picture_ || end_time_us <= start_time_us) return false;
         const auto offset = timeline_offset_ticks_.value_or(0);
-        auto pts = scaled(start_time_us, 1000000, track_->timescale) + offset;
-        const auto end_pts = scaled(end_time_us, 1000000, track_->timescale) + offset;
+        auto dts = scaled(start_time_us, 1000000, track_->timescale) + offset;
+        const auto end = scaled(end_time_us, 1000000, track_->timescale) + offset;
         const auto duration = std::max<std::int64_t>(1, default_duration());
-        while (pts < end_pts) {
+        while (dts < end) {
             auto data = last_closed_picture_->data;
-            const auto dts = pts - last_closed_picture_->composition_offset;
-            if (dts < 0) return false;
+            const auto pts = dts + last_closed_picture_->composition_offset;
             if (!enqueue({std::move(data), dts, pts, 0, true})) return false;
-            pts = std::min(end_pts, pts + duration);
+            dts = std::min(end, dts + duration);
         }
-        flush_at(end_pts - last_closed_picture_->composition_offset);
+        flush_at(end);
         return true;
     }
-    void clear_last_closed_picture() noexcept { last_closed_picture_.reset(); }
     void observe_source_damage(const aribtlv::DamageSpan& damage) {
         if (damage.kind != aribtlv::TrackKind::Video ||
             !input_track_id_ || damage.track_id != *input_track_id_ ||
@@ -458,14 +453,8 @@ public:
         const auto dts = scaled(unit.dts.value, unit.dts.timescale, track_->timescale) + offset;
         const auto pts = scaled(unit.pts.value, unit.pts.timescale, track_->timescale) + offset;
         if (dts < 0) return;
-        // A CRA (type 21) is a decodable random-access picture when this muxer
-        // starts a fresh sequence at a byte landing: RASL is discarded above,
-        // while the CRA payload itself is self-decodable.  Retain it as the
-        // prior usable picture as well as IDR/BLA so an audio-first Recorded
-        // transaction can bridge a high-bitrate GOP without copying a future
-        // frame backward or exceeding its 16 MiB read budget.
-        if (irap >= 16 && irap <= 21) {
-            last_closed_picture_ = FrozenPicture{data, pts - dts, *track_};
+        if (irap >= 16 && irap <= 20) {
+            last_closed_picture_ = FrozenPicture{data, pts - dts};
         }
         if (!output_enabled) return;
         if (concealment_pending_stable_rap_) {
@@ -498,7 +487,6 @@ private:
     struct FrozenPicture {
         Bytes data;
         std::int64_t composition_offset = 0;
-        Mp4Track track;
     };
 
     enum class SourceDamageObservation {

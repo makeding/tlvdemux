@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import {
   MSE_RECORDED_READ_BUDGET_BYTES,
   createMseRecordedPlaybackController,
-  createMseRecordedWindowLocator,
   resolveRecordedVideoWindow,
 } from '../mse-recorded-playback.mjs';
 
@@ -31,60 +30,6 @@ assert.equal(frozenChoice.video.payloadId, 'closed-idr');
 assert.equal(resolveRecordedVideoWindow({
   audio, preferred: [], rainfall: [], frozen: [{...frozen[0], startTimeSeconds: 11}],
 }), null, 'a future picture was copied backward into an earlier audio window');
-
-{
-  const selections = [];
-  let locator;
-  const ranges = {video: [], audio: []};
-  const demuxer = {
-    async setMseOutputEnabled() {},
-    async clearLastClosedVideoPicture() {},
-    async reposition(offset) { selections.push(['reposition', offset]); },
-    async selectTrack(kind, trackId) { selections.push([kind, trackId]); },
-    async push() {
-      locator.observeAccessUnit({
-        codec: 'aac-latm', trackId: 2n, ptsValue: 0n, ptsTimescale: 1000000,
-        inputOffset: 0n, restartOffset: 0n,
-      });
-      locator.observeAccessUnit({
-        codec: 'aac-latm', trackId: 2n, ptsValue: 60000n, ptsTimescale: 1000000,
-        inputOffset: 1n, restartOffset: 0n,
-      });
-      locator.observeAccessUnit({
-        codec: 'hevc', trackId: 1n, ptsValue: 0n, ptsTimescale: 1000000,
-        inputOffset: 0n, restartOffset: 0n, randomAccess: true,
-        closedRandomAccess: true,
-      });
-      ranges.video = [{start: 0, end: 1}];
-      ranges.audio = [{start: 0, end: 1}];
-      return true;
-    },
-  };
-  const queues = new Map(['video', 'audio'].map(type => [type, {
-    committedRanges: () => ranges[type],
-    async waitStable() {},
-  }]));
-  locator = createMseRecordedWindowLocator({
-    source: {size: 8n, async read() { return Uint8Array.of(1); }},
-    demuxer,
-    queues,
-    selectedAudioTrack: () => 2n,
-    preferredVideoTrack: () => 1n,
-    chunkBytes: 1,
-  });
-  await locator.locate({
-    targetTimeSeconds: 0,
-    readBudgetBytes: 8n,
-    signal: new AbortController().signal,
-    transition() {},
-  });
-  const repositions = selections.reduce((count, item) =>
-    count + (item[0] === 'reposition' ? 1 : 0), 0);
-  assert.equal(selections.filter(item => item[0] === 'audio').length, repositions,
-    'a recorded reposition did not restore the locked AAC selection');
-  assert.equal(selections.filter(item => item[0] === 'video').length, repositions,
-    'a recorded reposition did not restore the locked preferred-video selection');
-}
 
 function streamSource(chunks) {
   return {
@@ -227,29 +172,6 @@ const locateAtStart = async () => ({
   controller.notifyPresentedFrame(4.1);
   await completed;
   assert.equal(retries, 1, 'presented history did not permit one retained-fragment retry');
-}
-
-{
-  const blocked = {
-    quotaBlocked: true,
-    bufferedRanges: () => [],
-    committedRanges: () => [],
-    waitStable: () => Promise.reject(Object.assign(new Error('quota'), {
-      name: 'MseAppendQuotaError', code: 'MSE_APPEND_QUOTA',
-    })),
-    canRetryQuotaAfterRemove: () => false,
-  };
-  const controller = createMseRecordedPlaybackController({
-    source: streamSource([]), media: {currentTime: 0, playbackRate: 1},
-    queues: new Map([['video', blocked], ['audio', queue()]]),
-    demuxer: {push: async () => {}}, commonAhead: () => 0,
-    locateSeekWindow: locateAtStart,
-  });
-  await assert.rejects(controller.start(), error =>
-    error.code === 'MSE_RECORDED_ATOMIC_COMMIT_FAILED' &&
-    /0\.5 wall-clock seconds/.test(error.message));
-  assert.equal(controller.state, 'error',
-    'quota before any playable entry remained in permanent fake buffering');
 }
 
 {

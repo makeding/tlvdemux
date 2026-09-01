@@ -135,7 +135,7 @@ then resolve video for that exact audio window in this order:
 
 1. a decodable preferred/main closed GOP;
 2. a decodable rainfall/fallback closed GOP covering the same AAC window;
-3. the last usable decodable IRAP picture before the window, repeated with
+3. the last usable closed IDR/BLA picture before the window, repeated with
    monotonic video DTS/PTS while the original AAC continues unchanged.
 
 A future frame is never copied backward. Source-damage fallback may return from
@@ -153,10 +153,6 @@ Every AAC window is an atomic A/V commit: both queues must acknowledge
 wall-clock seconds and refills below one wall-clock second; playback rate scales
 only the media duration represented by those watermarks (for example 4/2 media
 seconds at 2x). There is no 15- or 30-second startup gate.
-If the browser reports its quota ceiling before the preferred reserve is
-reached, the controller starts consumption as soon as the entry has at least
-0.5 wall-clock seconds of common A/V; the controller, not the demo, owns this
-quota-limited startup decision.
 
 Quota pressure pauses source reading and retains the failed original window.
 Only removal of complete history windows strictly before the last compositor-
@@ -171,7 +167,7 @@ resolves preferred/rainfall/frozen video, and performs one formal A/V commit.
 The requested `currentTime` remains unchanged during probing and is installed
 only for that explicit seek after commit. A superseding seek cancels the older
 source stream and transaction. Errors are limited to a missing AAC anchor,
-absence of preferred/rainfall/earlier decodable video within the budget, source
+absence of preferred/rainfall/earlier closed video within the budget, source
 failure, or atomic commit failure, and include a full state snapshot.
 
 Blob and strict-Range HTTP recordings expose `stream(offset, {signal})`. Blob

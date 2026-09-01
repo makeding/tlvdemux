@@ -4,9 +4,10 @@ import {createRequire} from 'node:module';
 import {basename, resolve} from 'node:path';
 
 import {
-  MSE_RECORDED_READ_BUDGET_BYTES,
-  createMseRecordedWindowLocator,
-} from '../mse-recorded-playback.mjs';
+  MSE_SEEK_READ_BUDGET_BYTES,
+  createMsePlaybackFlowControl,
+  createMseRecordedSeekSession,
+} from '../mse-playback.mjs';
 
 const readU32 = (data, offset) =>
   ((data[offset] * 0x1000000) + (data[offset + 1] << 16) +
@@ -207,12 +208,12 @@ try {
     let selectedVideoTrack = null;
     let callbackError = null;
     const probeUnits = [];
-    let locator;
+    let session;
     let demuxer;
     demuxer = new module.TlvDemuxer({
-      mseMaxAudioChannels: 6,
       onTrack(track) {
         tracks.set(track.trackId, track);
+        session?.observeTrack(track);
         if (track.kind === 'video' && selectedVideo === null &&
             track.packetId === recordingRange.presentationStartVideoPacketId) {
           selectedVideo = track.trackId;
@@ -221,8 +222,7 @@ try {
           // callback acknowledgement must be idempotent during a seek landing.
           demuxer.selectTrack('video', selectedVideo);
           demuxer.selectTrack('video', selectedVideo);
-        } else if (track.kind === 'audio' && selectedAudio === null &&
-            ((track.audio?.channels ?? 0) === 0 || track.audio.channels <= 6)) {
+        } else if (track.kind === 'audio' && selectedAudio === null) {
           selectedAudio = track.trackId;
           demuxer.selectTrack('audio', selectedAudio);
           demuxer.selectTrack('audio', selectedAudio);
@@ -230,16 +230,20 @@ try {
       },
       onTrackRemoved(track) {
         tracks.delete(track.trackId);
-        // A seek reposition removes and re-announces the transient catalogue;
-        // it does not release the transaction's selected A/V identities.
-      },
-      onPlaybackAccessUnitView(unit) {
-        if ((unit.codec === 'hevc' || unit.codec === 'aac-latm') &&
-            probeUnits.length < 64) {
-          probeUnits.push(`${unit.trackId}:${unit.ptsValue}/${unit.ptsTimescale}:` +
-            `${unit.codec}:${unit.randomAccess}:${unit.restartOffset}`);
+        session?.observeTrackRemoved(track);
+        if (track.kind === 'video' && selectedVideo === track.trackId) {
+          selectedVideo = null;
+          selectedVideoTrack = null;
+        } else if (track.kind === 'audio' && selectedAudio === track.trackId) {
+          selectedAudio = null;
         }
-        locator?.observeAccessUnit(unit);
+      },
+      onAccessUnit(unit) {
+        if (session?.phase === 'probe' && unit.codec === 'hevc' && probeUnits.length < 32) {
+          probeUnits.push(`${unit.trackId}:${unit.ptsValue}/${unit.ptsTimescale}:` +
+            `${unit.randomAccess}:${unit.restartOffset}`);
+        }
+        session?.observeAccessUnit(unit);
       },
       onMseVideoSplice(splice) {
         offsets.video = BigInt(splice.timestampOffsetUs ?? 0n);
@@ -269,7 +273,10 @@ try {
       },
     });
     demuxer.startIndex(false);
-    demuxer.setIndexDuration(presentationEndUs);
+    const media = {currentTime: targetTimeSeconds};
+    const flowControl = createMsePlaybackFlowControl({
+      media, queues, entryKind: 'seek', entryTimeSeconds: targetTimeSeconds,
+    });
     const source = {
       size: sourceSize,
       async read(offset, length) {
@@ -277,21 +284,22 @@ try {
         return readRange(offset, length);
       },
     };
-    locator = createMseRecordedWindowLocator({
+    session = createMseRecordedSeekSession({
+      targetTimeSeconds,
       source,
+      durationUs,
       presentationStartUs,
       presentationEndUs,
       demuxer,
+      media,
       queues,
-      selectedAudioTrack: () => selectedAudio,
-      preferredVideoTrack: () => selectedVideoTrack,
-      rainfallVideoTrack: () => [...tracks.values()].find(track =>
-        track.kind === 'video' && track.trackId !== selectedVideo &&
-        sameLayerGroup(selectedVideoTrack, track)) ?? null,
-      activateVideoTrack: async (_mode, video) => {
-        if (video.trackId === selectedVideo) return;
-        const track = tracks.get(video.trackId);
-        if (!track) return;
+      flowControl,
+      headReady: () => selectedVideo !== null,
+      candidateVideoTrack: track => track.kind === 'video' &&
+        (track.trackId === selectedVideo || sameLayerGroup(selectedVideoTrack, track)),
+      videoTrackPriority: selectionLevel,
+      activateVideoTrack: async track => {
+        if (track.trackId === selectedVideo) return;
         const currentAudio = tracks.get(selectedAudio);
         const audio = correspondingAudio([...tracks.values()], currentAudio, track);
         selectedVideo = track.trackId;
@@ -302,23 +310,13 @@ try {
           demuxer.selectTrack('audio', selectedAudio);
         }
       },
+      checkError: () => { if (callbackError) throw callbackError; },
     });
     try {
       let result;
       try {
-        demuxer.beginMseRecordedSeek();
-        result = await locator.locate({
-          targetTimeSeconds,
-          readBudgetBytes: BigInt(MSE_RECORDED_READ_BUDGET_BYTES),
-          signal: new AbortController().signal,
-          transition() {},
-        });
-        demuxer.finishMseRecordedSeek(BigInt(Math.round(targetTimeSeconds * 1000000)));
-        if (callbackError) throw callbackError;
+        result = await session.run();
       } catch (error) {
-        demuxer.cancelMseRecordedSeek();
-        error.message += ` diagnostics=${JSON.stringify(error.diagnostics,
-          (_, value) => typeof value === 'bigint' ? value.toString() : value)}`;
         error.message += ` target=${targetTimeSeconds}s requests=` + requests.map(request =>
           `${request.offset}+${request.length}`).join(',') + ` tracks=${JSON.stringify(
             [...tracks.values()].filter(track => track.kind === 'video').map(track => ({
@@ -331,10 +329,12 @@ try {
       }
       const requested = requests.reduce((sum, request) => sum + request.length, 0n);
       assert.equal(requested, result.bytesRead);
-      assert.ok(requested <= BigInt(MSE_RECORDED_READ_BUDGET_BYTES),
+      assert.ok(requested <= BigInt(MSE_SEEK_READ_BUDGET_BYTES),
         `seek ${targetTimeSeconds}s exceeded the 16 MiB budget`);
-      assert.ok(result.video.startTimeSeconds <= result.audio.startTimeSeconds + 0.05,
-        `seek ${targetTimeSeconds}s selected future video for an earlier AAC window`);
+      assert.ok(result.rapPresentationTimeUs <= result.sourceTargetUs,
+        `seek ${targetTimeSeconds}s selected a RAP after the target`);
+      assert.equal(flowControl.entryCovered(), true,
+        `seek ${targetTimeSeconds}s did not form common A/V at the target`);
       const targetRanges = Object.fromEntries(Object.entries(ranges).map(([type, items]) => [
         type,
         items.filter(range => range.start <= targetTimeSeconds + 0.000002 &&
@@ -355,10 +355,8 @@ try {
         if (event.phase === 'observation-started') {
           damageStartUs = BigInt(event.presentationTimeUs);
         } else if (event.phase === 'stable-rap-committed' && damageStartUs !== null) {
-          const sourceTargetUs = presentationStartUs +
-            BigInt(Math.round(targetTimeSeconds * 1000000));
-          concealed = damageStartUs <= sourceTargetUs &&
-            sourceTargetUs < BigInt(event.presentationTimeUs);
+          concealed = damageStartUs <= result.sourceTargetUs &&
+            result.sourceTargetUs < BigInt(event.presentationTimeUs);
           damageStartUs = null;
         }
       }
@@ -368,9 +366,8 @@ try {
       }
       results.push({
         targetTimeSeconds,
-        videoMode: result.videoMode,
-        videoTimeSeconds: result.video.startTimeSeconds,
-        restartOffset: String(result.video.restartOffset ?? result.audio.restartOffset),
+        rapTimeSeconds: Number(result.rapPresentationTimeUs) / 1000000,
+        restartOffset: result.restartOffset.toString(),
         nextOffset: result.nextOffset.toString(),
         bytesRead: result.bytesRead.toString(),
         targetRanges,

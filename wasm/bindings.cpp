@@ -779,8 +779,6 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("setMseTimestampOffset", &WasmDemuxer::setMseTimestampOffset)
         .function("repeatLastClosedVideoWindow",
                   &WasmDemuxer::repeatLastClosedVideoWindow)
-        .function("clearLastClosedVideoPicture",
-                  &WasmDemuxer::clearLastClosedVideoPicture)
         .function("setMseRecordedSeekConcealmentTarget",
                   &WasmDemuxer::setMseRecordedSeekConcealmentTarget)
         .function("beginMseRecordedSeek", &WasmDemuxer::beginMseRecordedSeek)

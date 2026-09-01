@@ -38,7 +38,6 @@ public:
     void setTimestampOffset(std::int64_t timestamp_offset_us);
     bool repeatLastClosedVideoWindow(std::int64_t start_time_us,
                                      std::int64_t end_time_us);
-    void clearLastClosedVideoPicture();
     void setRecordedSeekConcealmentTarget(
         std::optional<std::int64_t> presentation_time_us);
     void beginMseRecordedSeek();

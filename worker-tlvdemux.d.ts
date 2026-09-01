@@ -57,7 +57,6 @@ export interface WorkerDemuxer {
   clearAutomaticLayerSwitch(): Promise<void>;
   setMseTimestampOffset(timestampOffsetUs: bigint): Promise<void>;
   repeatLastClosedVideoWindow(startTimeUs: bigint, endTimeUs: bigint): Promise<boolean>;
-  clearLastClosedVideoPicture(): Promise<void>;
   setMseRecordedSeekConcealmentTarget(presentationTimeUs: bigint | null): Promise<void>;
   beginMseRecordedSeek(): Promise<void>;
   finishMseRecordedSeek(playbackPositionUs: bigint): Promise<void>;

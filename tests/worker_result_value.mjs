@@ -108,10 +108,6 @@ await demuxer.setMseRecordedSeekConcealmentTarget(5n);
 assert.deepEqual(fake.messages.find(entry =>
   entry.message.method === 'setMseRecordedSeekConcealmentTarget')?.message.args, [5n],
   'worker proxy did not forward the one-shot recorded-seek target');
-await demuxer.clearLastClosedVideoPicture();
-assert.equal(fake.messages.some(entry =>
-  entry.message.method === 'clearLastClosedVideoPicture'), true,
-  'worker proxy did not clear a stale future frozen picture before a transaction');
 await demuxer.beginMseRecordedSeek();
 await demuxer.finishMseRecordedSeek(6n);
 await demuxer.cancelMseRecordedSeek();
