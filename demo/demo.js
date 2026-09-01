@@ -19,7 +19,7 @@ import {
   startMsePlayback,
 } from '../mse-playback.mjs?v=recorded-seek-concealment-v1';
 import { createWorkerTlvDemuxModule } from '../worker-tlvdemux.mjs';
-import {MseAppendQueue} from '../mse-append-queue.mjs?v=recorded-seek-concealment-v1';
+import {MseAppendQueue} from '../mse-append-queue.mjs?v=recorded-consecutive-reconfiguration-v1';
 import {createMseOutputPipeline} from '../mse-output-pipeline.mjs?v=audio-only-resilience-v1';
 import {MsePlaybackMode, createDemoPlaybackResilience}
   from './playback-resilience.js?v=recorded-seek-concealment-v1';
@@ -1690,6 +1690,9 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     });
     playbackFlow.bind(recordedPlaybackController);
     activeRecordedPlaybackController = recordedPlaybackController;
+    if (EXPOSE_DEBUG_QUEUES) {
+      globalThis.__tlvdemuxDebugRecordedController = recordedPlaybackController;
+    }
     await recordedPlaybackController.start(startTimeSeconds);
   }
   if (liveMode && source.stream) {
@@ -1720,6 +1723,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   }
   if (activeRecordedPlaybackController === recordedPlaybackController) {
     activeRecordedPlaybackController = null;
+    if (EXPOSE_DEBUG_QUEUES) globalThis.__tlvdemuxDebugRecordedController = null;
   }
   if (liveMode) {
     gapRecovery.notifySourceEnded();

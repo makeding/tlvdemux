@@ -155,7 +155,7 @@ public:
                 video_boundary, video_boundary);
             pending_layer.reset();
             mse_timestamp_offset_us = timestamp_offset_us;
-            synchronize_audio_timestamp_offsets();
+            synchronize_timestamp_offsets();
             automatic_layers.switchCompleted(completed_video_id);
             damage_advisor.selectVideoTrack(completed_video_id);
             return;
@@ -183,7 +183,7 @@ public:
             std::optional<std::int64_t>{timestamp_offset_us});
         if (!boundary) return;
         mse_timestamp_offset_us = timestamp_offset_us;
-        synchronize_audio_timestamp_offsets();
+        synchronize_timestamp_offsets();
         output.layer_switch(
             completed.video_track_id, completed.audio_track_id,
             video_boundary, *boundary);
@@ -311,7 +311,7 @@ public:
         video.reset();
         video_history.clear();
         for (auto& entry : audio) entry.second.discontinuity();
-        synchronize_audio_timestamp_offsets();
+        synchronize_timestamp_offsets();
         output.discard_staged_video();
         automatic_layers.resetObservations();
         return cancelled;
@@ -333,6 +333,11 @@ public:
             entry.second.set_source_buffer_timestamp_offset(
                 mse_timestamp_offset_us);
         }
+    }
+
+    void synchronize_timestamp_offsets() noexcept {
+        video.set_source_buffer_timestamp_offset(mse_timestamp_offset_us);
+        synchronize_audio_timestamp_offsets();
     }
 
     void push_selected_video(const aribtlv::AccessUnit& unit) {
@@ -462,7 +467,7 @@ void tlvdemux::MseRemuxer::clearAutomaticLayerSwitch() {
 void tlvdemux::MseRemuxer::setTimestampOffset(
     const std::int64_t timestamp_offset_us) {
     impl_->mse_timestamp_offset_us = timestamp_offset_us;
-    impl_->synchronize_audio_timestamp_offsets();
+    impl_->synchronize_timestamp_offsets();
 }
 
 void tlvdemux::MseRemuxer::setRecordedSeekConcealmentTarget(

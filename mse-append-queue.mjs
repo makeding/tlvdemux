@@ -16,6 +16,27 @@ function defaultMediaError(media) {
   return `MediaError code=${media.error.code}`;
 }
 
+function retainQueuedAppendsBefore(queue, time) {
+  const retainedMedia = new Set();
+  const requiredInitializations = new Set();
+  let precedingInitialization = null;
+  for (let index = 0; index < queue.length; index += 1) {
+    const item = queue[index];
+    if (item.kind !== 'append') continue;
+    if (item.mime !== null) {
+      precedingInitialization = index;
+      continue;
+    }
+    if (item.startTimeSeconds !== null && item.startTimeSeconds >= time) continue;
+    retainedMedia.add(index);
+    if (precedingInitialization !== null) {
+      requiredInitializations.add(precedingInitialization);
+    }
+  }
+  return queue.filter((item, index) => item.kind !== 'append' ||
+    (item.mime === null ? retainedMedia.has(index) : requiredInitializations.has(index)));
+}
+
 /**
  * Serializes SourceBuffer mutations and applies byte/time backpressure.
  *
@@ -118,12 +139,11 @@ export class MseAppendQueue {
     if (this.state !== 'running') {
       throw new DOMException(`SourceBuffer queue is ${this.state}`, 'InvalidStateError');
     }
-    this.queue = this.queue.filter(item => {
-      const keep = item.kind !== 'append' ||
-        (item.mime === null &&
-         (item.startTimeSeconds === null || item.startTimeSeconds < time));
-      return keep;
-    });
+    // A second configuration splice may arrive before the first splice has
+    // reached SourceBuffer. Retained media from that first generation still
+    // requires its matching init/changeType operation. Discard only init
+    // segments whose complete media generation was superseded.
+    this.queue = retainQueuedAppendsBefore(this.queue, time);
     this.enqueueOperation({kind: 'remove', startTimeSeconds: time});
     this.scheduledTimestampOffsetSeconds = offsetSeconds;
     this.enqueueOperation({kind: 'timestamp-offset', offsetSeconds});
@@ -137,12 +157,7 @@ export class MseAppendQueue {
     if (this.state !== 'running') {
       throw new DOMException(`SourceBuffer queue is ${this.state}`, 'InvalidStateError');
     }
-    this.queue = this.queue.filter(item => {
-      const keep = item.kind !== 'append' ||
-        (item.mime === null &&
-         (item.startTimeSeconds === null || item.startTimeSeconds < time));
-      return keep;
-    });
+    this.queue = retainQueuedAppendsBefore(this.queue, time);
     this.enqueueOperation({ kind: 'remove', startTimeSeconds: time });
     this.recountQueuedBytes();
     this.pump();

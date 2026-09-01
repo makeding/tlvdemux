@@ -21,6 +21,9 @@ const initCounts = {video: 0, audio: 0};
 const events = [];
 const configurationEvents = [];
 const boundarySegments = [];
+const boundaryAccessUnits = [];
+const discontinuityAccessUnits = [];
+const recoveryEvents = [];
 const fatalErrors = [];
 let inputOffset = 0;
 let demuxer;
@@ -40,7 +43,22 @@ const updateFrontier = segment => {
     frontiers[segment.type] = end;
   }
 };
-const report = () => process.stdout.write(`${JSON.stringify({
+const accessUnitTimeUs = (value, timescale) =>
+  BigInt(value) * 1_000_000n / BigInt(timescale);
+const accessUnitDetail = unit => ({
+  trackId: unit.trackId,
+  codec: unit.codec,
+  dtsUs: accessUnitTimeUs(unit.dtsValue, unit.dtsTimescale),
+  ptsUs: accessUnitTimeUs(unit.ptsValue, unit.ptsTimescale),
+  durationUs: unit.durationValue === undefined || unit.durationTimescale === undefined
+    ? null
+    : accessUnitTimeUs(unit.durationValue, unit.durationTimescale),
+  randomAccess: unit.randomAccess,
+  discontinuity: unit.discontinuity,
+  discontinuityReasons: unit.discontinuityReasons,
+  byteLength: unit.data.byteLength,
+});
+const report = (details = false) => process.stdout.write(`${JSON.stringify({
   inputOffset,
   selected: Object.fromEntries(Object.entries(selected).map(([type, id]) =>
     [type, id === null ? null : id.toString()])),
@@ -48,8 +66,11 @@ const report = () => process.stdout.write(`${JSON.stringify({
     [type, value === null ? null : value.toString()])),
   segmentCounts: {...segmentCounts},
   initCounts: {...initCounts},
-  configurationEvents,
-  boundarySegments,
+  configurationEvents: details ? configurationEvents : configurationEvents.length,
+  boundarySegments: details ? boundarySegments : boundarySegments.length,
+  boundaryAccessUnits: details ? boundaryAccessUnits : boundaryAccessUnits.length,
+  discontinuityAccessUnits: details ? discontinuityAccessUnits : discontinuityAccessUnits.length,
+  recoveryEvents: details ? recoveryEvents : recoveryEvents.length,
   recentEvents: events.slice(-12),
   fatalErrors,
 })}\n`);
@@ -96,13 +117,33 @@ demuxer = new module.TlvDemuxer({
       record('segment', detail);
     }
   },
+  onPlaybackAccessUnitView(unit) {
+    if (unit.trackId !== selected.video && unit.trackId !== selected.audio) return;
+    const detail = accessUnitDetail(unit);
+    if (detail.ptsUs >= 14_000_000n && detail.ptsUs <= 18_000_000n) {
+      boundaryAccessUnits.push({inputOffset, ...serializable(detail)});
+    }
+    if (unit.discontinuity) {
+      discontinuityAccessUnits.push({inputOffset, ...serializable(detail)});
+    }
+  },
   onMseAudioSplice(splice) { record('audio-splice', splice); },
   onMseVideoSplice(splice) { record('video-splice', splice); },
   onMseLayerSwitchStarted(event) { record('layer-switch-started', event); },
   onMseLayerSwitch(event) { record('layer-switch', event); },
   onMseLayerSwitchCancelled(event) { record('layer-switch-cancelled', event); },
-  onMseVideoRecovery(event) { record('video-recovery', event); },
-  onPlaybackDamage(damage) { record('playback-damage', damage); },
+  onMseVideoRecovery(event) {
+    record('video-recovery', event);
+    recoveryEvents.push({inputOffset, kind: 'video-recovery', detail: serializable(event)});
+  },
+  onDamage(damage) {
+    record('source-damage', damage);
+    recoveryEvents.push({inputOffset, kind: 'source-damage', detail: serializable(damage)});
+  },
+  onPlaybackDamage(damage) {
+    record('playback-damage', damage);
+    recoveryEvents.push({inputOffset, kind: 'playback-damage', detail: serializable(damage)});
+  },
   onError(error) {
     record(error.recoverable ? 'warning' : 'fatal-error', error);
     if (!error.recoverable) fatalErrors.push(serializable(error));
@@ -129,7 +170,7 @@ try {
       nextReport += reportStep;
     }
   }
-  report();
+  report(true);
   assert.deepEqual(fatalErrors, []);
 } finally {
   closeSync(input);

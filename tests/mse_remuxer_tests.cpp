@@ -1602,6 +1602,8 @@ void test_unlimited_22_2_channel_count() {
 void test_video_configuration_change_is_a_rap_splice_boundary() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
+    constexpr std::int64_t entry_offset_us = -534666;
+    remuxer.setTimestampOffset(entry_offset_us);
     remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
 
     constexpr std::int64_t step = 100000;
@@ -1622,8 +1624,9 @@ void test_video_configuration_change_is_a_rap_splice_boundary() {
               ParsedColorInformation{9, 16, 9, false},
           "replacement video init did not contain the new VUI colour configuration");
     check(sink.video_splices.size() == 1 &&
-              sink.video_splices.front().presentation_time_us == 2 * step,
-          "video splice did not use the replacement RAP presentation boundary");
+              sink.video_splices.front().presentation_time_us == 2 * step &&
+              sink.video_splices.front().timestamp_offset_us == entry_offset_us,
+          "video splice lost the complete startup timestamp mapping");
     check(sink.events == std::vector<std::string>{
               "init:video", "segment:video", "video-splice", "init:video", "segment:video"},
           "configuration boundary event order must be old media, splice, new init, new media");

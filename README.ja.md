@@ -158,12 +158,23 @@ Recorded/File では `PlaybackDamage` と `seek-if-stalled` は controller event
 clock の書き込みを行いません。明示 PID または
 具体的な track 選択は固定 mode のままで、自動 layer 判断を無効にします。
 
-Recorded の 8 秒 low-water rule は mutation／queue state より優先します。共通 A/V が 8 秒未満なら、
-SourceBuffer が updating 中、append／reconfiguration が queue 済み、または queue が 4 MiB を越えていても
-`draining` へ入ったり留まったりせず、source read と demuxer supply を継続します。実 browser regression
-では 384 MiB から 480 MiB の間に共通 A/V が 1.6 秒から 0 秒へ減少し、
-`source-buffer-mutation`／`recorded-queue-drain` の後、約 9 秒の再生で `waiting 15.534s` になりました。
-これは境界通過ではなく失敗です。
+Recorded の共通 A/V が 8 秒未満では low-water rule を mutation／queue state より優先し、queued work が
+Recorded input を永久停止してはいけません。init／media work がまだ一つもない entry discovery は、引き続き
+読込 byte 数で制限しません。実 browser regression では 384 MiB から 480 MiB の間に共通 A/V が 1.6 秒から
+0 秒へ減少し、約 9 秒の再生で `waiting 15.534s` になりました。これは境界通過ではなく失敗です。
+sample の連続 video reconfiguration（`10.277733s`、`10.811606s`）では、後続 `spliceFrom()` が前世代の
+media を queue に残す場合、その media に必要な init／changeType も必ず残します。旧 decoder configuration
+のまま replacement media を append してはいけません。
+
+実証された failure は 1x／2x の両方で media time 約 9 秒から stutter し、15.534 秒で waiting になります。
+再生速度の変更も queue の track 別 forward gate の無効化も browser の結果を変えなかったため、どちらも原因として
+扱ったり Recorded 固有 workaround にしてはいけません。owning failure は最初の HEVC reconfiguration でした。
+fresh Recorded startup が `-0.534666s` を設定した後、source `10.277733s` の video splice が完全な
+SourceBuffer timestamp offset を誤って 0 に置換していました。その結果 Edge の video range は
+`9.626289s` で終わって `10.277733s` から再開し、AAC と media clock が進む一方で映像提示は約 9.6 秒の
+574 frame で停止しました。すべての HEVC configuration／track splice は、layer switch または reposition 後も
+remuxer の現在の完全な recording-to-MSE timestamp offset を運び、録画 origin 自体を変更しない splice で
+0 に戻してはいけません。
 最初の利用可能な切替先 RAP で両 track を同じ境界に論理 splice し、その境界より後に
 append 済みの旧 layer 音声を remove して、新しい AAC を 22 ms 以内の同じ境界へ写像します。
 旧音声の先行 buffer を理由に映像切替を後続 RAP まで延期してはいけません。起動切替が通常映像

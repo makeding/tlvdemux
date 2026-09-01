@@ -7,6 +7,10 @@ public:
     bool audio_output_ready() const noexcept {
         return started_ || recovery_observation_eligible_;
     }
+    void set_source_buffer_timestamp_offset(
+        const std::int64_t timestamp_offset_us) noexcept {
+        source_buffer_timestamp_offset_us_ = timestamp_offset_us;
+    }
     void mark_output_not_started() noexcept {
         output_started_ = false;
         recovery_observation_eligible_ = false;
@@ -138,6 +142,7 @@ public:
         configuration_policy_dirty_ = false;
         current_video_properties_.reset();
         if (clear_policy) {
+            source_buffer_timestamp_offset_us_ = 0;
             sdr_in_hlg_tracks_.clear();
             hlg_sdr_prototype_tracks_.clear();
             video_signalling_.clear();
@@ -321,7 +326,8 @@ public:
                     stage_next_switch_ = false;
                 }
                 splice_boundary_us_ = scaled(boundary_pts, track_->timescale, 1000000);
-                output_.video_splice(*splice_boundary_us_);
+                output_.video_splice(
+                    *splice_boundary_us_, source_buffer_timestamp_offset_us_);
                 candidate.timescale = track_->timescale;
                 replace_track(std::move(candidate));
                 emit_video_properties(properties);
@@ -354,7 +360,8 @@ public:
                 stage_next_switch_ = false;
             }
             splice_boundary_us_ = scaled(boundary_pts, track_->timescale, 1000000);
-            output_.video_splice(*splice_boundary_us_);
+            output_.video_splice(
+                *splice_boundary_us_, source_buffer_timestamp_offset_us_);
             // A layer-switch attempt is a self-contained decoder transition.
             // This is required even when the codec string and hvcC happen to
             // match, and especially after a discarded staging attempt has
@@ -645,4 +652,5 @@ private:
     std::optional<std::int64_t> concealment_episode_start_us_;
     bool concealment_pending_stable_rap_ = false;
     bool configuration_policy_dirty_ = false;
+    std::int64_t source_buffer_timestamp_offset_us_ = 0;
 };

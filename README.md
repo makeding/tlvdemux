@@ -206,13 +206,30 @@ buffered, and media-clock changes re-evaluate it, and common A/V below the
 for the old `queue <= 4 MiB && idle/forward-blocked` conjunction.
 
 The low-water rule has priority over mutation and queue state. When common A/V
-is below 8 seconds, an updating SourceBuffer, queued append/reconfiguration, or
-more than 4 MiB queued must not enter or retain `draining`; Recorded continues
-reading and feeding the demuxer so the queues can recover. The authoritative
-browser regression repeatedly stopped at about 9 seconds: reads advanced from
-384 MiB to 480 MiB while common A/V fell from 1.6 seconds to zero, then
-`source-buffer-mutation` / `recorded-queue-drain` preceded `waiting 15.534s`.
-That sequence is a failure, not successful progress past the original boundary.
+is below 8 seconds, queued work cannot permanently stop Recorded input. Before
+any init/media work exists, sequential entry discovery remains unbounded by
+bytes read. The authoritative browser regression repeatedly
+stopped at about 9 seconds: reads advanced from 384 MiB to 480 MiB while common
+A/V fell from 1.6 seconds to zero before `waiting 15.534s`. That sequence is a
+failure, not successful progress past the original boundary. At the sample's
+consecutive video reconfigurations (`10.277733s`, `10.811606s`), a later
+`spliceFrom()` must retain the earlier queued init/changeType whenever it also
+retains media from that configuration generation; media may never be appended
+under a superseded decoder configuration.
+
+The demonstrated failure starts stuttering around media time 9 and waits at
+15.534 at both 1x and 2x. Changing playback rate or bypassing the queue's
+per-track forward gate did not alter that browser result, so neither may be
+treated as the cause or used as a Recorded-specific workaround. The owning
+failure was the first HEVC reconfiguration: fresh Recorded startup installed
+`-0.534666s`, but the video splice at source `10.277733s` incorrectly replaced
+the complete SourceBuffer timestamp offset with zero. Edge consequently showed
+video ranges ending at `9.626289s` and restarting at `10.277733s`; presentation
+stopped after 574 frames near 9.6 seconds while AAC and the media clock kept
+advancing. Every HEVC configuration/track splice must carry the remuxer's
+current complete recording-to-MSE timestamp offset, including after a layer
+switch or reposition; it must never fall back to zero merely because the splice
+is not itself changing the recording origin.
 
 An explicit seek cancels the previous Recorded generation while retaining the
 exact user time, one shared 16 MiB budget, and one landing reposition. RAP/IRAP

@@ -56,11 +56,26 @@ await evaluate(`(() => {
 await call('Page.reload', { ignoreCache: true });
 await new Promise(resolve => setTimeout(resolve, 500));
 await evaluate(`new Promise((resolve, reject) => {
-  const deadline = performance.now() + 15000;
+  const deadline = performance.now() + 30000;
   const start = () => {
+    const state = document.getElementById('probeState')?.textContent || '';
+    if (state.includes('再生中') || state.includes('バッファリング中')) {
+      resolve(true);
+      return;
+    }
     const button = document.getElementById('normalButton');
     if (button && !button.disabled) { button.click(); resolve(true); return; }
-    if (performance.now() >= deadline) { reject(new Error('play button stayed disabled')); return; }
+    if (performance.now() >= deadline) {
+      reject(new Error(JSON.stringify({
+        reason: 'play button stayed disabled',
+        probeState: document.getElementById('probeState')?.textContent,
+        status: document.getElementById('status')?.textContent,
+        log: document.getElementById('log')?.textContent,
+        source: document.getElementById('httpUrl')?.value,
+        mediaSource: typeof MediaSource,
+      })));
+      return;
+    }
     setTimeout(start, 50);
   };
   start();
@@ -88,19 +103,29 @@ while (Date.now() < deadline) {
       duration: video.duration,
       ended: video.ended,
       paused: video.paused,
+      seeking: video.seeking,
+      readyState: video.readyState,
+      networkState: video.networkState,
       playbackRate: video.playbackRate,
       totalVideoFrames: quality?.totalVideoFrames ?? null,
       droppedVideoFrames: quality?.droppedVideoFrames ?? null,
       error: error ? { code: error.code, message: error.message } : null,
       ranges,
       status: document.getElementById('probeState')?.textContent,
+      controller: globalThis.__tlvdemuxDebugRecordedController?.diagnostics().current ?? null,
       queues: [...(globalThis.__tlvdemuxDebugQueues?.entries() || [])].map(([type, queue]) => ({
         type,
-        state: queue.state,
-        updating: queue.sourceBuffer.updating,
-        queuedBytes: queue.queuedBytes,
-        currentBytes: queue.currentBytes,
-        queueLength: queue.queue.length,
+        ...queue.snapshot(),
+        timestampOffset: queue.sourceBuffer.timestampOffset,
+        nextOperations: queue.queue.slice(0, 8).map(item => ({
+          kind: item.kind,
+          mime: item.mime,
+          forceChangeType: item.forceChangeType,
+          startTimeSeconds: item.startTimeSeconds,
+          endTimeSeconds: item.endTimeSeconds,
+          byteLength: item.data?.byteLength ?? 0,
+          offsetSeconds: item.offsetSeconds,
+        })),
         waiters: queue.waiters.length,
         retryPending: queue.retryTimer !== null,
         ahead: queue.bufferedAhead(),

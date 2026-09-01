@@ -173,6 +173,39 @@ async function tick() {
   await queue.waitIdle();
 }
 
+{
+  const sourceBuffer = new FakeSourceBuffer();
+  const mediaSource = new FakeMediaSource(sourceBuffer);
+  const media = {currentTime: 0, error: null, buffered: sourceBuffer.buffered};
+  const queue = new MseAppendQueue(mediaSource, media, 'video/mp4', null, {
+    forwardBufferHighSeconds: Infinity,
+  });
+  queue.append(new Uint8Array([1]), {startTimeSeconds: 9.5, endTimeSeconds: 9.7});
+  queue.spliceFrom(9.743067, -0.534666);
+  queue.appendInitialization(new Uint8Array([2]), 'video/mp4', true);
+  queue.append(new Uint8Array([3]), {startTimeSeconds: 9.743067, endTimeSeconds: 9.893217});
+  queue.append(new Uint8Array([4]), {startTimeSeconds: 10.160151, endTimeSeconds: 10.293617});
+  queue.spliceFrom(10.276940, -0.534666);
+  queue.appendInitialization(new Uint8Array([5]), 'video/mp4', true);
+  queue.append(new Uint8Array([6]), {startTimeSeconds: 10.276940, endTimeSeconds: 10.427090});
+
+  while (sourceBuffer.updating || queue.queue.length) {
+    if (sourceBuffer.updating) sourceBuffer.complete();
+    else queue.pump();
+  }
+  const appends = sourceBuffer.operations.filter(operation => operation[0] === 'append');
+  assert.deepEqual(appends, [
+    ['append', 1],
+    ['append', 2],
+    ['append', 3],
+    ['append', 4],
+    ['append', 5],
+    ['append', 6],
+  ], 'a consecutive splice discarded the init required by retained media');
+  assert.equal(sourceBuffer.operations.filter(operation => operation[0] === 'changeType').length, 2,
+    'consecutive same-MIME video reconfigurations did not install both configurations');
+}
+
 for (const mime of [
   'audio/mp4; codecs="mp4a.40.2"',
   'video/mp4; codecs="hvc1.2.4.L123"',

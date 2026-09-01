@@ -198,10 +198,6 @@ export function createMseRecordedPlaybackController({
   const drainReason = () => {
     const commonAhead = commonBufferedAhead(media, queues, 0.05, tracks);
     const states = tracks.map(type => queueSnapshot(queues.get(type)));
-    // Low-water recovery owns supply.  A SourceBuffer may continue its current
-    // mutation while Recorded input is read and queued behind it; otherwise an
-    // updateend that immediately pumps the next append can keep this controller
-    // in draining until the MediaElement consumes its last common A/V range.
     if (commonAhead + 0.001 < low) return null;
     if (states.some(item => item.mutationInProgress || item.updating)) {
       return 'source-buffer-mutation';
