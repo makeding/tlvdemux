@@ -100,7 +100,6 @@
     "mse-playback.mjs",
     "mse-playback-contract.mjs",
     "mse-playback-buffer.mjs",
-    "mse-playback-flow-control.mjs",
     "mse-output-pipeline.d.ts",
     "mse-output-pipeline.mjs",
     "mse-live-transition.d.ts",

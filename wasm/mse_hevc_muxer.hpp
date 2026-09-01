@@ -462,6 +462,15 @@ public:
         if (enqueue({std::move(data), dts, pts, 0, irap >= 0})) {
             recovery_observation_eligible_ = true;
         }
+        if (recorded_seek_concealment_target_us_ &&
+            source_damage_observation_ == SourceDamageObservation::None &&
+            scaled(unit.pts.value, unit.pts.timescale, 1000000) >
+                *recorded_seek_concealment_target_us_) {
+            // A normal picture has passed the target without a containing
+            // damage episode. Expire the one-shot so later playback recovery
+            // remains byte-for-byte unchanged.
+            recorded_seek_concealment_target_us_.reset();
+        }
     }
 
 private:

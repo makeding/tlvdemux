@@ -153,8 +153,7 @@ try {
       },
       onAccessUnit(unit) {
         if (session?.phase === 'probe' && unit.codec === 'hevc' && probeUnits.length < 32) {
-          probeUnits.push(`${unit.trackId}:${unit.ptsValue}/${unit.ptsTimescale}:` +
-            `${unit.randomAccess}:${unit.restartOffset}`);
+          probeUnits.push(`${unit.ptsValue}/${unit.ptsTimescale}:${unit.randomAccess}:${unit.restartOffset}`);
         }
         session?.observeAccessUnit(unit);
       },
@@ -218,13 +217,7 @@ try {
         result = await session.run();
       } catch (error) {
         error.message += ` target=${targetTimeSeconds}s requests=` + requests.map(request =>
-          `${request.offset}+${request.length}`).join(',') + ` tracks=${JSON.stringify(
-            [...tracks.values()].filter(track => track.kind === 'video').map(track => ({
-              trackId: String(track.trackId), packetId: String(track.packetId),
-              selectionLevel: selectionLevel(track),
-            })))} ranges=${JSON.stringify(ranges)} recovery=${JSON.stringify(videoRecoveryEvents,
-              (_, value) => typeof value === 'bigint' ? value.toString() : value)} ` +
-          `units=${probeUnits.join(',')}`;
+          `${request.offset}+${request.length}`).join(',') + ` units=${probeUnits.join(',')}`;
         throw error;
       }
       const requested = requests.reduce((sum, request) => sum + request.length, 0n);
