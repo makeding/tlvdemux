@@ -45,7 +45,7 @@ export interface MseRecordedSeekDiagnostics {
   }>;
 }
 
-export interface MseMediaClock { currentTime: number; playbackRate?: number; }
+export interface MseMediaClock { currentTime: number; }
 export type MsePlaybackQueues = Map<string, Pick<
   MseAppendQueue,
   'bufferedRanges' | 'committedRanges' | 'trimBefore' | 'waitFlowControlled' | 'waitStable'
@@ -79,9 +79,6 @@ export interface MsePlaybackFlowControl {
   heldFrameEntryRange(): MseBufferedRange | null;
   entryCovered(): boolean;
   commonAhead(): number;
-  highWatermarkSeconds(): number;
-  lowWatermarkSeconds(): number;
-  notifyDemand(): void;
   afterPush(byteLength: number, isActive?: () => boolean): Promise<{
     commonAhead: number;
     entryCovered: boolean;
@@ -364,6 +361,9 @@ export interface MseRecordedSeekSessionOptions {
   checkError?: () => void;
   chunkBytes?: number;
   readBudgetBytes?: number;
+  /** Bytes reserved for the one formal landing after bounded backward planning. */
+  landingReserveBytes?: number;
+  probePrerollSeconds?: number;
   onProgress?: (progress: MseRecordedSeekProgress) => void;
 }
 export interface MseRecordedSeekSession {

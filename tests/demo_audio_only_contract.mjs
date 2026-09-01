@@ -2,8 +2,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {createMsePlaybackFlowControl} from '../mse-playback.mjs';
 
-const [html, css, demo, adapter, liveTransition, recordedTransition, mediaTransaction,
-  supplyFlow] = await Promise.all([
+const [html, css, demo, adapter, liveTransition, recordedTransition, mediaTransaction] = await Promise.all([
   readFile(new URL('../demo/index.html', import.meta.url), 'utf8'),
   readFile(new URL('../demo/demo.css', import.meta.url), 'utf8'),
   readFile(new URL('../demo/demo.js', import.meta.url), 'utf8'),
@@ -11,7 +10,6 @@ const [html, css, demo, adapter, liveTransition, recordedTransition, mediaTransa
   readFile(new URL('../mse-live-transition.mjs', import.meta.url), 'utf8'),
   readFile(new URL('../demo/recorded-mse-transition.js', import.meta.url), 'utf8'),
   readFile(new URL('../demo/mse-media-transaction.js', import.meta.url), 'utf8'),
-  readFile(new URL('../demo/mse-supply-flow.js', import.meta.url), 'utf8'),
 ]);
 
 assert.match(html, /id="videoRecoveryStatus" class="video-recovery-status" role="status"/,
@@ -36,8 +34,6 @@ assert.match(liveTransition, /requestVideoFrameCallback/,
   'Live A\/V candidate commits without actual presented-frame evidence');
 assert.match(mediaTransaction, /candidate\.probeMedia/,
   'demo does not promote the already-buffered Live candidate MediaElement');
-assert.match(mediaTransaction, /get playbackRate\(\) \{ return getMedia\(\)\.playbackRate; \}/,
-  'the flow-control media proxy hides the selected playback rate');
 assert.match(liveTransition, /restoreFocus[\s\S]*focus\(\{preventScroll: true\}\)/,
   'Live candidate promotion loses MediaElement keyboard focus');
 assert.match(liveTransition, /MSE detach algorithm/,
@@ -108,49 +104,6 @@ assert.match(demo, /notifyPlaybackPaused/,
   'demo does not freeze resilience and candidate work on user pause');
 assert.match(mediaTransaction, /waitUntilPlaybackResumed\(\)[\s\S]*mediaElement\.play\(\)/,
   'ManagedMediaSource candidate playback bypasses the user-pause gate');
-assert.match(demo, /const supplyCoordinator = createMseSupplyCoordinator\(\);/,
-  'demo does not retain the active common-A/V supply controller');
-assert.doesNotMatch(demo, /forwardBufferHighSeconds/,
-  'demo still gives an individual SourceBuffer ownership of the time watermark');
-assert.match(supplyFlow,
-  /startTimeSeconds !== 0 \|\| reuseMedia \|\|[\s\S]{0,100}playbackFlow\.commonAhead\(\) >= playbackFlow\.lowWatermarkSeconds\(\)/,
-  'fresh recorded supply coordinator ignores its rate-adjusted common low watermark');
-assert.match(demo,
-  /supplyCoordinator\.canStartFreshRecorded\([\s\S]{0,180}startMsePlayback/,
-  'fresh recorded playback can start before its rate-adjusted common low watermark');
-assert.match(supplyFlow,
-  /notifyWaiting\(\)[\s\S]{0,220}ahead < low\) flow\.notifyDemand\(\)/,
-  'low-common-A/V waiting does not wake the sequential supply loop');
-assert.match(supplyFlow,
-  /notifyRateChange\(\)[\s\S]{0,100}flow\?\.notifyDemand\(\)[\s\S]{0,100}maybeStart\?\.\(\)/,
-  'a playback-rate change does not re-evaluate supply demand and startup');
-
-{
-  const media = {currentTime: 0, playbackRate: 2};
-  const ranges = [{start: 0, end: 32}];
-  const supplyQueue = () => ({
-    bufferedRanges: () => ranges,
-    committedRanges: () => ranges,
-    trimBefore() {},
-    waitFlowControlled: async () => {},
-  });
-  const flow = createMsePlaybackFlowControl({
-    media,
-    queues: new Map([
-      ['video', supplyQueue()],
-      ['audio', supplyQueue()],
-    ]),
-  });
-  assert.equal(flow.highWatermarkSeconds(), 30,
-    '2x did not convert the 15-second wall-clock high watermark to 30 media seconds');
-  assert.equal(flow.lowWatermarkSeconds(), 16,
-    '2x did not convert the 8-second wall-clock low watermark to 16 media seconds');
-  media.playbackRate = 1;
-  assert.equal(flow.highWatermarkSeconds(), 15,
-    'the supply controller did not read the changed playback rate dynamically');
-  assert.equal(flow.lowWatermarkSeconds(), 8,
-    'the supply controller retained stale low-watermark rate state');
-}
 
 {
   const executableAdapter = adapter

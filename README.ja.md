@@ -194,18 +194,8 @@ input budget 内で共通 A/V entry を形成できなかった場合だけで�
 fresh playback の入口より最初の降雨 RAP が後にある場合、splice は RAP の source PTS を維持しつつ、
 replacement A/V 出力を timestamp 0 へ写像する負の MSE timestamp offset を通知します。demo は同じ
 SourceBuffer mutation queue で replacement init／media より前にこの offset を適用します。入力の
-backpressure は parser の進捗ではなく共通 A/V buffered 区間を使用し、wall-clock 再生余裕 15 秒で
-request を止め、8 秒未満で再開します。media-time 上の watermark は現在の正の `playbackRate` を
-掛けて換算し、2x では high 30 秒／low 16 秒とします。この共通 A/V watermark だけが時間による
-append／read throttle を所有します。
-個別の audio／video SourceBuffer がそれぞれの 15 秒 horizon で append を止めてはいけません。そうすると
-同じ multiplex input の後方にあるもう一方の track が per-queue byte limit の後ろに取り残されます。
-per-queue limit は pending append byte だけを制限し、共通 A/V ahead が rate 換算後の low watermark 未満なのに
-source read が停止する状態を許可しません。fresh recorded playback は `play()` 前に少なくとも rate 換算後の
-共通 low watermark を buffer します。2x を選択または default にした場合は 2x を維持し、共通 media-time ahead
-を 16 秒確保します。共通 A/V が rate 換算後の low watermark 未満の `waiting` は
-供給失敗として、queue local timer を待たず同じ sequential source-read loop を直ちに再開します。
-再生入口を覆う共通区間がない間は、進捗なしに読み込める playback input を
+backpressure は parser の進捗ではなく共通 A/V buffered 区間を使用し、15 秒 ahead で request を止め、
+8 秒未満で再開します。再生入口を覆う共通区間がない間は、進捗なしに読み込める playback input を
 16 MiB に制限し、使い切った場合は録画を EOF まで取得せず `MSE_STARTUP_NO_COMMON_AV` で失敗します。
 
 Live 再生には timestamp 0 の入口はありません。起動入口は現在の stream が生成した最初の共通
@@ -240,7 +230,7 @@ decode 可能な landing を `MSE_SEEK_NO_COMMON_AV` にしてはいけません
 exact coverage を緩和しません。ただし exact video がない場合、target より前の最後の完全な
 decode 済み sample を次の stable RAP まで延長できることを remuxer が証明すれば held-frame landing
 として成功します。これは損傷した入力を自然再生したときの画面停止と同じで、要求 `currentTime` は
-変更しません。選択 AAC の末尾が target より前でも、256 ms mux fragment 二つ分の 512 ms 以内なら、
+変更しません。選択 AAC の末尾が target より前でも差が 250 ms の mux fragment 一つ以内なら、
 timestamp を写像し直さず degraded mode で commit し、通常の sequential input から直ちに復帰します。
 browser `buffered` だけでは exact／held-frame のどちらも許可しません。authoritative recording の
 `819.749134s` regression では、隣接 RAP が約 `819.752s` と報告されても commit 済み coded 区間が
