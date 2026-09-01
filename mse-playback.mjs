@@ -950,15 +950,9 @@ export function createMseRecordedSeekSession({
     const probeSpan = boundedForwardSpan > window ? boundedForwardSpan : window;
     let candidate = clampBigInt(estimate > window ? estimate - window : 0n, 0n,
       source.size > chunkSize ? source.size - chunkSize : 0n);
-    const firstProbeSpan = 5n * chunkSize / 4n;
-    const forwardProbeSpan = 3n * chunkSize;
-    const forwardAnchor = clampBigInt(estimate + window + 2n * chunkSize, 0n,
-      source.size > chunkSize ? source.size - chunkSize : 0n);
     let chosen = null;
     const probedCandidates = new Set();
     let earliestCandidate = candidate;
-    let initialProbe = true;
-    let forwardProbe = false;
 
     for (;;) {
       ensureActive();
@@ -968,26 +962,16 @@ export function createMseRecordedSeekSession({
       if (candidate < earliestCandidate) earliestCandidate = candidate;
       await demuxer.reposition(candidate, true);
       let offset = candidate;
-      const activeProbeSpan = initialProbe ? firstProbeSpan
-        : forwardProbe ? forwardProbeSpan : probeSpan;
-      const probeEnd = candidate + activeProbeSpan < source.size
-        ? candidate + activeProbeSpan : source.size;
+      const probeEnd = candidate + probeSpan < source.size
+        ? candidate + probeSpan : source.size;
       while (offset < probeEnd && !frontiersPastTarget() && !hasNearbyRap()) {
-        const remainingProbe = probeEnd - offset;
-        const data = await read(offset, remainingProbe < chunkSize ? remainingProbe : chunkSize);
+        const data = await read(offset, chunkSize);
         await push(data, offset);
         offset += BigInt(data.byteLength);
       }
       chosen = bestRap();
       const chosenPrerollUs = chosen === null ? null : sourceTargetUs - chosen.ptsUs;
       if (chosen && (chosenPrerollUs <= probePrerollUs || candidate === 0n)) break;
-      if (initialProbe) {
-        initialProbe = false;
-        forwardProbe = true;
-        candidate = forwardAnchor;
-        continue;
-      }
-      forwardProbe = false;
       if (candidate === 0n) {
         while (offset < source.size) {
           const data = await read(offset, chunkSize);
@@ -1000,14 +984,8 @@ export function createMseRecordedSeekSession({
         break;
       }
       const interpolated = interpolatedTargetOffset();
-      // A duration-linear/interpolated byte position identifies the target
-      // neighbourhood, not the preceding RAP. Keep one complete probe window
-      // on both sides of that estimate so the next candidate cannot begin
-      // after the usable RAP and spend the landing share of the budget walking
-      // backward in small refinements.
-      const interpolationPreroll = window * 2n;
       const interpolatedCandidate = interpolated === null ? null
-        : interpolated > interpolationPreroll ? interpolated - interpolationPreroll : 0n;
+        : interpolated > window ? interpolated - window : 0n;
       let nextCandidate = interpolatedCandidate ??
         (candidate > window ? candidate - window : 0n);
       nextCandidate = clampBigInt(nextCandidate, 0n,

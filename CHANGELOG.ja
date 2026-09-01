@@ -14,8 +14,6 @@
 - duration 比例 estimate 周辺の media を含まない有界区間を越えてから sparse probe を後方へ
   移すようにし、4.8 GiB 録画の `110.390227s` target も browser 互換 audio track 選択と同じ
   16 MiB budget で検証しました。
-- sparse probe の refinement 中も landing 用 budget を確保し、同じ録画の `197.260826s` にある
-  不連続 landing が早く終わる AAC 区間を越えて exact common A/V を commit できるようにしました。
 
 ## [0.3.6] - 2026-08-31
 

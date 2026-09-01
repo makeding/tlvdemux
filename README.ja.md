@@ -241,12 +241,7 @@ byte window を繰り返し probe しても、正常な進捗とはみなしま�
 `110.390227s`（source target `110.924893s`）の第二の variable-rate 境界を検証します。
 duration に比例した byte estimate が media を含まない window を繰り返し指す場合、それを
 進捗とはみなしません。同じ有界 seek が実際の timestamp 観測から byte 位置を補正し、録画
-全体を scan せず exact common A/V を形成しなければなりません。同じ録画の media time
-`197.260826s`（source target `197.795492s`）には不連続な A/V landing があります。最初の
-landing output は target を含む video を出力しても AAC が target より前で終わる場合があります。
-同じ 16 MiB budget の一部を正式な sequential landing 用に残し、後続の選択 AAC まで読み進めて
-exact common A/V を commit しなければなりません。probe refinement が landing に必要な byte を
-消費してはいけません。
+全体を scan せず exact common A/V を形成しなければなりません。
 単調増加する playback-intent token と単一の destructive commit lane は demo ではなく public な
 `tlvdemux/mse-playback` SDK が所有します。integration は明示 seek、layer switch、recovery candidate
 ごとに token を作り、すべての非同期 read／commit の前後で token と固定 demux identity を検証します。
@@ -269,10 +264,9 @@ probe、landing は 1 MiB 単位で読み、stable recovery RAP に届く前に�
 なければ観測済み候補の解析前縁が target を越えた時点で停止します。未観測 layer を待たず target
 より後でない観測済みの最も近い有効な RAP を選択します。probe interpolation は source offset 0 の public union start を
 以前の anchor として初期化し、保持上限で anchor が失われる AU history ではなく、target の直前と直後に
-最も近い観測を保持します。duration 比例 estimate は短い前側 probe と有界な後側 probe で挟んでから
-通常の interpolation を行います。これにより media を含まない区間を越えながら無制限な sequential
-scan を避け、正式な landing に必要な source-read budget を残します。片側がまだ得られない場合、
-次の bounded probe は後方へ移動します。
+最も近い観測を保持します。probe は次の interpolation の前に共有 budget の半分まで前方へ進めます。
+これにより variable-rate estimate 周辺の media を含まない有界区間を越えられますが、無制限な
+sequential scan にはなりません。片側がまだ得られない場合、次の bounded probe は後方へ移動します。
 file 先頭との中間へ二分して無関係な過去区間で共有 budget を消費してはいけません。target より後でない
 最も近い実在 RAP は正常な preroll であり、任意の 1 秒 minimum は設けません。probe 距離ではなく formal
 landing が選択 audio／video の双方による exact target coverage を証明します。正式
