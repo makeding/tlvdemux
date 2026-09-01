@@ -149,16 +149,6 @@ never a playback clock: reading healthy preferred media hundreds of seconds
 ahead must not replace rainfall media at a playhead that is still at timestamp
 zero. Until a playback position is reported, automatic rainfall-to-preferred
 recovery remains armed but cannot commit.
-The normal 8-to-15-second recorded forward buffer is not such unrelated parser
-progress. A preferred RAP aligned with AAC between the actual playhead and the
-20-second bounded observation frontier is a valid future splice; requiring it
-to fall within two seconds of the playhead makes rainfall restoration
-impossible under normal flow control. The authoritative
-`20260828-101-180000_4c9f94c3-6ed1-455f-9fee-fcfa8c062de0.mmts` regression keeps
-the parser eight seconds ahead and must complete rainfall-to-preferred
-restoration before source presentation time 460 seconds. It must also retain
-exact common A/V seek coverage at displayed time 11:37 (697 seconds) and at the
-near-boundary 820-second target within the shared 16 MiB budget.
 Damage on the rainfall layer follows the same rule in the opposite direction.
 
 `onMseLayerSwitchStarted`, `onMseLayerSwitch`, and

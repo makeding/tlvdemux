@@ -13,7 +13,6 @@ using tlvdemux::PlaybackDamage;
 using tlvdemux::PlaybackDamageSeverity;
 using tlvdemux::PlaybackRecoveryAction;
 using tlvdemux::detail::mse::VideoLayerPair;
-using tlvdemux::detail::mse::VideoLayerObservation;
 using tlvdemux::detail::mse::VideoLayerStateMachine;
 using tlvdemux::detail::mse::VideoLayerSwitchReason;
 
@@ -202,34 +201,6 @@ void test_parser_frontier_cannot_restore_preferred_at_stalled_playhead() {
     }
 }
 
-void test_advancing_playhead_accepts_preferred_from_forward_buffer() {
-    VideoLayerStateMachine machine;
-    machine.configure(VideoLayerPair{1, 11, 2, 22});
-    machine.select(1);
-    machine.setSelectedOutputStarted(true);
-    warm(machine, true, true);
-    check(machine.observeDamage(damage(1)).switch_request.has_value(),
-          "test could not enter rainfall mode");
-    machine.switchCompleted(2);
-    machine.setPlaybackPosition(5000000);
-    machine.setPlaybackPosition(6000000);
-
-    VideoLayerObservation preferred;
-    for (std::int64_t timestamp = 14000000; timestamp <= 19000000;
-         timestamp += 500000) {
-        machine.observe(unit(11, aribtlv::Codec::AacLatm, timestamp));
-        preferred = machine.observe(unit(
-            1, aribtlv::Codec::Hevc, timestamp,
-            timestamp % 1000000 == 0));
-        if (preferred.switch_request) break;
-    }
-    check(preferred.switch_request.has_value() &&
-              preferred.switch_request->video_track_id == 1 &&
-              preferred.switch_request->audio_track_id == 11 &&
-              preferred.switch_request->earliest_presentation_time_us == 6000000,
-          "advancing playback rejected healthy preferred A/V in its forward buffer");
-}
-
 void test_rainfall_damage_uses_preferred_or_its_own_real_rap() {
     VideoLayerStateMachine machine;
     machine.configure(VideoLayerPair{1, 11, 2, 22});
@@ -324,7 +295,6 @@ int main() {
     test_rainfall_mode_keeps_warming_preferred_and_returns_after_five_seconds();
     test_manual_mode_keeps_health_observations_for_automatic_restore();
     test_parser_frontier_cannot_restore_preferred_at_stalled_playhead();
-    test_advancing_playhead_accepts_preferred_from_forward_buffer();
     test_rainfall_damage_uses_preferred_or_its_own_real_rap();
     std::cout << "video layer state machine tests passed\n";
 }

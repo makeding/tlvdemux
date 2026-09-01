@@ -64,7 +64,6 @@ void VideoLayerStateMachine::resetObservations() noexcept {
     fallback_ = {};
     selected_output_started_ = false;
     playback_position_us_.reset();
-    playback_position_advancing_ = false;
 }
 
 void VideoLayerStateMachine::clearUnrecoveredDamage() noexcept {
@@ -84,10 +83,7 @@ void VideoLayerStateMachine::setSelectedOutputStarted(const bool started) noexce
 
 void VideoLayerStateMachine::setPlaybackPosition(
     const std::int64_t presentation_time_us) noexcept {
-    const auto position = std::max<std::int64_t>(0, presentation_time_us);
-    playback_position_advancing_ = playback_position_us_.has_value() &&
-        position > *playback_position_us_;
-    playback_position_us_ = position;
+    playback_position_us_ = std::max<std::int64_t>(0, presentation_time_us);
 }
 
 bool VideoLayerStateMachine::updateContinuity(
@@ -169,8 +165,7 @@ void VideoLayerStateMachine::updateAudio(
 
 bool VideoLayerStateMachine::usableAt(
     const LayerTracker& tracker, const std::int64_t presentation_time_us,
-    const bool require_healthy_baseline,
-    const std::int64_t maximum_rap_ahead_us) {
+    const bool require_healthy_baseline) {
     const auto continuous = [](const Continuity& continuity) {
         return continuity.last_dts_us.has_value() &&
             continuity.clean_since_dts_us.has_value() &&
@@ -184,9 +179,9 @@ bool VideoLayerStateMachine::usableAt(
     }
     return std::any_of(
         tracker.recent_raps.begin(), tracker.recent_raps.end(),
-        [&tracker, presentation_time_us, maximum_rap_ahead_us](const Rap& rap) {
+        [&tracker, presentation_time_us](const Rap& rap) {
             if (rap.pts_us + kRapBehindToleranceUs < presentation_time_us ||
-                rap.pts_us > presentation_time_us + maximum_rap_ahead_us) {
+                rap.pts_us > presentation_time_us + kRapAheadToleranceUs) {
                 return false;
             }
             return std::any_of(
@@ -287,11 +282,7 @@ VideoLayerStateMachine::requestOtherLayer(
     }
     if (!decision_position) return std::nullopt;
     const auto current_pts = *decision_position;
-    const auto maximum_rap_ahead_us = require_healthy_baseline &&
-        playback_position_advancing_
-        ? kSwitchObservationWindowUs : kRapAheadToleranceUs;
-    if (!usableAt(*target, current_pts, require_healthy_baseline,
-                  maximum_rap_ahead_us)) {
+    if (!usableAt(*target, current_pts, require_healthy_baseline)) {
         return std::nullopt;
     }
     const bool preferred_active = *selected_video_id_ == pair_->preferred_video_id;

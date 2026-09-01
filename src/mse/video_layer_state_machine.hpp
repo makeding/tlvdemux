@@ -83,8 +83,7 @@ private:
                             const aribtlv::AccessUnit& unit);
     static bool usableAt(const LayerTracker& tracker,
                          std::int64_t presentation_time_us,
-                         bool require_healthy_baseline,
-                         std::int64_t maximum_rap_ahead_us);
+                         bool require_healthy_baseline);
     static bool usableForStartup(const LayerTracker& tracker);
     static void markDamaged(LayerTracker& tracker,
                             std::int64_t end_time_us);
@@ -103,7 +102,6 @@ private:
     std::optional<VideoLayerPair> pair_;
     std::optional<std::uint64_t> selected_video_id_;
     std::optional<std::int64_t> playback_position_us_;
-    bool playback_position_advancing_ = false;
     bool selected_output_started_ = false;
     bool enabled_ = false;
     LayerTracker preferred_;

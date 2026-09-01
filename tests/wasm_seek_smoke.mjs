@@ -237,8 +237,8 @@ try {
         `seek ${targetTimeSeconds}s did not form common A/V at the target`);
       const targetRanges = Object.fromEntries(Object.entries(ranges).map(([type, items]) => [
         type,
-        items.filter(range => range.start <= targetTimeSeconds + 0.000002 &&
-          range.end >= targetTimeSeconds),
+        items.filter(range => range.start <= targetTimeSeconds + 0.001 &&
+          range.end >= targetTimeSeconds + 0.001),
       ]));
       assert.ok(targetRanges.video.length > 0 && targetRanges.audio.length > 0,
         `seek ${targetTimeSeconds}s did not retain exact per-track target coverage: ` +

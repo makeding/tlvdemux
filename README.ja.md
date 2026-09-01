@@ -128,14 +128,6 @@ parser や録画 index の前進は再生時計ではありません。再生位
 通常 media を読んだことを理由に降雨 media を置換してはいけません。再生位置が報告されるまでは
 降雨→通常の自動復帰を準備状態のままにし、commit しません。降雨レイヤー自身の損傷も
 同じ規則を逆方向に適用します。
-ただし録画の通常の 8〜15 秒 forward buffer は、この無関係な parser 前進には該当しません。実際の
-playhead から上限付き 20 秒 observation frontier までに AAC と整列した通常映像 RAP があれば、将来の
-splice として有効です。RAP を playhead の 2 秒以内だけに制限すると、通常の flow control では降雨から
-復帰できません。authoritative sample
-`20260828-101-180000_4c9f94c3-6ed1-455f-9fee-fcfa8c062de0.mmts` の regression は parser を 8 秒先行
-させ、source presentation time 460 秒より前に降雨→通常の復帰を完了しなければなりません。また表示
-11:37（697 秒）および境界に近い 820 秒への seek で、単一 16 MiB budget 内に exact common A/V coverage
-を保持しなければなりません。
 通常から降雨への緊急切替は起動時も対象です。選択中の通常 layer が decode 可能な MSE 映像入口を
 まだ出力しておらず、降雨 layer に実 RAP、その後の連続映像 DTS、連続 AAC、整列した A/V 境界が
 揃った時点で、core は `health-degradation` 理由で直ちに切り替えます。要求する最早時刻は現在の
