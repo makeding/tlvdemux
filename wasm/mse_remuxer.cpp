@@ -62,7 +62,6 @@ public:
             video_id = id;
             damage_advisor.selectVideoTrack(id);
             automatic_layers.select(id);
-            source_damage_fallback_active = false;
             return cancelled;
         }
         if (kind != aribtlv::TrackKind::Audio) return cancelled;
@@ -129,15 +128,7 @@ public:
             map_to_playback_entry ||
                 (reason == MseLayerSwitchReason::HealthDegradation &&
                  !video.output_started())};
-        const bool restoring_preferred =
-            reason == MseLayerSwitchReason::SourceDamage &&
-            source_damage_fallback_active && automatic_pair &&
-            target_video_id == automatic_pair->preferred_video_id;
-        video.stage_next_switch(
-            reason == MseLayerSwitchReason::SourceDamage && !restoring_preferred
-                ? std::optional<std::uint64_t>{target_video_id}
-                : std::nullopt,
-            restoring_preferred);
+        video.stage_next_switch();
         video_id = target_video_id;
         sink.onMseLayerSwitchStarted(MseLayerSwitchStarted{
             target_video_id,
@@ -170,16 +161,16 @@ public:
             : mse_timestamp_offset_us;
         output.set_staged_video_splice(video_boundary, timestamp_offset_us);
         if (audio_id == pending_layer->audio_track_id && active_audio != nullptr) {
-            const auto completed = *pending_layer;
+            const auto completed_video_id = pending_layer->video_track_id;
             output.commit_staged_video();
             output.layer_switch(
-                completed.video_track_id, completed.audio_track_id,
+                pending_layer->video_track_id, pending_layer->audio_track_id,
                 video_boundary, video_boundary);
             pending_layer.reset();
             mse_timestamp_offset_us = timestamp_offset_us;
             synchronize_audio_timestamp_offsets();
-            note_completed_layer_switch(
-                completed.video_track_id, completed.reason, video_boundary);
+            automatic_layers.switchCompleted(completed_video_id);
+            damage_advisor.selectVideoTrack(completed_video_id);
             return;
         }
         const auto candidate = audio.find(pending_layer->audio_track_id);
@@ -209,44 +200,21 @@ public:
         output.layer_switch(
             completed.video_track_id, completed.audio_track_id,
             video_boundary, *boundary);
-        note_completed_layer_switch(
-            completed.video_track_id, completed.reason, video_boundary);
-    }
-
-    void note_completed_layer_switch(
-        const std::uint64_t video_track_id,
-        const MseLayerSwitchReason reason,
-        const std::int64_t video_boundary_us) {
-        automatic_layers.switchCompleted(video_track_id);
-        damage_advisor.selectVideoTrack(video_track_id);
-        if (reason != MseLayerSwitchReason::SourceDamage) return;
-        video.complete_source_damage_layer_switch(
-            video_track_id, video_boundary_us);
-        if (automatic_pair) {
-            if (video_track_id == automatic_pair->fallback_video_id) {
-                source_damage_fallback_active = true;
-            } else if (video_track_id == automatic_pair->preferred_video_id) {
-                source_damage_fallback_active = false;
-            }
-        }
+        automatic_layers.switchCompleted(completed.video_track_id);
+        damage_advisor.selectVideoTrack(completed.video_track_id);
     }
 
     std::optional<tlvdemux::MseAutomaticLayerSwitchAccepted> begin_automatic_switch(
         const std::optional<VideoLayerSwitchRequest>& request,
         const MseLayerSwitchReason reason) {
         if (recorded_seek_active || !request) return std::nullopt;
-        // Source damage is a video continuity decision. The user-selected AAC
-        // remains the canonical clock even when the layer pair advertises a
-        // sibling fallback audio track.
-        const auto target_audio_id = reason == MseLayerSwitchReason::SourceDamage && audio_id
-            ? *audio_id : request->audio_track_id;
-        if (!switch_layer(request->video_track_id, target_audio_id,
+        if (!switch_layer(request->video_track_id, request->audio_track_id,
                           request->earliest_presentation_time_us, reason)) {
             return std::nullopt;
         }
         return tlvdemux::MseAutomaticLayerSwitchAccepted{
             request->video_track_id,
-            target_audio_id,
+            request->audio_track_id,
             request->earliest_presentation_time_us,
         };
     }
@@ -257,38 +225,17 @@ public:
              unit.codec == aribtlv::Codec::AacLatm) &&
             (unit.pts.timescale <= 1 || unit.dts.timescale <= 1)) return std::nullopt;
         if (unit.codec == aribtlv::Codec::Hevc) {
-            std::optional<std::int64_t> preferred_restore_boundary;
             if (video_id && unit.track_id == *video_id) {
                 push_selected_video(unit);
                 automatic_layers.setSelectedOutputStarted(video.output_started());
             } else {
                 video_history.push(unit);
-                if (source_damage_fallback_active) {
-                    preferred_restore_boundary =
-                        video.observe_preferred_candidate(unit);
-                }
             }
             const auto automatic = automatic_layers.observe(unit);
             if (!recorded_seek_active && !pending_layer && automatic.playback_damage) {
                 sink.onPlaybackDamage(*automatic.playback_damage);
             }
             if (pending_layer) return std::nullopt;
-            if (preferred_restore_boundary && automatic_pair && audio_id &&
-                switch_layer(automatic_pair->preferred_video_id, *audio_id,
-                             *preferred_restore_boundary,
-                             MseLayerSwitchReason::SourceDamage)) {
-                return tlvdemux::MseAutomaticLayerSwitchAccepted{
-                    automatic_pair->preferred_video_id,
-                    *audio_id,
-                    *preferred_restore_boundary,
-                };
-            }
-            if (source_damage_fallback_active && automatic_pair &&
-                automatic.switch_request &&
-                automatic.switch_request->video_track_id ==
-                    automatic_pair->preferred_video_id) {
-                return std::nullopt;
-            }
             return begin_automatic_switch(
                 automatic.switch_request,
                 automatic.switch_reason == VideoLayerSwitchReason::SourceDamage
@@ -310,11 +257,6 @@ public:
             iterator->second.push(unit, active,
                                   active && enabled && video.audio_output_ready(),
                                   video.timeline_offset_us());
-            if (active && enabled) {
-                if (const auto frontier = iterator->second.output_frontier_us()) {
-                    video.extend_frozen_through(*frontier);
-                }
-            }
             if (recorded_seek_active && active && enabled &&
                 video.audio_output_ready()) {
                 // A formal Recorded transaction only needs the locked AAC
@@ -361,11 +303,6 @@ public:
     }
 
     void flush() {
-        if (active_audio) {
-            if (const auto frontier = active_audio->output_frontier_us()) {
-                video.extend_frozen_through(*frontier);
-            }
-        }
         video.flush();
         if (active_audio) active_audio->flush();
     }
@@ -395,8 +332,6 @@ public:
         output.discard_staged_video();
         automatic_layers.resetObservations();
         mse_timestamp_offset_us = 0;
-        video.set_recorded_continuity_enabled(false);
-        source_damage_fallback_active = false;
         return cancelled;
     }
 
@@ -408,8 +343,6 @@ public:
         synchronize_audio_timestamp_offsets();
         output.discard_staged_video();
         automatic_layers.resetObservations();
-        video.set_recorded_continuity_enabled(false);
-        source_damage_fallback_active = false;
         return cancelled;
     }
 
@@ -419,8 +352,6 @@ public:
         }
         cancel_layer(MseLayerSwitchCancelReason::Reposition);
         recorded_seek_active = true;
-        video.set_recorded_continuity_enabled(false);
-        source_damage_fallback_active = false;
         automatic_layers.suspend();
     }
 
@@ -429,7 +360,6 @@ public:
         automatic_layers.setPlaybackPosition(
             playback_position_us - mse_timestamp_offset_us);
         recorded_seek_active = false;
-        video.set_recorded_continuity_enabled(true);
         if (automatic_requested) automatic_layers.resume();
         const auto automatic = automatic_layers.reevaluate();
         begin_automatic_switch(
@@ -442,7 +372,6 @@ public:
     void cancel_recorded_seek() {
         if (!recorded_seek_active) return;
         recorded_seek_active = false;
-        video.set_recorded_continuity_enabled(false);
         // Observations may keep both layer trackers warm during the fence, but
         // cancelling the transaction must not let its deferred damage vote
         // become a switch on the first access unit of the next transaction.
@@ -462,7 +391,6 @@ public:
     };
 
     void synchronize_audio_timestamp_offsets() noexcept {
-        video.set_source_buffer_timestamp_offset(mse_timestamp_offset_us);
         for (auto& entry : audio) {
             entry.second.set_source_buffer_timestamp_offset(
                 mse_timestamp_offset_us);
@@ -521,12 +449,10 @@ public:
     std::optional<std::uint64_t> video_id;
     std::optional<std::uint64_t> audio_id;
     std::optional<PendingLayerSwitch> pending_layer;
-    std::optional<VideoLayerPair> automatic_pair;
     std::int64_t mse_timestamp_offset_us = 0;
     bool enabled = true;
     bool recorded_seek_active = false;
     bool automatic_requested = false;
-    bool source_damage_fallback_active = false;
 };
 
 tlvdemux::MseRemuxer::MseRemuxer(MseSink& sink, const MseOptions options)
@@ -569,16 +495,12 @@ void tlvdemux::MseRemuxer::configureAutomaticLayerSwitch(
         impl_->pending_layer->reason == MseLayerSwitchReason::Manual) {
         impl_->cancel_layer(MseLayerSwitchCancelReason::SelectionChanged);
     }
-    const VideoLayerPair native_pair{
+    impl_->automatic_layers.configure(VideoLayerPair{
         pair.preferred_video_track_id,
         pair.preferred_audio_track_id,
         pair.fallback_video_track_id,
         pair.fallback_audio_track_id,
-    };
-    impl_->automatic_pair = native_pair;
-    impl_->video.configure_recorded_video_layers(
-        pair.preferred_video_track_id, pair.fallback_video_track_id);
-    impl_->automatic_layers.configure(native_pair);
+    });
     if (impl_->recorded_seek_active) {
         impl_->automatic_layers.suspend();
         return;
@@ -594,24 +516,17 @@ void tlvdemux::MseRemuxer::configureAutomaticLayerSwitch(
 void tlvdemux::MseRemuxer::suspendAutomaticLayerSwitch(
     const MseAutomaticLayerPair pair) {
     impl_->automatic_requested = false;
-    const VideoLayerPair native_pair{
+    impl_->automatic_layers.configure(VideoLayerPair{
         pair.preferred_video_track_id,
         pair.preferred_audio_track_id,
         pair.fallback_video_track_id,
         pair.fallback_audio_track_id,
-    };
-    impl_->automatic_pair = native_pair;
-    impl_->video.configure_recorded_video_layers(
-        pair.preferred_video_track_id, pair.fallback_video_track_id);
-    impl_->automatic_layers.configure(native_pair);
+    });
     impl_->automatic_layers.suspend();
 }
 
 void tlvdemux::MseRemuxer::clearAutomaticLayerSwitch() {
     impl_->automatic_requested = false;
-    impl_->automatic_pair.reset();
-    impl_->source_damage_fallback_active = false;
-    impl_->video.clear_recorded_video_layers();
     impl_->automatic_layers.clearConfiguration();
 }
 

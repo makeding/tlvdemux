@@ -126,10 +126,11 @@ for (const sample of samples) {
     run(`AAC damage flow ${sample.path}`, process.execPath,
       ['tests/wasm_audio_damage_flow_sample.mjs', wasm, sample.path]);
   }
+  if (sample.videoDamage) {
+    run(`single-layer video damage flow ${sample.path}`, process.execPath,
+      ['tests/wasm_single_track_damage_flow_sample.mjs', wasm, sample.path]);
+  }
 }
-
-run('synthetic single-layer video damage flow', process.execPath,
-  ['tests/mse_single_track_damage_flow.mjs']);
 
 run('rain recorded seeks 60/200/380s', process.execPath,
   ['tests/wasm_seek_smoke.mjs', wasm, 'demo/rain.tlv', '60', '200', '380']);

@@ -138,24 +138,8 @@ then resolve video for that exact audio window in this order:
 3. the last usable decodable IRAP picture before the window, repeated with
    monotonic video DTS/PTS while the original AAC continues unchanged.
 
-A future frame is never copied backward. During ordinary sequential playback,
-source damage seals the complete preferred-video prefix and selected AAC remains
-the only continuity clock. A covering closed rainfall GOP may replace video
-only; it never changes the selected AAC track. If no covering rainfall GOP is
-available, or it cannot commit within one AAC window, the last decodable
-pre-damage IRAP/CRA is repeated in normal-sized fragments through every emitted
-AAC window, including AAC EOS. Video output must not stop merely because no
-fallback layer or later stable RAP exists. Repeated damage discards only the
-current preferred candidate GOP; frozen output continues. The first complete
-preferred GOP is observed without backfill, and the following undamaged RAP is
-the video-only splice boundary back to real pictures.
-
-The native continuity states are `normal`, `damage-sealed`, `fallback-pending`,
-`frozen`, `preferred-candidate`, and `restoring`. Diagnostics expose that state,
-the damage start, selected-AAC frontier, frozen-through endpoint, candidate RAP,
-fallback video track, and last emitted video endpoint. Quota pressure and a bare
-`waiting` event are never recorded as the cause of video recovery and never
-enter this state machine. A decoder-performance fallback is
+A future frame is never copied backward. Source-damage fallback may return from
+rainfall at the next stable preferred RAP. A decoder-performance fallback is
 sticky until an explicit seek or reload. It is triggered immediately by an
 explicit decoder/MediaElement error, or after two consecutive five-second
 quality windows each drop more than 20% of frames while at least one wall-clock
@@ -182,12 +166,8 @@ video history, permits exactly one retry of that same window. Quota, ordinary
 `MSE_RECORDED_SUPPLY_STALLED` is not a valid Recorded outcome.
 
 `start()` and `seek(targetSeconds)` use this same controller and the same hard
-16 MiB transaction budget across probe, landing, and formal commit. Explicit
-seek progresses through `seek-audio-anchor`, `seek-preferred`, `seek-rainfall`,
-`seek-prior-frame`, `seek-commit`, and `seek-resume`. It locks the selected AAC
-target window first, resolves preferred/rainfall/prior-frame video, and performs
-one formal A/V commit. Preferred and rainfall failure therefore freezes the last
-decodable picture before the target across the complete AAC landing window.
+16 MiB transaction budget. Seek locks the selected AAC target window first,
+resolves preferred/rainfall/frozen video, and performs one formal A/V commit.
 The requested `currentTime` remains unchanged during probing and is installed
 only for that explicit seek after commit. A superseding seek cancels the older
 source stream and transaction. Errors are limited to a missing AAC anchor,
@@ -199,8 +179,7 @@ streams sequentially; HTTP uses one `Range: bytes=<offset>-` response.
 Recorded and Live use the same 512 KiB / 25 ms input coalescer.
 `read(offset, length)` is reserved for duration probing and explicit seek;
 after seek the old stream is aborted and a new sequential stream begins at the
-real committed `nextOffset`. A Recorded byte reposition/landing boundary is not
-source damage and cannot open continuity recovery.
+committed `nextOffset`.
 
 No separate Recorded seek session, damage-recovery seek, audio-only rebuild, or
 resilience controller is part of this contract. A bare `waiting` event only

@@ -72,7 +72,6 @@ add_library(tlvdemux
     src/mse/output_state.cpp
     src/mse/recorded_audio_window_index.cpp
     src/mse/video_access_unit_history.cpp
-    src/mse/video_continuity_state.cpp
     src/mse/video_layer_state_machine.cpp
     wasm/mse_remuxer.cpp
     src/playback.cpp
@@ -337,20 +336,6 @@ if(BUILD_TESTING)
     add_test(NAME tlvdemux-mse-recorded-seek-concealment-tests
         COMMAND tlvdemux-mse-recorded-seek-concealment-tests)
 
-    add_executable(tlvdemux-mse-recorded-continuity-tests
-        tests/mse_recorded_continuity_tests.cpp)
-    target_link_libraries(tlvdemux-mse-recorded-continuity-tests
-        PRIVATE tlvdemux::tlvdemux)
-    if(MSVC)
-        target_compile_options(tlvdemux-mse-recorded-continuity-tests
-            PRIVATE /W4 /permissive-)
-    else()
-        target_compile_options(tlvdemux-mse-recorded-continuity-tests
-            PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
-    add_test(NAME tlvdemux-mse-recorded-continuity-tests
-        COMMAND tlvdemux-mse-recorded-continuity-tests)
-
     add_executable(tlvdemux-timestamp-fmp4-tests tests/timestamp_fmp4_tests.cpp)
     target_link_libraries(tlvdemux-timestamp-fmp4-tests PRIVATE tlvdemux::tlvdemux)
     target_include_directories(tlvdemux-timestamp-fmp4-tests PRIVATE
@@ -377,22 +362,6 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME tlvdemux-video-layer-state-tests
         COMMAND tlvdemux-video-layer-state-tests)
-
-    add_executable(tlvdemux-video-continuity-state-tests
-        tests/video_continuity_state_tests.cpp)
-    target_link_libraries(tlvdemux-video-continuity-state-tests PRIVATE
-        tlvdemux::tlvdemux)
-    target_include_directories(tlvdemux-video-continuity-state-tests PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    if(MSVC)
-        target_compile_options(tlvdemux-video-continuity-state-tests
-            PRIVATE /W4 /permissive-)
-    else()
-        target_compile_options(tlvdemux-video-continuity-state-tests
-            PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
-    add_test(NAME tlvdemux-video-continuity-state-tests
-        COMMAND tlvdemux-video-continuity-state-tests)
 
     add_executable(tlvdemux-chromium-coded-frame-policy-tests
         tests/chromium_coded_frame_policy_tests.cpp)

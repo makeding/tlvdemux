@@ -706,14 +706,6 @@ declare namespace createTlvDemuxModule {
     videoTrackId: bigint;
     presentationTimeUs: bigint;
     phase: "observation-started" | "candidate-rejected" | "stable-rap-committed";
-    continuityState: "normal" | "damage-sealed" | "fallback-pending" | "frozen" |
-      "preferred-candidate" | "restoring";
-    damageStartUs: bigint | null;
-    aacFrontierUs: bigint | null;
-    frozenThroughUs: bigint | null;
-    candidateRapUs: bigint | null;
-    fallbackTrackId: bigint | null;
-    lastVideoOutputEndUs: bigint | null;
   }
 
   interface MseVideoColor {
