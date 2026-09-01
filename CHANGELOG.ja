@@ -4,20 +4,6 @@
 > プロジェクトで `tlvdemux` 名前空間を使用していました。該当項目は
 > **旧 `tlvdemux` 実装**と表記します。これは別製品ではなく、歴史上の名称です。
 
-## [0.3.6] - 2026-08-31
-
-- 明示的な録画 seek が probe、landing、append、exact A/V commit を排他的に所有するようにし、
-  automatic layer switch、resilience recovery、古い非同期 playback intent が要求された
-  `currentTime` や固定済み entry clock を置き換えないようにしました。
-- remuxer が確認した coded A/V 区間を landing commit の根拠としつつ、実際の browser-buffered
-  range との交差も必須にしました。Chromium の不正確な HEVC RAP 境界を許容しながら、実際に
-  target より後だけの media は受け入れません。
-- 単一 16 MiB budget 内で 1 MiB 単位の有界 read、安定した RAP 観測、より早い AAC preroll、
-  idempotent な worker track 再通知を行い、失敗時は cancel 前に phase、entry 判定、commit 済み／
-  browser-buffered range、消費 byte 数を diagnostics として保存するようにしました。
-- WASM build 時に生成済み CMake metadata を refresh し、Nix の Emscripten／Ninja store path が
-  更新されても古い toolchain path を再利用しないようにしました。
-
 ## [0.3.5] - 2026-08-29
 
 - AAC 構成変更、reposition、layer 切替、音声 track の再利用をまたいで完全な絶対
