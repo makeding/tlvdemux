@@ -215,10 +215,22 @@ A/V buffered 区間であり、設定した live 起動 buffer が成立した�
 録画の明示 seek は別の public playback-entry contract です。head discovery、すべての RAP probe、
 正式な A/V preroll は `createMseRecordedSeekSession()` の
 `bootstrap -> backward-plan -> single-landing -> committing` という一つの transaction です。
-1 MiB chunk と単一 16 MiB source-read budget を使い、正式 landing 用に最低 7 MiB を予約します。
+1 MiB chunk と初期 16 MiB source-read budget を使います。bootstrap と backward planning が使えるのは
+最大 9 MiB で、正式 landing 用に最低 7 MiB を予約します。その一度だけの landing の直前に、選択した
+RAP から target までの byte span が必要量を証明した場合だけ一度だけ budget を拡張できます。その証明済み
+total では 16 MiB 内の固定 7 MiB landing guard を残せない場合に、証明済み total と guard を収める
+最小の 32／48／64 MiB tier を選びます。long-GOP 4K と高 bitrate の
+8K はどちらも上位 tier が必要になる場合があります。
+byte estimate は保守的で damage landing が早く完了する場合があるため、estimate が利用可能 tier を
+超えても landing 前には失敗させず、その track の hard tier へ飽和させて一度だけ landing します。ただし
+read はその tier を超えられません。planning は拡張分を使えず、landing 開始後の再拡張は禁止し、
+playback rate は tier を変更しません。
 再利用 demuxer は確立済み track／timeline と RecordingIndex `previousSync()` を使い、file head を
 再読込しません。index がなければ target 前方の保守的な byte window から後方へ計画し、利用可能な
-前置 RAP を観測した時点で停止します。probe reposition は media clock を変更せず、正式 landing だけが
+前置 RAP を観測した時点で停止します。最初の sparse window で target 後方の broadcast-clock または
+AAC access-unit frontier が確立した場合、未来 RAP まで probe を消費せず、直ちに約 5.6 秒の
+long-GOP lookback へ投影します。
+probe reposition は media clock を変更せず、正式 landing だけが
 playback を一度 reposition します。
 
 user の要求時刻は不変です。成功 mode は、実際に commit 済みの coded A/V と現実の SourceBuffer
@@ -228,7 +240,8 @@ intersection が target を覆う `exact`、録画時刻 0 だけで AAC が 0 �
 damage では target を置換せず budget 内のさらに前の検証済み RAP を選べます。transaction は
 `beginMseRecordedSeek()` と `finishMseRecordedSeek(requestedTimeUs)`、失敗時の
 `cancelMseRecordedSeek()` で囲み、automatic layer の証拠を隔離します。短い実 AAC prefix は封じられますが、
-AAC の複製、未来 RAP の target への複製、二度目の landing、budget 増加、playback rate による budget 変更、
+AAC の複製、未来 RAP の target への複製、二度目の landing、一度だけ証明された authorization の超過、
+playback rate による limit 変更、
 Live state machine への移行は禁止です。
 
 利用可能な RAP なし、EOF、commit／buffered A/V の非交差、native damage evidence 不足、
@@ -246,13 +259,15 @@ media time zero への明示 seek も bounded seek transaction を実行し、�
 sequential-start path を使います。
 正式 landing では正確な target を覆う選択 AAC frame が通常の 250 ms fragment 閾値未満に残る場合が
 あります。Recorded seek session は各 landing push 後にその実在する選択 AAC prefix だけを明示的に
-封じます。これは input を EOF flush せず、media、read、reposition、16 MiB budget を増やさず、
+封じます。これは input を EOF flush せず、media、read、reposition、authorized budget を増やさず、
 `MediaElement.currentTime` も変更しません。Live はこの Recorded 専用操作を呼びません。
 
-権威 seek sample は media time `0`、`1`、`60`、`139.276545`、`150.886703`、`197.260826`、
-`300`、`450` 秒と固定 seed の任意 target で検証します。各 target は不変のまま 16 MiB 以内で完了し、
-`MSE_SEEK_NO_COMMON_AV` も hidden seek も発生してはいけません。実 Chrome は同じ集合を 1x と既存の
-default 2x で実行します。1x／2x の完全 EOS と実 Live entry は別の release gate のままです。
+権威 seek sample の固定集合は media time `0`、`1`、`60`、`139.276545`、`150.886703`、
+`197.260826`、`300`、`450` 秒です。各固定 target は不変のまま candidate が証明した tier 内、かつ
+64 MiB 以下で完了し、`MSE_SEEK_NO_COMMON_AV` も hidden seek も発生してはいけません。固定 seed の
+任意 target は別の release gate のままです。64 MiB に収まらない long GOP は次の planning increment が
+完成するまで明示的に失敗し、target の置換や tier 超過をしてはいけません。実 Chrome は固定／任意集合を
+1x と既存の default 2x で実行します。1x／2x の完全 EOS と実 Live entry は別の release gate のままです。
 
 自動の 2 映像 track を持つ録画では、public な録画 timeline は通常映像と降雨映像の
 presentation range の和集合です。録画開始はより早い最初の映像 frame、録画終了はその

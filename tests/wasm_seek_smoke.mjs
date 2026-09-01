@@ -315,8 +315,15 @@ try {
       assert.equal(requested, result.bytesRead);
       assert.equal(requests.some(request => request.offset === 0n), false,
         `seek ${targetTimeSeconds}s reread the file head on a reused demuxer`);
-      assert.ok(requested <= BigInt(MSE_SEEK_READ_BUDGET_BYTES),
-        `seek ${targetTimeSeconds}s exceeded the 16 MiB budget`);
+      assert.ok(requested <= result.maximumBudgetBytes,
+        `seek ${targetTimeSeconds}s exceeded its resolution-aware hard limit`);
+      assert.ok(result.budgetBytes >= BigInt(MSE_SEEK_READ_BUDGET_BYTES) &&
+        result.budgetBytes <= result.maximumBudgetBytes,
+      `seek ${targetTimeSeconds}s received an invalid landing authorization`);
+      if (requested > BigInt(MSE_SEEK_READ_BUDGET_BYTES)) {
+        assert.equal(result.budgetAuthorization.extended, true,
+          `seek ${targetTimeSeconds}s read beyond the base budget without authorization`);
+      }
       assert.ok(result.rapPresentationTimeUs <= result.sourceTargetUs,
         `seek ${targetTimeSeconds}s selected a RAP after the target`);
       assert.equal(media.currentTime, targetTimeSeconds,

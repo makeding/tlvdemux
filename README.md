@@ -232,7 +232,7 @@ switch or reposition; it must never fall back to zero merely because the splice
 is not itself changing the recording origin.
 
 An explicit seek cancels the previous Recorded generation while retaining the
-exact user time, one shared 16 MiB budget, and one landing reposition. RAP/IRAP
+exact user time, one bounded read ledger, and one landing reposition. RAP/IRAP
 may supply real or frozen video but cannot move `currentTime`. Layer recovery
 and candidate MediaSources only submit events to the controller.
 
@@ -300,13 +300,28 @@ same 16 MiB no-progress limit still stops input with
 An explicit recorded seek is a separate public playback-entry contract. From
 head discovery through backward planning and the final A/V preroll,
 `createMseRecordedSeekSession()` executes `bootstrap -> backward-plan ->
-single-landing -> committing`, shares one hard 16 MiB source-read budget, uses
-1 MiB chunks, and reserves at least 7 MiB for the formal landing. A reused
+single-landing -> committing`, uses 1 MiB chunks, and starts with a 16 MiB
+source-read budget. Bootstrap and backward planning may consume at most 9 MiB,
+so at least 7 MiB remains for the formal landing. Before that single landing,
+the chosen RAP-to-target byte span may authorize one budget extension. If that
+proved total would leave less than the fixed 7 MiB landing guard inside the
+16 MiB base, the session selects the smallest tier that contains that proved
+total plus the guard. The session chooses the smallest sufficient 32, 48, or
+64 MiB tier; long-GOP 4K and high-bitrate 8K may both require the upper tiers.
+Because the byte estimate is conservative and a proven
+damage landing may complete earlier, an estimate above the available tiers
+saturates at the track's hard tier for the one landing instead of failing
+before it; reads still cannot cross that tier. Planning cannot consume any
+extension, landing cannot extend it a second time, and playback rate never
+changes a tier. A reused
 demuxer uses its established tracks, timeline, and RecordingIndex
 `previousSync()` without rereading the file head. Without an index, planning
 moves backward from a conservative pre-target window and stops as soon as a
-usable preceding RAP is observed. Probe repositioning never changes the media
-clock, and only the formal landing repositions playback.
+usable preceding RAP is observed. If that first sparse window establishes a
+broadcast-clock or AAC access-unit frontier after the target, planning
+immediately projects an approximately 5.6-second long-GOP lookback instead of
+spending the probe on a future RAP. Probe repositioning never changes the
+media clock, and only the formal landing repositions playback.
 
 The requested time is immutable. Successful landing is `exact` when real
 committed coded A/V covers the target and the actual SourceBuffer intersection
@@ -319,8 +334,9 @@ RAP without replacing the target. The session brackets the transaction with
 `beginMseRecordedSeek()`, `finishMseRecordedSeek(requestedTimeUs)`, or
 `cancelMseRecordedSeek()` so automatic layer evidence cannot leak into the
 seek. It may seal a short real AAC prefix, but never copies AAC, duplicates a
-future RAP at the target, performs a second landing, increases the budget,
-scales it by playback rate, or enters the Live state machine.
+future RAP at the target, performs a second landing, exceeds its single
+candidate-proved authorization, scales a limit by playback rate, or enters the
+Live state machine.
 
 No usable RAP, EOF, disjoint committed/buffered A/V, missing native damage
 evidence, or budget exhaustion fails with `MSE_SEEK_NO_COMMON_AV` and stops
@@ -340,15 +356,18 @@ During formal landing, selected AAC frames that cover the exact target
 may still sit below the ordinary 250 ms fragment threshold. The Recorded seek
 session explicitly seals that real selected-AAC prefix after each landing push;
 this does not flush input as EOF, manufacture media, add a read or reposition,
-increase 16 MiB, or modify `MediaElement.currentTime`. Live never calls this
+extend the authorized budget, or modify `MediaElement.currentTime`. Live never calls this
 Recorded-only operation.
 
-The authoritative seek sample is exercised at media times `0`, `1`, `60`,
-`139.276545`, `150.886703`, `197.260826`, `300`, and `450` seconds plus
-deterministic random targets. Every target must remain unchanged and complete
-inside 16 MiB without `MSE_SEEK_NO_COMMON_AV` or a hidden seek. Real Chrome runs
-the same set at 1x and the existing default 2x; full 1x/2x EOS and the real Live
-entry remain separate release gates.
+The authoritative fixed seek set is media time `0`, `1`, `60`, `139.276545`,
+`150.886703`, `197.260826`, `300`, and `450` seconds. Each fixed target must
+remain unchanged and complete inside its candidate-proved tier, never above
+64 MiB, without `MSE_SEEK_NO_COMMON_AV` or a hidden seek. Deterministic random
+targets remain a separate release gate: a long GOP that cannot fit the 64 MiB
+hard tier must fail explicitly until the next planning increment, never move
+the target or exceed the tier. Real Chrome runs the fixed and random sets at
+1x and the existing default 2x; full 1x/2x EOS and the real Live entry remain
+separate release gates.
 
 For automatic dual-video recordings, the public recorded timeline is the union
 of the preferred and rainfall video presentation ranges. The recording start is

@@ -4,6 +4,7 @@ export declare const MSE_STARTUP_NO_COMMON_AV: 'MSE_STARTUP_NO_COMMON_AV';
 export declare const MSE_SEEK_NO_COMMON_AV: 'MSE_SEEK_NO_COMMON_AV';
 export declare const TLV_VIDEO_UNAVAILABLE: 'TLV_VIDEO_UNAVAILABLE';
 export declare const MSE_SEEK_READ_BUDGET_BYTES: 16777216;
+export declare const MSE_SEEK_MAX_READ_BUDGET_BYTES: 67108864;
 export type MseRequiredTrack = 'video' | 'audio';
 export type MsePlaybackModeValue =
   | 'audio-video' | 'recovering-video' | 'audio-only' | 'restoring-video';
@@ -287,6 +288,16 @@ export interface MseRecordedSeekProgress {
   budgetBytes: bigint;
   offset: bigint;
 }
+export interface MseRecordedSeekBudgetAuthorization {
+  extended: boolean;
+  saturated: boolean;
+  baseBudgetBytes: bigint;
+  maximumBudgetBytes: bigint;
+  requiredBudgetBytes: bigint;
+  authorizationThresholdBytes: bigint;
+  authorizedBudgetBytes?: bigint;
+  provedEndOffset: bigint;
+}
 export interface MseRecordedSeekResult {
   targetUs: bigint;
   requestedTimeSeconds: number;
@@ -297,6 +308,9 @@ export interface MseRecordedSeekResult {
   nextOffset: bigint;
   bytesRead: bigint;
   budgetBytes: bigint;
+  baseBudgetBytes: bigint;
+  maximumBudgetBytes: bigint;
+  budgetAuthorization: MseRecordedSeekBudgetAuthorization;
   landingMode: 'exact' | 'natural-start' | 'held-frame';
   landingEvidence: MseRecordedSeekLandingEvidence | null;
   heldFrameTimeSeconds: number | null;
@@ -333,6 +347,7 @@ export interface MseRecordedSeekSessionOptions {
   checkError?: () => void;
   chunkBytes?: number;
   readBudgetBytes?: number;
+  maxReadBudgetBytes?: number;
   landingReserveBytes?: number;
   onProgress?: (progress: MseRecordedSeekProgress) => void;
 }
@@ -345,6 +360,8 @@ export interface MseRecordedSeekSession {
   readonly phase: string;
   readonly bytesRead: bigint;
   readonly budgetBytes: bigint;
+  readonly baseBudgetBytes: bigint;
+  readonly maximumBudgetBytes: bigint;
 }
 export declare function createMseRecordedSeekSession(
   options: MseRecordedSeekSessionOptions,

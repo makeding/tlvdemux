@@ -15,6 +15,7 @@ import {
 export {createMsePlaybackFlowControl} from './mse-playback-flow-control.mjs';
 export {
   MSE_SEEK_NO_COMMON_AV,
+  MSE_SEEK_MAX_READ_BUDGET_BYTES,
   MSE_SEEK_READ_BUDGET_BYTES,
   MSE_STARTUP_NO_COMMON_AV,
   MsePlaybackMode,
@@ -624,4 +625,3 @@ export function createMsePlaybackResilienceController({
 }
 
 export {createMseRecordedSeekSession} from './mse-recorded-seek.mjs';
-

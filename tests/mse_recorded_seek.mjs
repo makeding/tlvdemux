@@ -20,8 +20,12 @@ const queue = (ranges = []) => ({
 
 function fixture({
   landing = 'exact', gapSeconds = 0.04, budget = 16 * MiB,
+  maxBudget = 64 * MiB, sourceSize = 32 * MiB,
   targetTimeSeconds = 50, bootstrapRapUs = 0n, planRap = true,
-  reusedIndex = false, planRaps = null, damageEpisode = null,
+  reusedIndex = false, estimateBytes = 16 * MiB, indexedRestartBytes = 12 * MiB,
+  videoWidth = 3840, videoHeight = 2160,
+  landingAfterPushes = 1, planRaps = null, damageEpisode = null,
+  planRapsByPush = null,
   abortAfterReads = null, endAfterReads = null, failAfterReads = null,
 } = {}) {
   const media = {currentTime: targetTimeSeconds};
@@ -37,8 +41,10 @@ function fixture({
   let aborted = false;
   let position = 0n;
   let session;
+  let landingPushes = 0;
+  let backwardPushes = 0;
   const source = {
-    size: 32n * BigInt(MiB),
+    size: BigInt(sourceSize),
     async read(offset, length) {
       readCalls += 1;
       requests.push({offset, length, phase: session?.phase});
@@ -48,7 +54,10 @@ function fixture({
       return new Uint8Array(Number(length));
     },
   };
-  const videoTrack = {kind: 'video', codec: 'hevc', trackId: 1};
+  const videoTrack = {
+    kind: 'video', codec: 'hevc', trackId: 1,
+    video: {width: videoWidth, height: videoHeight},
+  };
   const audioTrack = {kind: 'audio', codec: 'aac-latm', trackId: 2};
   const demuxer = {
     async beginMseRecordedSeek() { lifecycle.push(['begin']); },
@@ -59,12 +68,12 @@ function fixture({
     async setMseOutputEnabled() {},
     async setMseTimestampOffset() {},
     async setIndexDuration() { return true; },
-    async estimateOffset() { return 16n * BigInt(MiB); },
+    async estimateOffset() { return BigInt(estimateBytes); },
     async previousSync() {
       return reusedIndex ? {
         presentationTimeUs: 51_000_000n,
-        signallingOffset: 12n * BigInt(MiB),
-        randomAccessOffset: 12n * BigInt(MiB) + 1024n,
+        signallingOffset: BigInt(indexedRestartBytes),
+        randomAccessOffset: BigInt(indexedRestartBytes) + 1024n,
         videoTrackId: 1,
       } : null;
     },
@@ -84,12 +93,15 @@ function fixture({
           randomAccess: true, restartOffset: 0n,
         });
       } else if (session.phase === 'backward-plan' && planRap) {
+        backwardPushes += 1;
         if (damageEpisode) session.observeDamage({
           severity: 'severe', videoTrackId: 1,
           startTimeUs: damageEpisode.startUs,
           recoveryTimeUs: damageEpisode.endUs,
         });
-        for (const [index, ptsValue] of (planRaps ?? [51_000_000n]).entries()) {
+        const observedRaps = planRapsByPush?.[backwardPushes - 1] ??
+          (planRapsByPush ? [] : planRaps ?? [51_000_000n]);
+        for (const [index, ptsValue] of observedRaps.entries()) {
           session.observeAccessUnit({
             codec: 'hevc', trackId: 1, ptsValue, ptsTimescale: 1_000_000,
             randomAccess: true, restartOffset: position + BigInt(index * 4096),
@@ -100,6 +112,11 @@ function fixture({
           randomAccess: false, restartOffset: position,
         });
       } else if (session.phase === 'single-landing') {
+        landingPushes += 1;
+        if (landingPushes < landingAfterPushes) {
+          position += BigInt(data.byteLength);
+          return true;
+        }
         video.ranges = landing === 'natural-start'
           ? [{start: 0.533873, end: 3}]
           : [{start: targetTimeSeconds - 1, end: targetTimeSeconds + 3}];
@@ -130,6 +147,7 @@ function fixture({
     headReady: () => session?.phase === 'bootstrap',
     chunkBytes: MiB,
     readBudgetBytes: budget,
+    maxReadBudgetBytes: maxBudget,
     landingReserveBytes: 7 * MiB,
     signal: {get aborted() { return aborted; }},
     initialTracks: reusedIndex ? [videoTrack, audioTrack] : [],
@@ -140,6 +158,89 @@ function fixture({
     get flushAudioCalls() { return flushAudioCalls; },
     get flushLandingCalls() { return flushLandingCalls; },
   };
+}
+
+{
+  const {session, operations} = fixture({
+    planRapsByPush: [[53_000_000n], [49_000_000n]],
+  });
+  const result = await session.run();
+  assert.equal(result.rapPresentationTimeUs, 49_000_000n,
+    'a future RAP did not redirect the remaining probe toward its preceding GOP');
+  assert.ok(operations.filter(([phase]) => phase === 'backward-plan').length >= 2,
+    'future-RAP planning did not perform the bounded earlier observation');
+}
+
+{
+  const seek = fixture({
+    reusedIndex: true,
+    sourceSize: 64 * MiB,
+    estimateBytes: 24 * MiB,
+    indexedRestartBytes: 1 * MiB,
+    landingAfterPushes: 24,
+  });
+  const result = await seek.session.run();
+  assert.equal(result.budgetAuthorization.extended, true,
+    'a proven long RAP-to-target span did not authorize the landing extension');
+  assert.ok(result.budgetAuthorization.authorizationThresholdBytes >= 31n * BigInt(MiB),
+    'the authorization omitted the fixed landing guard');
+  assert.ok(result.budgetBytes > 16n * BigInt(MiB) &&
+    result.budgetBytes <= 32n * BigInt(MiB),
+  'the landing extension did not stay between the base and hard limits');
+  assert.equal(result.budgetBytes, 32n * BigInt(MiB),
+    'ordinary video did not use the fixed 32 MiB extension tier');
+  assert.ok(result.bytesRead > 16n * BigInt(MiB) && result.bytesRead <= result.budgetBytes,
+    'the extended landing did not consume its one authorized ledger');
+  assert.equal(seek.operations.filter(([phase]) => phase === 'single-landing').length, 1,
+    'an extended seek performed more than one formal landing reposition');
+}
+
+{
+  const seek = fixture({
+    reusedIndex: true,
+    sourceSize: 96 * MiB,
+    estimateBytes: 40 * MiB,
+    indexedRestartBytes: 1 * MiB,
+    landingAfterPushes: 40,
+    videoWidth: 7680,
+    videoHeight: 4320,
+  });
+  const result = await seek.session.run();
+  assert.equal(result.budgetBytes, 48n * BigInt(MiB),
+    '8K seek did not choose the smallest sufficient 48 MiB tier');
+  assert.ok(result.bytesRead > 32n * BigInt(MiB),
+    '8K seek did not exercise reads beyond the ordinary-video hard limit');
+}
+
+{
+  const seek = fixture({
+    reusedIndex: true,
+    sourceSize: 96 * MiB,
+    estimateBytes: 49 * MiB,
+    indexedRestartBytes: 1 * MiB,
+    videoWidth: 7680,
+    videoHeight: 4320,
+  });
+  const result = await seek.session.run();
+  assert.equal(result.budgetBytes, 64n * BigInt(MiB),
+    '8K seek did not choose the 64 MiB tier for a span above 48 MiB');
+}
+
+{
+  const seek = fixture({
+    landing: 'natural-tail',
+    reusedIndex: true,
+    sourceSize: 128 * MiB,
+    estimateBytes: 72 * MiB,
+    indexedRestartBytes: 1 * MiB,
+  });
+  await assert.rejects(seek.session.run(), error =>
+    error.code === MSE_SEEK_NO_COMMON_AV && error.reason === 'budget-exhausted' &&
+      error.diagnostics.maximumBudgetBytes === String(64 * MiB));
+  assert.equal(seek.operations.filter(([phase]) => phase === 'single-landing').length, 1,
+    'a saturated candidate did not retain exactly one formal landing');
+  assert.equal(seek.requests.reduce((total, request) => total + request.length, 0n),
+    64n * BigInt(MiB), 'a saturated seek crossed its 64 MiB hard tier');
 }
 
 {
@@ -173,9 +274,9 @@ function fixture({
       error.diagnostics.phase === 'backward-plan');
   const planOffsets = operations.filter(([phase]) => phase === 'backward-plan')
     .map(([, offset]) => offset);
-  assert.ok(planOffsets.length >= 1 && planOffsets.every((offset, index) =>
+  assert.ok(planOffsets.length >= 2 && planOffsets.every((offset, index) =>
     index === 0 || offset < planOffsets[index - 1]),
-  'an empty planned window returned toward the duration estimate instead of expanding backward');
+  'an empty sparse window did not continue expanding backward');
 }
 
 {
@@ -230,14 +331,14 @@ function fixture({
 }
 
 {
-  const {session, media} = fixture({landing: 'natural-tail'});
+  const {session, media} = fixture({landing: 'natural-tail', sourceSize: 64 * MiB});
   await assert.rejects(session.run(), error =>
     error.code === MSE_SEEK_NO_COMMON_AV && error.reason === 'budget-exhausted');
   assert.equal(media.currentTime, 50);
 }
 
 {
-  const {session} = fixture({landing: 'held-frame', gapSeconds: 0.251});
+  const {session} = fixture({landing: 'held-frame', gapSeconds: 0.251, sourceSize: 64 * MiB});
   await assert.rejects(session.run(), error =>
     error.code === MSE_SEEK_NO_COMMON_AV && error.reason === 'budget-exhausted' &&
       error.diagnostics.phase === 'single-landing');
