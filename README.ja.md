@@ -145,11 +145,18 @@ atomic A/V commit であり、両 queue の `updateend` 成功前に次の windo
 いけません。録画の forward reserve は wall clock 2 秒、refill low は 1 秒で、
 playback rate はその media duration だけを比例させます（2x は 4/2 media 秒）。
 15 秒／30 秒の startup gate はありません。
+新しい Recorded landing では、両 track の formal A/V splice が各 track init と media
+より先に output pipeline へ到達しなければなりません。splice より先に届いた init を
+破棄したまま、代替 init が届かない状態を許可しません。
 preferred reserve に達する前に browser が quota ceiling を報告した場合、entry に
 wall clock 0.5 秒以上の共通 A/V があれば controller が直ちに消費を開始します。
 この quota-limited startup の所有者は demo ではなく controller です。
 
 quota pressure では source read を停止し、失敗した元の window を保持します。
+presented-frame history の remove は quota 発生前から行います。新しい frame が実際に
+compositor へ提示されるたび、controller はその時刻から映像 safety history 3 秒を
+引いた境界より前だけを両 queue から remove し、quota 発生まで安全な headroom の作成を
+遅延してはいけません。
 compositor が最後に提示した境界より前の完全な history window だけを remove し、
 現在の decode GOP と 3 秒の映像 history を保護できた場合に限り、同じ window を
 一度だけ retry します。quota、通常の `waiting`、demand は seek や無制限 retry を

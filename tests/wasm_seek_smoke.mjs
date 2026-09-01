@@ -195,6 +195,7 @@ try {
     const declaredRanges = {video: [], audio: []};
     const timescales = {video: null, audio: null};
     const splices = {video: [], audio: []};
+    const outputOrder = [];
     const videoRecoveryEvents = [];
     const offsets = {video: -presentationStartUs, audio: -presentationStartUs};
     const queues = new Map([
@@ -242,15 +243,18 @@ try {
         locator?.observeAccessUnit(unit);
       },
       onMseVideoSplice(splice) {
+        outputOrder.push('video-splice');
         offsets.video = BigInt(splice.timestampOffsetUs ?? 0n);
         splices.video.push(splice);
       },
       onMseAudioSplice(splice) {
+        outputOrder.push('audio-splice');
         offsets.audio = BigInt(splice.timestampOffsetUs ?? 0n);
         splices.audio.push(splice);
       },
       onMseVideoRecovery(event) { videoRecoveryEvents.push(event); },
       onMseInit(init) {
+        outputOrder.push(`init:${init.type}`);
         if (init.type in timescales) timescales[init.type] = initTimescale(init.data);
       },
       onMseSegment(segment) {
@@ -330,6 +334,13 @@ try {
         throw error;
       }
       const requested = requests.reduce((sum, request) => sum + request.length, 0n);
+      for (const type of ['video', 'audio']) {
+        const spliceIndex = outputOrder.indexOf(`${type}-splice`);
+        const initIndex = outputOrder.indexOf(`init:${type}`);
+        assert.ok(spliceIndex >= 0 && initIndex > spliceIndex,
+          `seek ${targetTimeSeconds}s emitted ${type} init before its formal splice: ` +
+          outputOrder.join(','));
+      }
       assert.equal(requested, result.bytesRead);
       assert.ok(requested <= BigInt(MSE_RECORDED_READ_BUDGET_BYTES),
         `seek ${targetTimeSeconds}s exceeded the 16 MiB budget`);
@@ -368,6 +379,7 @@ try {
       }
       results.push({
         targetTimeSeconds,
+        selectedAudioPacketId: tracks.get(selectedAudio)?.packetId ?? null,
         videoMode: result.videoMode,
         videoTimeSeconds: result.video.startTimeSeconds,
         restartOffset: String(result.video.restartOffset ?? result.audio.restartOffset),

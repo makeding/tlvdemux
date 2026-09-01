@@ -597,8 +597,17 @@ void tlvdemux::MseRemuxer::setOutputEnabled(const bool enabled) {
     const bool was_enabled = impl_->enabled;
     impl_->enabled = enabled;
     impl_->output.set_enabled(enabled);
-    if (enabled && !was_enabled && impl_->active_audio) {
-        impl_->active_audio->activate();
+    if (enabled && !was_enabled) {
+        if (impl_->recorded_seek_active) {
+            // The AAC muxer may already know its unchanged configuration from
+            // the output-disabled probe. Publish both formal track mappings
+            // before activate() re-emits that cached audio init; otherwise the
+            // pipeline must discard the early init when the later splice
+            // arrives and no replacement audio init will ever be generated.
+            impl_->output.video_splice(0, impl_->mse_timestamp_offset_us);
+            impl_->output.audio_splice(0, impl_->mse_timestamp_offset_us);
+        }
+        if (impl_->active_audio) impl_->active_audio->activate();
     }
 }
 
