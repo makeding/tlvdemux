@@ -56,6 +56,17 @@ export declare class MseAppendQueue {
   pump(): void;
   bufferedAhead(): number;
   bufferedRanges(): MseBufferedRange[];
+  snapshot(): {
+    state: string;
+    updating: boolean;
+    mutationInProgress: boolean;
+    pendingMutations: number;
+    pendingAppends: number;
+    pendingReconfigurations: number;
+    queuedBytes: number;
+    currentBytes: number;
+    buffered: MseBufferedRange[];
+  };
   trimBefore(time: number, force?: boolean): void;
   waitBelow(limit: number): Promise<void>;
   isForwardBlocked(): boolean;

@@ -23,7 +23,7 @@ export function createDemoPlaybackResilience({
   statusElement,
   playbackStateElement,
   appendLog,
-  scheduleRecordedRebuild,
+  submitRecordedRecoveryEvent,
   requestLiveTransition,
 }) {
   const renderMode = event => {
@@ -86,7 +86,7 @@ export function createDemoPlaybackResilience({
       if (result.changed) {
         appendLog('video SourceBuffer が activeSourceBuffers から外れたことを確認しました');
       } else if (!liveMode) {
-        await scheduleRecordedRebuild(MsePlaybackMode.AUDIO_ONLY, media.currentTime);
+        submitRecordedRecoveryEvent(MsePlaybackMode.AUDIO_ONLY, media.currentTime);
       } else if (currentQueues.has('audio') && !currentQueues.has('video')) {
         appendLog('失敗した映像候補を破棄し、現在の Live 音声を継続します');
       } else {
@@ -122,10 +122,7 @@ export function createDemoPlaybackResilience({
       if (result.changed) {
         appendLog('video SourceBuffer を再び active にし、実提示 frame を待ちます');
       } else if (!liveMode) {
-        const restored = await scheduleRecordedRebuild(
-          MsePlaybackMode.RESTORING_VIDEO, event.target,
-        );
-        controller.observePresentedFrame(restored.presentedTime);
+        submitRecordedRecoveryEvent(MsePlaybackMode.RESTORING_VIDEO, event.target);
       } else {
         const restored = await requestLiveTransition(
           MsePlaybackMode.RESTORING_VIDEO, event.target,

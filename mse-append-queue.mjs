@@ -254,6 +254,23 @@ export class MseAppendQueue {
     }
   }
 
+  /** Side-effect-free state for Recorded controllers and diagnostics. */
+  snapshot() {
+    return {
+      state: this.state,
+      updating: Boolean(this.sourceBuffer.updating),
+      mutationInProgress: Boolean(this.sourceBuffer.updating),
+      pendingMutations: this.queue.length,
+      pendingAppends: this.queue.filter(item => item.kind === 'append').length,
+      pendingReconfigurations: this.queue.filter(item =>
+        item.kind === 'timestamp-offset' || item.kind === 'remove' || item.mime !== null,
+      ).length,
+      queuedBytes: this.queuedBytes,
+      currentBytes: this.currentBytes,
+      buffered: this.bufferedRanges(),
+    };
+  }
+
   trimBefore(time, force = false) {
     if (!(time > 0) || this.state !== 'running') return;
     if (!force && this.trimBeforeTime === null) {

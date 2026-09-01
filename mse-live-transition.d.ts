@@ -43,11 +43,6 @@ export declare function createLiveMseTransitionManager(options: {
   ) => Promise<{mediaSource: MediaSource; url: string}>;
   commit: (candidate: MseLiveTransitionCommit) => unknown | Promise<unknown>;
   appendLog: (message: string) => void;
-  liveMode?: boolean;
-  duration?: number;
-  prepareCandidate?: ((candidate: MseLiveTransitionCommit & {
-    cleanup: (() => void) | null;
-  }) => unknown | Promise<unknown>) | null;
   createProbeMedia?: () => HTMLVideoElement;
   mountProbeMedia?: (media: HTMLVideoElement) => void;
   revokeObjectURL?: (url: string) => void;

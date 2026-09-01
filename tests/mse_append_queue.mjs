@@ -78,6 +78,12 @@ const {
   queue.spliceFrom(0, -0.821944);
   queue.appendInitialization(new Uint8Array([2]), 'video/mp4; codecs="hvc1.2.4.L123"', true);
   queue.append(new Uint8Array([3]), {startTimeSeconds: 0.821944, endTimeSeconds: 2});
+  assert.deepEqual(queue.snapshot(), {
+    state: 'running', updating: true, mutationInProgress: true,
+    pendingMutations: 4, pendingAppends: 2, pendingReconfigurations: 3,
+    queuedBytes: 3, currentBytes: 1, buffered: [{start: 0, end: 20}],
+  }, 'queue snapshot did not expose side-effect-free Recorded drain facts');
+  assert.equal(sourceBuffer.operations.length, 1, 'queue snapshot mutated SourceBuffer state');
   sourceBuffer.complete();
   assert.deepEqual(sourceBuffer.operations.at(-1), ['remove', 0, 20]);
   sourceBuffer.complete();

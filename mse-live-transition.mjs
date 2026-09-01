@@ -15,9 +15,6 @@ export function createLiveMseTransitionManager({
   openMediaSource,
   commit,
   appendLog,
-  liveMode = true,
-  duration = Infinity,
-  prepareCandidate = null,
   createProbeMedia = () => document.createElement('video'),
   mountProbeMedia = probeMedia => document.body.append(probeMedia),
   revokeObjectURL = url => URL.revokeObjectURL(url),
@@ -67,7 +64,7 @@ export function createLiveMseTransitionManager({
 
   const checkReady = async () => {
     const current = candidate;
-    if (!current || !current.pipeline || !current.prepared || current.committing || playbackPaused ||
+    if (!current || !current.pipeline || current.committing || playbackPaused ||
         media.paused || !isActive()) return;
     const range = current.flow.entryRange();
     if (!range) return;
@@ -175,7 +172,6 @@ export function createLiveMseTransitionManager({
         id, mode, target, probeMedia, completion, resolve, reject,
         pending: [], queues: new Map(), pipeline: null, committing: false,
         frameCallback: null, url: null, cleanup: null, resumeWaiter: null,
-        prepared: prepareCandidate === null,
       };
       const openingCandidate = candidate;
       let opened;
@@ -214,13 +210,13 @@ export function createLiveMseTransitionManager({
       current.mediaSource = opened.mediaSource;
       current.url = opened.url;
       try {
-        opened.mediaSource.duration = duration;
+        opened.mediaSource.duration = Infinity;
         const queues = current.queues;
         const flow = createMsePlaybackFlowControl({
           media: probeMedia,
           queues,
           requiredTracks,
-          entryKind: liveMode ? 'live' : 'seek',
+          entryKind: 'live',
           entryTimeSeconds: target,
         });
         const pipeline = createMseOutputPipeline({
@@ -249,17 +245,8 @@ export function createLiveMseTransitionManager({
           else if (item.kind === 'splice-video') pipeline.onMseVideoSplice(item.value);
           else if (item.kind === 'splice-audio') pipeline.onMseAudioSplice(item.value);
         }
-        appendLog(`${liveMode ? 'Live' : '録画'} ${mode === MsePlaybackMode.AUDIO_ONLY ? '純音声' : 'A/V'} ` +
+        appendLog(`Live ${mode === MsePlaybackMode.AUDIO_ONLY ? '純音声' : 'A/V'} ` +
           '候補 MediaSource を有界に準備します');
-        if (prepareCandidate) {
-          void Promise.resolve(prepareCandidate(current)).then(() => {
-            if (candidate !== current) return;
-            current.prepared = true;
-            void checkReady();
-          }).catch(error => {
-            if (candidate === current) discardCandidate(error);
-          });
-        }
       } catch (error) {
         if (candidate === current) discardCandidate(error);
         return completion;

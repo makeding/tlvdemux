@@ -154,10 +154,16 @@ alignment がまず `-650638us` を設定し、source `16938688us` の AAC 構�
 `16224050us` に写像されます。この content transition は映像 packet `0xf300` に留まり、layer
 切替や recovery seek を発生させず、降雨 layer の選択で隠してはいけません。
 MediaElement の `waiting` または後方の buffered range だけでは seek を許可しません。現在再生中の
-layer に対する `PlaybackDamage.action === "seek"` だけが直ちに位置変更でき、
-`seek-if-stalled` は許可として保持し、因果関係が成立する `waiting` だけが実行できます。遅延した
-event は現在の media clock 以上にある buffer 済み parser 観測 RAP を使用できます。明示 PID または
+Recorded/File では `PlaybackDamage` と `seek-if-stalled` は controller event に限られ、位置変更や media
+clock の書き込みを行いません。明示 PID または
 具体的な track 選択は固定 mode のままで、自動 layer 判断を無効にします。
+
+Recorded の 8 秒 low-water rule は mutation／queue state より優先します。共通 A/V が 8 秒未満なら、
+SourceBuffer が updating 中、append／reconfiguration が queue 済み、または queue が 4 MiB を越えていても
+`draining` へ入ったり留まったりせず、source read と demuxer supply を継続します。実 browser regression
+では 384 MiB から 480 MiB の間に共通 A/V が 1.6 秒から 0 秒へ減少し、
+`source-buffer-mutation`／`recorded-queue-drain` の後、約 9 秒の再生で `waiting 15.534s` になりました。
+これは境界通過ではなく失敗です。
 最初の利用可能な切替先 RAP で両 track を同じ境界に論理 splice し、その境界より後に
 append 済みの旧 layer 音声を remove して、新しい AAC を 22 ms 以内の同じ境界へ写像します。
 旧音声の先行 buffer を理由に映像切替を後続 RAP まで延期してはいけません。起動切替が通常映像
@@ -167,9 +173,7 @@ SourceBuffer には remove を行いません。破棄された staging の再�
 
 timestamp 0 から録画を fresh 起動するとき、起動処理と後方 buffered range は
 `MediaElement.currentTime` を代入してはいけません。位置変更を許可するのは user の明示 seek、
-layer 切替が不可能だった後の選択中 layer に対する `PlaybackDamage.action === "seek"`、
-`seek-if-stalled` が許可し、実際の提示 frame 証拠と対応する `waiting`、または既存の live 起動
-policy だけです。
+または既存の live 起動 policy だけです。
 demo は位置変更を行わず、その media clock を復帰判断用に core へ報告します。
 
 fresh recorded の SourceBuffer pair を作成する前に、demo は
@@ -180,14 +184,15 @@ timestamp offset -> init -> media の順に commit します。降雨 layer の 
 staging 済みの splice offset がある場合は必ずそれを優先し、entry alignment で別の offset を推導したり
 加算したりしてはいけません。Live、明示 seek、MediaSource 再利用 path ではこの fresh-entry mode を
 有効にしません。そのため、両 track の後方 range がまだ timestamp 0 に写像されていないことだけで
-`MSE_STARTUP_NO_COMMON_AV` を即時に返してはいけません。fresh startup が失敗するのは、既存の 16 MiB
-input budget 内で共通 A/V entry を形成できなかった場合だけです。
+`MSE_STARTUP_NO_COMMON_AV` を返してはいけません。Recorded controller は、共通 A/V entry を形成して
+写像できるか、true EOF または実際の source／demux failure に到達するまで sequential supply を続けます。
 fresh playback の入口より最初の降雨 RAP が後にある場合、splice は RAP の source PTS を維持しつつ、
 replacement A/V 出力を timestamp 0 へ写像する負の MSE timestamp offset を通知します。demo は同じ
 SourceBuffer mutation queue で replacement init／media より前にこの offset を適用します。入力の
 backpressure は parser の進捗ではなく共通 A/V buffered 区間を使用し、15 秒 ahead で request を止め、
-8 秒未満で再開します。再生入口を覆う共通区間がない間は、進捗なしに読み込める playback input を
-16 MiB に制限し、使い切った場合は録画を EOF まで取得せず `MSE_STARTUP_NO_COMMON_AV` で失敗します。
+8 秒未満で再開します。再生入口を覆う共通区間がない間、Recorded sequential supply は読込 byte 数で
+制限せず、必要なら 256 MiB を越えて継続します。明示 seek 専用の単一 16 MiB budget を startup に
+再利用してはいけません。
 
 Live 再生には timestamp 0 の入口はありません。起動入口は現在の stream が生成した最初の共通
 A/V buffered 区間であり、設定した live 起動 buffer が成立した後だけ media clock をその区間へ
@@ -224,22 +229,11 @@ origin からの本来の offset を維持します。duration 表示、`MediaSo
 録画の明示 seek、選択 layer の damage recovery、および MSE timestamp offset はすべてこの
 単一 mapping を使用します。明示的な `videoPacketId` は範囲をその一つの映像 track に制限します。
 
-選択 layer の自動 recovery は録画の明示 seek とは別です。現在 layer の severe な
-`PlaybackDamage.action === "seek"` が具体的な recovery timestamp を持つ場合は、同じ
-和集合 origin mapping で media clock を一度だけ変更できます。復旧済みの短い `warning` は
-`seek-if-stalled` とし、登録時には位置変更せず、その損傷へ media clock が到達した後の `waiting`
-一回につき最大一度だけ実行できます。`MediaElement.currentTime` と `playing` は損傷映像の decode 成功を
-証明しません。音声だけで media clock が最初の復旧 RAP を越えても、表示映像は停止したままに
-なり得ます。SDK は `requestVideoFrameCallback()` で compositor に実際に提示された映像 PTS を
-追跡し、提示済み frame が最初の復旧 RAP 以上なら許可を破棄します。そうでない遅延 `waiting` は、
-現在の media clock 以上にある parser 観測済み RAP のうち、buffer 済みの最初の点を選びます。
-RAP が未到着または未 append の場合は access unit／SourceBuffer の前進まで許可を保持します。
-この復旧は必ず前方へ進み、通過済み RAP へ後方 seek してはいけません。この状態機械は public な
-`tlvdemux/mse-playback` SDK に置き、demo は media／layer callback、parser RAP、`waiting`、
-SourceBuffer の前進を転送するだけにします。提示 frame callback がない browser は安全な従来 subset
-として、media clock が最初の復旧 RAP を越えていない場合だけ復旧できます。どちらも duration probe
-の再実行、source scan、A/V layer switch との並行実行は禁止します。parser 観測済み RAP を伴わない
-buffered range、非選択 layer の damage、通常の `waiting`、`wait-for-recovery` だけでは seek を許可しません。
+選択 layer の recovery は録画の明示 seek とは別です。SDK は damage と compositor の証拠を保持できますが、
+demo はその結果を Recorded controller への event として渡します。この event は source の reposition、
+Recorded lifecycle の変更、録画の scan、`MediaElement.currentTime` の書き込みを行えません。buffered
+range、parser 観測 RAP、いずれかの layer の damage、通常の `waiting`、`wait-for-recovery` は implicit な
+Recorded seek にはなりません。
 
 選択映像が、parser で観測した相異なる厳密前方の実在 recovery RAP を 3 回試しても新しい frame を
 提示できない場合、public playback resilience controller は安定 code `TLV_VIDEO_UNAVAILABLE` とともに
@@ -258,14 +252,10 @@ video frame の後にのみ続行できます。pause 前の waiting／buffer ev
 audio-only 中は MSE の required track set を audio に変更し、startup、buffer coverage、backpressure、
 recorded-seek landing は video SourceBuffer を待ちません。非 active video output は即時破棄し、無制限の
 transition cache を作りません。runtime の in-place 切替は video SourceBuffer が実際に
-`activeSourceBuffers` から外れたことを観測した場合だけ成功とし、それ以外は新しい audio-only
-MediaSource を構築します。録画 rebuild は public index／seek session と一つの 16 MiB read budget を
-再利用します。録画 rebuild は resource transaction です。旧 MediaSource は現在の audio、media clock、user の
-play／pause 意図を保ったまま attach され続け、cached duration／index から bounded hidden candidate を
-構築します。audio-only candidate は target の audio が buffer 済みになった場合、A/V candidate はさらに
-restore RAP の実提示が証明された場合だけ promote できます。pause 中は candidate buffer を保持できますが、
-candidate の再生と commit は禁止します。open、format、seek、append、decode のどの失敗でも candidate
-だけを破棄し、旧 MediaSource を detach、stop、seek、変更してはいけません。
+`activeSourceBuffers` から外れたことを観測した場合だけ成功とします。それ以外では Recorded controller が
+source ownership を保持したまま recovery request を event として受け取ります。recovery code は sequential
+supply の停止、Recorded lifecycle state の変更、Live transition manager 経由の構築、`currentTime` の変更を
+行ってはいけません。
 Live は replacement audio pipeline が再生可能になるまで現在 input を有界に保持し、再接続や既存 audio
 pipeline の停止を行いません。transition 中の正準 clock は常に audio です。
 `createLiveMseTransitionManager()` は 4 MiB 上限の candidate MediaSource queue を所有し、active pipeline
@@ -301,52 +291,17 @@ transfer し、caller の `ArrayBuffer` を detach してはいけません。�
 source 境界は `821944us` のまま、startup timestamp offset により最初の共通 MSE A/V 区間を
 timestamp 0 へ写像します。最初の init は `1920x1080/L123`、全 sample WASM 実行には
 `PlaybackDamage.seek` がなく、切替 A/V 境界差は AAC 1 frame の 22 ms 以内でなければなりません。
-startup flow-control は 16 MiB の進捗なし budget 内で共通区間へ到達し、通常 prefetch は 15 秒の
-high-water mark で停止して 711 MiB sample を EOF まで取得してはいけません。従来の 0:48 付近の切替と `-12909` は正常な切替点
+startup flow-control はその共通区間へ到達し、通常 prefetch は 15 秒の high-water mark で停止して
+711 MiB sample を EOF まで取得してはいけません。従来の 0:48 付近の切替と `-12909` は正常な切替点
 ではなく、今回修正する失敗です。この復旧 path の自動 acceptance は native VideoToolbox MSE probe
 と全 sample WASM assertion だけで行い、browser automation を起動せず、user を最初の runtime
 tester にしません。
 
 単一 layer の captured sample
-`20260828-141-020000_99332dc9-025e-4e76-afc4-e31c3d577059.mmts` は正確に
-`1792861104` bytes、`496.913089` 秒で、映像 packet `0xa140` と音声 packet `0xa141` だけを含み、
-降雨 fallback はありません。全 sample regression では、選択映像の短い損傷を完全な source 区間、
-input offset、実在する復旧 RAP とともに `seek-if-stalled` として公開しなければなりません。
-parser の先読みでは seek しません。実 browser では最初の写像済み復旧 RAP `6.272934s` より遅い
-`6.580s` 付近で `waiting` が発生し、表示映像はまだ復旧していません。このとき SDK は次の
-parser 観測済み前方 RAP `6.806806s` を選び、buffer 済みになった後に一度だけ seek して再生を
-継続しなければなりません。古い候補や無関係な `waiting` は前後どちらにも seek してはいけません。
-実 browser acceptance では、降雨切替、MediaSource 再構築、recorded-seek session、source 全体の
-再読込なしに、この自然な遅延停止から継続することを確認します。
-
-復旧 RAP へ `MediaElement.currentTime` を代入しただけでは、短い損傷の復旧を完了としません。
-compositor が最初の復旧 RAP 以上の frame を実際に提示するまで許可を保持します。その後も因果関係の
-ある `waiting` 一回につき、厳密に前方にある parser 観測済みかつ buffer 済みの RAP を最大一つだけ
-使用でき、parser／SourceBuffer の前進だけで復旧点を連続 seek してはいけません。この sample で
-観測済みの第二境界は、`13.245s` の `waiting`、`13.747079s` への最初の試行、そして最後に提示された
-映像 frame が `7.291s` のまま発生する `13.747s` の再度の `waiting` です。この二回目の event でも
-同じ損傷許可を保持し、`13.747079s` を繰り返さず、次の実在 RAP `14.280934s` へ進まなければ
-なりません。実際に復旧 frame が提示された場合だけ許可を完了し、以後の無関係な `waiting` による
-seek を禁止します。
-
-同じ sample で観測された media time `101.810s` の `waiting` は通常 waiting です。その clock に
-selected-video damage はなく、parser が先読み済みの future damage は mapped media time
-`114.097s` に始まり、実在 RAP `115.315189s` で復旧します。この damage は future boundary まで
-保持し、`101.810s` で seek や audio-only を許可してはいけません。demo diagnostics は source PTS を
-現在の MediaElement clock と並べず、mapped playback time と先読みであることを表示します。
-
-MediaElement が SDK 所有の復旧 target に対してまだ `seeking` を返している場合も同じ規則です。
-観測済みの `6.589s -> 6.806806s -> 7.340679s` の試行では、`seeked` より先に因果関係のある
-`waiting` が `7.341s` で再度発生します。media clock が最後の SDK 試行と一致し、提示映像が最初の
-復旧 RAP より前のままなら、この event は次の実在 RAP `7.874540s` へ進めなければなりません。
-許可された recovery seek は recovery target を書くだけで、visible MediaElement の `play()` を呼びません。
-play／pause intent は browser に既に設定された user intent が所有し続けます。
-無関係な target に対する `seeking` は引き続き復旧を許可しません。
-
-許可された各復旧 seek は、`currentTime` 更新前の MediaElement の再生意図を保持し、再生中だった
-場合は更新後に browser が `paused` を返しても再生を再開しなければなりません。手動の再生クリックが
-必要な状態は自動復旧の成功ではありません。user が実際に pause した MediaElement、または対応する
-選択映像の損傷許可がない通常の `waiting` は再生を開始してはいけません。
+`20260828-141-020000_99332dc9-025e-4e76-afc4-e31c3d577059.mmts` は damage event の
+regression として維持します。parser prefetch、`waiting`、観測 RAP、compositor の証拠は diagnostics を
+更新できますが、Recorded seek の開始や `currentTime` の変更はできません。実 browser acceptance は
+降雨切替、MediaSource 再構築、source 全体の再読込、hidden recovery seek なしの自然な継続を確認します。
 
 復旧には、損傷境界の後にも decode 可能な MSE media が必要です。選択映像の source-damage marker
 では、欠落前の完全で正常な映像 sample を確定して出力し、既存の source timeline mapping を保持します。
@@ -357,7 +312,8 @@ play／pause intent は browser に既に設定された user intent が所有�
 切替、および無損傷入力は従来どおり最初の RAP から開始します。
 観察期を有効にするのは、選択映像の現在 generation がすでに media を受理した後だけです。fresh
 startup の source-damage marker は最初の RAP 自身に付いている場合も、別の無損傷 GOP を待たずその
-最初の実在 RAP から開始し、同じ 16 MiB の進捗なし budget 内で初回共通 A/V entry を形成します。
+最初の実在 RAP から開始し、Recorded sequential supply は byte budget を課さず初回共通 A/V entry が
+形成されるまで継続します。
 
 手動から自動への layer 選択変更は policy flag だけではなく、能動的な遷移です。user が降雨対応
 layer を手動選択している場合、自動選択を有効にすると preferred／fallback A/V pair を設定し、次の

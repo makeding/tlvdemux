@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 
-const [html, css, demo, adapter, liveTransition, recordedTransition, mediaTransaction] = await Promise.all([
+const [html, css, demo, adapter, liveTransition, recordedPlayback,
+  recordedController, mediaTransaction] = await Promise.all([
   readFile(new URL('../demo/index.html', import.meta.url), 'utf8'),
   readFile(new URL('../demo/demo.css', import.meta.url), 'utf8'),
   readFile(new URL('../demo/demo.js', import.meta.url), 'utf8'),
   readFile(new URL('../demo/playback-resilience.js', import.meta.url), 'utf8'),
   readFile(new URL('../mse-live-transition.mjs', import.meta.url), 'utf8'),
-  readFile(new URL('../demo/recorded-mse-transition.js', import.meta.url), 'utf8'),
+  readFile(new URL('../demo/recorded-playback.js', import.meta.url), 'utf8'),
+  readFile(new URL('../mse-recorded-playback.mjs', import.meta.url), 'utf8'),
   readFile(new URL('../demo/mse-media-transaction.js', import.meta.url), 'utf8'),
 ]);
 
@@ -37,34 +39,31 @@ assert.match(liveTransition, /restoreFocus[\s\S]*focus\(\{preventScroll: true\}\
   'Live candidate promotion loses MediaElement keyboard focus');
 assert.match(liveTransition, /MSE detach algorithm/,
   'Live transition can regress to detaching and emptying the proven candidate');
-assert.match(demo, /createRecordedMseTransitionManager/,
-  'recorded recovery still has no transactional candidate path');
+assert.match(demo, /createMseRecordedPlaybackController/,
+  'Recorded/File input does not use the independent controller');
+assert.match(demo, /liveMode \? createMsePlaybackFlowControl/,
+  'demo does not branch Live and Recorded flow at its input boundary');
+assert.doesNotMatch(recordedPlayback, /mse-live-transition|createLiveMseTransitionManager/,
+  'Recorded demo orchestration still wraps the Live transition manager');
+assert.doesNotMatch(recordedController, /mse-live-transition|createMsePlaybackFlowControl/,
+  'Recorded SDK controller still imports Live lifecycle decisions');
 assert.ok(demo.indexOf('const gapRecovery = createDemoPlaybackResilience') <
     demo.indexOf('const observeVideoRecovery = createMseVideoRecoveryLogger'),
   'demo constructs the video-recovery logger before gapRecovery is initialized');
-assert.doesNotMatch(demo, /stopPlayback\(true, false\);[\s\S]{0,120}loadAndPlay\(target/,
-  'recorded recovery still destroys the old MSE before candidate validation');
-assert.match(recordedTransition, /createMseRecordedSeekSession/,
-  'recorded candidate does not use the shared 16 MiB seek session');
-assert.match(recordedTransition, /estimateOffset:\s*cachedEstimateOffset/,
-  'recorded candidate does not reuse the active recording index estimate');
-assert.match(recordedTransition, /adoptDemuxer/,
-  'recorded candidate cannot continue sequentially from its formal landing');
+assert.match(recordedPlayback, /createMseRecordedSeekSession/,
+  'Recorded controller entry does not reuse the public shared-budget seek API');
+assert.match(demo, /activeRecordedPlaybackController\.seek\(target\)/,
+  'explicit Recorded seek bypasses the active controller generation');
 assert.doesNotMatch(demo, /reposition\(item\.seekResult\.nextOffset/,
-  'recorded candidate performs a second reposition after formal landing');
-assert.match(mediaTransaction, /promotedMedia\.currentTime\s*=\s*target;/,
-  'recorded candidate does not preserve the exact user-requested time');
-assert.doesNotMatch(mediaTransaction,
-  /promotedMedia\.currentTime\s*=\s*Math\.max/,
-  'recorded candidate still substitutes a later buffered landing time');
+  'Recorded entry performs a second reposition after formal landing');
 assert.ok(demo.split('\n').length - 1 < 2000,
   'demo.js was not kept below 2000 lines after recorded-seek extraction');
-const msePlaybackVersions = [demo, adapter, liveTransition, recordedTransition]
+const msePlaybackVersions = [demo, adapter, liveTransition, recordedPlayback]
   .flatMap(source => [...source.matchAll(/mse-playback\.mjs\?v=([^'\"]+)/g)]
     .map(match => match[1]));
 assert.equal(new Set(msePlaybackVersions).size, 1,
   'the demo page loads multiple versioned instances of mse-playback');
-const liveTransitionVersions = [demo, recordedTransition, mediaTransaction]
+const liveTransitionVersions = [demo, mediaTransaction]
   .flatMap(source => [...source.matchAll(/mse-live-transition\.mjs\?v=([^'\"]+)/g)]
     .map(match => match[1]));
 assert.equal(new Set(liveTransitionVersions).size, 1,
