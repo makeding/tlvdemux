@@ -36,12 +36,16 @@ public:
         const tlvdemux::MseLayerSwitchStarted& layer) override {
         layer_switch_starts.push_back(layer);
     }
+    void onPlaybackDamage(const tlvdemux::PlaybackDamage& damage) override {
+        playback_damage.push_back(damage);
+    }
 
     std::vector<tlvdemux::MseMediaSegment> segments;
     std::vector<tlvdemux::MseVideoSplice> video_splices;
     std::vector<tlvdemux::MseVideoRecoveryEvent> recovery;
     std::vector<tlvdemux::MseLayerSwitch> layer_switches;
     std::vector<tlvdemux::MseLayerSwitchStarted> layer_switch_starts;
+    std::vector<tlvdemux::PlaybackDamage> playback_damage;
 };
 
 std::vector<std::uint8_t> loas_frame() {
@@ -302,6 +306,8 @@ void test_rainfall_is_video_only_until_stable_preferred_rap() {
               return event.phase ==
                   tlvdemux::MseVideoRecoveryPhase::StableRapCommitted;
           }), "stable preferred RAP was not committed");
+    check(sink.playback_damage.empty(),
+          "Recorded continuity leaked legacy damage-seek advice");
     assert_contiguous(media_of(sink.segments, "audio"), 10,
                       "selected AAC across rainfall recovery");
 }

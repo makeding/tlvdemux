@@ -4,6 +4,9 @@ public:
 
     bool started() const noexcept { return started_; }
     bool output_started() const noexcept { return output_started_; }
+    bool recorded_continuity_enabled() const noexcept {
+        return recorded_continuity_enabled_;
+    }
     bool audio_output_ready() const noexcept {
         return started_ || recovery_observation_eligible_;
     }

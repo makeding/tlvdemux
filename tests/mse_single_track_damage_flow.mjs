@@ -96,6 +96,9 @@ const demoSource = await readFile(new URL('../demo/demo.js', import.meta.url), '
 assert.match(demoSource,
   /demuxer\.switchLayer\(\s*target\.video\.trackId, selectedAudio,/,
   'rainfall fallback replaced the user-selected AAC track');
+assert.match(demoSource,
+  /manual:\s*liveMode\s*&&\s*videoSelectionMode\s*===\s*'fixed'/,
+  'Recorded fixed-video mode disabled mandatory video continuity fallback');
 assert.doesNotMatch(demoSource, /selectedAudio\s*=\s*target\.audio\.trackId/,
   'video fallback retained a hidden AAC layer switch');
 
