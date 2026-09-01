@@ -8,25 +8,24 @@ export {
   startMsePlayback,
 } from './mse-playback-buffer.mjs';
 import {
-  MSE_SEEK_READ_BUDGET_BYTES,
   MsePlaybackMode,
-  MseRecordedSeekError,
+  MseRecordedSupplyError,
   MseStartupBufferError,
   TLV_VIDEO_UNAVAILABLE,
 } from './mse-playback-contract.mjs';
-import {createMsePlaybackFlowControl} from './mse-playback-flow-control.mjs';
 export {createMsePlaybackFlowControl} from './mse-playback-flow-control.mjs';
 export {
   MSE_SEEK_NO_COMMON_AV,
+  MSE_RECORDED_SUPPLY_STALLED,
   MSE_SEEK_READ_BUDGET_BYTES,
   MSE_STARTUP_NO_COMMON_AV,
   MsePlaybackMode,
   MseRecordedSeekError,
+  MseRecordedSupplyError,
   MseStartupBufferError,
   TLV_VIDEO_UNAVAILABLE,
 } from './mse-playback-contract.mjs';
 
-const DEFAULT_CHUNK_BYTES = 1024 * 1024;
 export function createMsePlaybackDamageRecovery({
   media,
   presentationStartUs = 0n,
@@ -510,6 +509,7 @@ export function createMsePlaybackResilienceController({
     get mode() { return mode; },
     get generation() { return currentGeneration; },
     get attemptedRaps() { return attempts.map(item => item.target); },
+    get lastPresentedTime() { return lastPresentedTime; },
     get videoFrameObservationSupported() { return frameObservationSupported; },
     reportDamage(damage) {
       if (!usable() || mode === MsePlaybackMode.AUDIO_ONLY ||
@@ -627,13 +627,6 @@ export function createMsePlaybackResilienceController({
   };
 }
 
-function abortError() {
-  if (typeof DOMException === 'function') return new DOMException('The seek was superseded.', 'AbortError');
-  const error = new Error('The seek was superseded.');
-  error.name = 'AbortError';
-  return error;
-}
-
 function playbackIntentSupersededError() {
   if (typeof DOMException === 'function') {
     return new DOMException('Playback intent superseded.', 'AbortError');
@@ -721,378 +714,4 @@ export function createMsePlaybackIntentCoordinator({
   };
 }
 
-function timestampUs(unit) {
-  if (unit.ptsValue === undefined || !unit.ptsTimescale) return null;
-  return BigInt(unit.ptsValue) * 1000000n / BigInt(unit.ptsTimescale);
-}
-
-function clampBigInt(value, minimum, maximum) {
-  return value < minimum ? minimum : value > maximum ? maximum : value;
-}
-
-export function createMseRecordedSeekSession({
-  targetTimeSeconds,
-  targetUs = BigInt(Math.round(targetTimeSeconds * 1000000)),
-  durationUs,
-  presentationStartUs = 0n,
-  presentationEndUs = BigInt(presentationStartUs) + BigInt(durationUs),
-  source,
-  demuxer,
-  media,
-  queues,
-  requiredTracks = ['video', 'audio'],
-  flowControl = createMsePlaybackFlowControl({
-    media, queues, requiredTracks, entryKind: 'seek',
-    entryTimeSeconds: Number(targetUs) / 1000000,
-  }),
-  signal = null,
-  isActive = () => true,
-  headReady,
-  candidateTrack = null,
-  candidateVideoTrack = candidateTrack ?? (requiredTracks.length === 1 && requiredTracks[0] === 'audio'
-    ? track => track.kind === 'audio'
-    : track => track.kind === 'video'),
-  trackPriority = null,
-  videoTrackPriority = trackPriority ?? (() => 0),
-  activateTrack = null,
-  activateVideoTrack = activateTrack ?? (async () => {}),
-  beforeLanding = async () => {},
-  estimateOffset = null,
-  waitForAppends = async () => {
-    await Promise.all([...queues.values()].map(queue => queue.waitStable?.() ?? Promise.resolve()));
-  },
-  checkError = () => {},
-  chunkBytes = DEFAULT_CHUNK_BYTES,
-  readBudgetBytes = MSE_SEEK_READ_BUDGET_BYTES,
-  probePrerollSeconds = 2,
-  onProgress = () => {},
-}) {
-  if (!source || typeof source.read !== 'function' || typeof source.size !== 'bigint') {
-    throw new TypeError('A recorded source with bigint size and read(offset, length) is required.');
-  }
-  if (!durationUs || durationUs <= 0n) throw new TypeError('durationUs must be positive.');
-  if (!demuxer || typeof demuxer.push !== 'function') throw new TypeError('A demuxer is required.');
-  if (typeof demuxer.setMseRecordedSeekConcealmentTarget !== 'function') {
-    throw new TypeError('The demuxer must support recorded-seek concealment targets.');
-  }
-  for (const method of [
-    'beginMseRecordedSeek', 'finishMseRecordedSeek', 'cancelMseRecordedSeek',
-  ]) {
-    if (typeof demuxer[method] !== 'function') {
-      throw new TypeError(`The demuxer must support ${method}().`);
-    }
-  }
-  if (typeof headReady !== 'function') throw new TypeError('headReady must be a function.');
-
-  const chunkSize = BigInt(chunkBytes);
-  const budget = BigInt(readBudgetBytes);
-  const sourceTargetUs = BigInt(presentationStartUs) + BigInt(targetUs);
-  const sourceEndUs = BigInt(presentationEndUs);
-  const toleranceUs = BigInt(Math.round(ENTRY_TOLERANCE_SECONDS * 1000000));
-  const probePrerollUs = BigInt(Math.round(probePrerollSeconds * 1000000));
-  const minimumLandingPrerollUs = requiredTracks.includes('video') &&
-    requiredTracks.includes('audio') ? 1000000n : 0n;
-  const tracks = new Map();
-  const cachedRanges = [];
-  const probeFrontiers = new Map();
-  const probeRaps = new Map();
-  let timelineBeforeTarget = {
-    ptsUs: BigInt(presentationStartUs),
-    offset: 0n,
-  };
-  let timelineAfterTarget = null;
-  let phase = 'idle';
-  let bytesRead = 0n;
-  let currentPushOffset = 0n;
-
-  const active = () => !signal?.aborted && isActive();
-  const ensureActive = () => { if (!active()) throw abortError(); };
-  const candidates = () => [...tracks.values()].filter(candidateVideoTrack);
-
-  const observeTrack = track => tracks.set(track.trackId, track);
-  const observeTrackRemoved = track => tracks.delete(track.trackId);
-  const observeAccessUnit = unit => {
-    if (phase !== 'head' && phase !== 'probe') return;
-    const track = tracks.get(unit.trackId);
-    if (!track || !candidateVideoTrack(track)) return;
-    if (track.kind === 'video' && unit.codec !== 'hevc') return;
-    if (track.kind === 'audio' && unit.codec !== 'aac-latm') return;
-    const pts = timestampUs(unit);
-    if (pts === null) return;
-    const sample = {
-      ptsUs: pts,
-      offset: unit.inputOffset === undefined ? currentPushOffset : BigInt(unit.inputOffset),
-    };
-    if (pts <= sourceTargetUs) {
-      if (!timelineBeforeTarget || pts > timelineBeforeTarget.ptsUs) {
-        timelineBeforeTarget = sample;
-      }
-    } else if (!timelineAfterTarget || pts < timelineAfterTarget.ptsUs) {
-      timelineAfterTarget = sample;
-    }
-    if (phase !== 'probe') return;
-    const previousFrontier = probeFrontiers.get(unit.trackId);
-    if (previousFrontier === undefined || pts > previousFrontier) probeFrontiers.set(unit.trackId, pts);
-    if ((track.kind === 'video' && !unit.randomAccess) || pts > sourceTargetUs + toleranceUs) return;
-    probeRaps.set(`${unit.trackId}:${pts}`, {
-      trackId: unit.trackId,
-      ptsUs: pts,
-      seconds: Number(unit.ptsValue) / unit.ptsTimescale,
-      restartOffset: BigInt(unit.restartOffset),
-    });
-  };
-
-  const cachedAt = offset => cachedRanges.find(item => item.start <= offset && item.end > offset);
-  const nextCachedStart = offset => cachedRanges.reduce(
-    (next, item) => item.start > offset && (next === null || item.start < next) ? item.start : next,
-    null,
-  );
-  const read = async (offset, wanted) => {
-    ensureActive();
-    const cached = cachedAt(offset);
-    if (cached) {
-      const available = cached.end - offset < wanted ? cached.end - offset : wanted;
-      const start = Number(offset - cached.start);
-      return cached.data.subarray(start, start + Number(available));
-    }
-    if (bytesRead >= budget) throw new MseRecordedSeekError('budget-exhausted');
-    const remainingSource = source.size - offset;
-    const remainingBudget = budget - bytesRead;
-    let length = wanted < remainingSource ? wanted : remainingSource;
-    if (length > remainingBudget) length = remainingBudget;
-    const next = nextCachedStart(offset);
-    if (next !== null && offset + length > next) length = next - offset;
-    if (length <= 0n) throw new MseRecordedSeekError('budget-exhausted');
-    const data = await source.read(offset, length);
-    ensureActive();
-    if (!(data instanceof Uint8Array)) throw new TypeError('source.read() must return Uint8Array.');
-    if (!data.byteLength) throw new MseRecordedSeekError('source-ended');
-    bytesRead += BigInt(data.byteLength);
-    cachedRanges.push({start: offset, end: offset + BigInt(data.byteLength), data});
-    cachedRanges.sort((left, right) => left.start < right.start ? -1 : left.start > right.start ? 1 : 0);
-    onProgress({phase, bytesRead, budgetBytes: budget, offset});
-    return data;
-  };
-
-  const push = async (data, offset) => {
-    ensureActive();
-    currentPushOffset = offset;
-    const accepted = await demuxer.push(data);
-    checkError();
-    if (!accepted) {
-      throw new MseRecordedSeekError('demux-failed', `The demuxer rejected input at byte ${offset}.`);
-    }
-  };
-
-  const frontiersPastTarget = () => {
-    const eligible = new Set(candidates().map(track => track.trackId));
-    const observed = [...probeFrontiers].filter(([trackId]) => eligible.has(trackId));
-    return observed.length > 0 && observed.every(([, frontier]) =>
-      frontier > sourceTargetUs + toleranceUs);
-  };
-
-  const bestRap = (minimumPrerollUs = 0n) => [...probeRaps.values()]
-    .filter(rap => rap.ptsUs <= sourceTargetUs - minimumPrerollUs &&
-      tracks.has(rap.trackId))
-    .sort((left, right) => {
-      if (left.ptsUs !== right.ptsUs) return left.ptsUs > right.ptsUs ? -1 : 1;
-      return videoTrackPriority(tracks.get(left.trackId)) - videoTrackPriority(tracks.get(right.trackId));
-    })[0] ?? null;
-
-  const hasUsablePrerollRap = () => {
-    const rap = bestRap(minimumLandingPrerollUs);
-    return rap !== null && rap.ptsUs + probePrerollUs >= sourceTargetUs;
-  };
-
-  const interpolatedTargetOffset = () => {
-    const before = timelineBeforeTarget;
-    const after = timelineAfterTarget;
-    if (before && after && after.ptsUs !== before.ptsUs && after.offset > before.offset) {
-      return before.offset + (after.offset - before.offset) * (sourceTargetUs - before.ptsUs) /
-        (after.ptsUs - before.ptsUs);
-    }
-    if (before && before.ptsUs > BigInt(presentationStartUs) && before.offset > 0n) {
-      return before.offset * (sourceTargetUs - BigInt(presentationStartUs)) /
-        (before.ptsUs - BigInt(presentationStartUs));
-    }
-    return null;
-  };
-
-  const runTransaction = async () => {
-    ensureActive();
-    phase = 'head';
-    await demuxer.setMseOutputEnabled(false);
-    await demuxer.setMseTimestampOffset?.(-BigInt(presentationStartUs));
-    let headOffset = 0n;
-    while (!headReady()) {
-      if (headOffset >= source.size) throw new MseRecordedSeekError('source-ended');
-      const data = await read(headOffset, chunkSize);
-      await push(data, headOffset);
-      headOffset += BigInt(data.byteLength);
-    }
-
-    ensureActive();
-    if (!await demuxer.setIndexDuration(sourceEndUs)) {
-      throw new MseRecordedSeekError('demux-failed', 'The demuxer rejected the recording duration.');
-    }
-    let estimateValue = estimateOffset === null
-      ? null : await estimateOffset(sourceTargetUs, source.size);
-    if (estimateValue === null || estimateValue === undefined) {
-      estimateValue = await demuxer.estimateOffset(sourceTargetUs, source.size);
-    }
-    if (estimateValue === null || estimateValue === undefined) {
-      throw new MseRecordedSeekError('demux-failed', 'The demuxer could not estimate the target byte position.');
-    }
-    const estimate = BigInt(estimateValue);
-    const estimatedWindow = source.size * BigInt(Math.round(probePrerollSeconds * 1000000)) / durationUs;
-    const window = clampBigInt(estimatedWindow, chunkSize, 2n * 1024n * 1024n);
-    let candidate = clampBigInt(estimate > window ? estimate - window : 0n, 0n,
-      source.size > chunkSize ? source.size - chunkSize : 0n);
-    let chosen = null;
-    const probedCandidates = new Set();
-    let earliestCandidate = candidate;
-
-    for (;;) {
-      ensureActive();
-      phase = 'probe';
-      probeFrontiers.clear();
-      probedCandidates.add(candidate);
-      if (candidate < earliestCandidate) earliestCandidate = candidate;
-      await demuxer.reposition(candidate, true);
-      let offset = candidate;
-      const probeEnd = candidate + window < source.size
-        ? candidate + window : source.size;
-      while (offset < probeEnd && !frontiersPastTarget() && !hasUsablePrerollRap()) {
-        const data = await read(offset, chunkSize);
-        await push(data, offset);
-        offset += BigInt(data.byteLength);
-      }
-      const landingRap = bestRap(minimumLandingPrerollUs);
-      chosen = landingRap && landingRap.ptsUs + probePrerollUs >= sourceTargetUs
-        ? landingRap : bestRap();
-      const chosenPrerollUs = chosen === null ? null : sourceTargetUs - chosen.ptsUs;
-      if (chosen && ((chosenPrerollUs >= minimumLandingPrerollUs &&
-          chosenPrerollUs <= probePrerollUs) || candidate === 0n)) break;
-      if (chosen && chosenPrerollUs < minimumLandingPrerollUs) {
-        const earlierCandidate = chosen.restartOffset > window
-          ? chosen.restartOffset - window : 0n;
-        candidate = earlierCandidate < candidate
-          ? earlierCandidate : candidate > window ? candidate - window : 0n;
-        continue;
-      }
-      if (candidate === 0n) {
-        while (offset < source.size) {
-          const data = await read(offset, chunkSize);
-          await push(data, offset);
-          offset += BigInt(data.byteLength);
-          chosen = bestRap();
-          if (chosen) break;
-        }
-        if (!chosen) throw new MseRecordedSeekError('no-rap');
-        break;
-      }
-      const interpolated = interpolatedTargetOffset();
-      const interpolatedCandidate = interpolated === null ? null
-        : interpolated > window ? interpolated - window : 0n;
-      let nextCandidate = interpolatedCandidate ??
-        (candidate > window ? candidate - window : 0n);
-      nextCandidate = clampBigInt(nextCandidate, 0n,
-        source.size > chunkSize ? source.size - chunkSize : 0n);
-      if (probedCandidates.has(nextCandidate)) {
-        nextCandidate = earliestCandidate > window ? earliestCandidate - window : 0n;
-      }
-      candidate = nextCandidate;
-    }
-
-    const chosenTrack = tracks.get(chosen.trackId);
-    await activateVideoTrack(chosenTrack, chosen);
-    ensureActive();
-    phase = 'landing';
-    let offset = chosen.restartOffset;
-    await demuxer.reposition(offset, true);
-    await beforeLanding(chosenTrack, chosen);
-    await demuxer.setMseOutputEnabled(true);
-    const videoConcealment = requiredTracks.includes('video');
-    await demuxer.setMseRecordedSeekConcealmentTarget(
-      videoConcealment ? sourceTargetUs : null);
-    try {
-      let pushedLandingInput = false;
-      while (!pushedLandingInput || !flowControl.entryCovered()) {
-        ensureActive();
-        if (offset >= source.size) throw new MseRecordedSeekError('source-ended');
-        const data = await read(offset, chunkSize);
-        await push(data, offset);
-        pushedLandingInput = true;
-        offset += BigInt(data.byteLength);
-        await waitForAppends();
-        await flowControl.afterPush(data.byteLength, active);
-      }
-    } finally {
-      if (videoConcealment) await demuxer.setMseRecordedSeekConcealmentTarget(null);
-    }
-    return {
-      targetUs,
-      sourceTargetUs,
-      estimateOffset: estimate,
-      restartOffset: chosen.restartOffset,
-      rapPresentationTimeUs: chosen.ptsUs,
-      nextOffset: offset,
-      bytesRead,
-      budgetBytes: budget,
-    };
-  };
-
-  const run = async () => {
-    ensureActive();
-    await demuxer.beginMseRecordedSeek();
-    try {
-      const result = await runTransaction();
-      ensureActive();
-      phase = 'committing';
-      await demuxer.finishMseRecordedSeek(BigInt(targetUs));
-      phase = 'complete';
-      return result;
-    } catch (error) {
-      const failedPhase = phase;
-      let diagnostics = null;
-      if (error instanceof Error && error.name !== 'AbortError') {
-        const entryRange = flowControl.entryRange();
-        diagnostics = {
-          targetTimeSeconds: Number(targetUs) / 1000000,
-          sourceTargetUs: sourceTargetUs.toString(),
-          phase: failedPhase,
-          entryCovered: flowControl.entryCovered(),
-          entryRange,
-          flowEntryTimeSeconds: flowControl.entryTimeSeconds,
-          flowRequiredTracks: flowControl.requiredTracks,
-          bytesRead: bytesRead.toString(),
-          budgetBytes: budget.toString(),
-          tracks: Object.fromEntries(requiredTracks.map(type => {
-            const queue = queues.get(type);
-            return [type, {
-              committed: queue?.committedRanges?.() ?? [],
-              buffered: queue?.bufferedRanges?.() ?? [],
-            }];
-          })),
-        };
-      }
-      await demuxer.cancelMseRecordedSeek();
-      phase = 'cancelled';
-      if (diagnostics !== null) {
-        error.diagnostics = diagnostics;
-        error.message += ` Diagnostics: ${JSON.stringify(diagnostics)}`;
-      }
-      throw error;
-    }
-  };
-
-  return {
-    run,
-    observeTrack,
-    observeTrackRemoved,
-    observeAccessUnit,
-    get phase() { return phase; },
-    get bytesRead() { return bytesRead; },
-    get budgetBytes() { return budget; },
-  };
-}
+export {createMseRecordedSeekSession} from './mse-recorded-seek.mjs';

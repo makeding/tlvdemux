@@ -5,6 +5,40 @@
 > labelled **legacy `tlvdemux` implementation**; this is a historical name,
 > not a separate product line.
 
+## [0.3.7] - 2026-08-31
+
+- Require recorded-seek head discovery to observe a timestamped candidate
+  playback access unit, not only the track catalogue, before sparse probing.
+  This preserves the recording's real normalization origin when signalling
+  precedes the first media access unit.
+- Add the 5.1 GiB variable-rate recording and its `452.985098s` target as a
+  direct 16 MiB-budget regression, plus probe diagnostics that identify the
+  restart and input offsets of observed RAPs.
+- Cross a bounded media-free span around a duration-linear estimate before
+  moving the sparse probe backward, and validate the 4.8 GiB recording's
+  `110.390227s` target with the same 16 MiB budget and browser-compatible
+  audio-track selection.
+- Reserve the landing share of that budget while refining sparse probes, so the
+  same recording's `197.260826s` discontinuous landing can continue past an
+  early AAC interval and commit exact common A/V.
+
+## [0.3.6] - 2026-08-31
+
+- Give an explicit recorded seek exclusive ownership of probe, landing, append,
+  and exact A/V commit so automatic layer switching, resilience recovery, and
+  stale asynchronous playback intents cannot replace its requested
+  `currentTime` or frozen entry clock.
+- Commit a landing from the remuxer's acknowledged coded A/V intervals while
+  still requiring an intersecting real browser-buffered range, tolerating
+  Chromium's imprecise HEVC RAP boundary without accepting genuinely
+  later-only media.
+- Keep probing and landing inside one 16 MiB budget with bounded 1 MiB reads,
+  stable RAP observations, earlier-AAC preroll, idempotent worker track replay,
+  and failure diagnostics that snapshot phase, entry decision, committed and
+  browser-buffered ranges, and byte consumption before cancellation.
+- Refresh generated CMake metadata during WASM builds so Nix Emscripten and
+  Ninja store-path upgrades do not reuse stale toolchain paths.
+
 ## [0.3.5] - 2026-08-29
 
 - Preserve the complete absolute `SourceBuffer.timestampOffset` across AAC

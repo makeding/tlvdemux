@@ -6,6 +6,11 @@ export interface RecordedSource {
   label: string;
   size: bigint;
   read(offset: bigint, length: bigint): Promise<Uint8Array>;
+  stream(offset?: bigint, options?: {
+    signal?: AbortSignal | null;
+    targetBytes?: number;
+    maxDelayMilliseconds?: number;
+  }): AsyncGenerator<Uint8Array, void, void>;
 }
 export interface DurationProbeRangeRequest {
   requestId: bigint | number;

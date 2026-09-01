@@ -1,8 +1,7 @@
 export interface MseAppendQueueOptions {
-  retryDelayMilliseconds?: number;
   backBufferSeconds?: number;
-  forwardBufferHighSeconds?: number;
   trimGranularitySeconds?: number;
+  getBackBufferReferenceTime?: (media: HTMLMediaElement) => number | null;
   getMediaError?: (media: HTMLMediaElement) => string;
   destroyOnSourceClose?: boolean;
 }
@@ -31,15 +30,21 @@ export declare class MseAppendQueue {
   queuedBytes: number;
   currentBytes: number;
   readonly currentOperation: unknown | null;
+  updateEndCount: number;
+  quotaExceededCount: number;
+  lastAppendStartedAtMilliseconds: number | null;
+  lastUpdateEndAtMilliseconds: number | null;
+  lastQuotaExceededAtMilliseconds: number | null;
   readonly committedMediaRanges: MseBufferedRange[];
   readonly waiters: unknown[];
   error: Error | null;
-  retryTimer: ReturnType<typeof setTimeout> | null;
   trimBeforeTime: number | null;
   forceTrim: boolean;
+  quotaBlocked: boolean;
   state: 'running' | 'quiescing' | 'idle' | 'destroyed';
   onUpdateEnd: (() => void) | null;
   scheduledTimestampOffsetSeconds: number;
+  getBackBufferReferenceTime: (media: HTMLMediaElement) => number | null;
   destroyOnSourceClose: boolean;
 
   constructor(
@@ -60,9 +65,30 @@ export declare class MseAppendQueue {
   bufferedAhead(): number;
   bufferedRanges(): MseBufferedRange[];
   committedRanges(): MseBufferedRange[];
+  diagnostics(nowMilliseconds?: number): {
+    state: 'running' | 'quiescing' | 'idle' | 'destroyed';
+    queuedBytes: number;
+    currentBytes: number;
+    pendingOperations: number;
+    updating: boolean;
+    currentOperation: string | null;
+    updateEndCount: number;
+    quotaExceededCount: number;
+    quotaBlocked: boolean;
+    pendingFragmentBytes: number;
+    backBufferReferenceTime: number | null;
+    pendingTrimBeforeTime: number | null;
+    millisecondsSinceAppendStarted: number | null;
+    millisecondsSinceUpdateEnd: number | null;
+    millisecondsSinceQuotaExceeded: number | null;
+  };
+  trimBackBuffer(force?: boolean): void;
+  canReclaimBackBuffer(): boolean;
   trimBefore(time: number, force?: boolean): void;
+  waitQuotaResolved(): Promise<void>;
   waitBelow(limit: number): Promise<void>;
-  isForwardBlocked(): boolean;
+  mediaFragmentCount(): number;
+  hasAppendCapacity(): boolean;
   isStable(): boolean;
   waitStable(): Promise<void>;
   isFlowControlled(limit: number): boolean;

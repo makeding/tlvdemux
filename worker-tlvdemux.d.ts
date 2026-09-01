@@ -57,7 +57,9 @@ export interface WorkerDemuxer {
   clearAutomaticLayerSwitch(): Promise<void>;
   setMseTimestampOffset(timestampOffsetUs: bigint): Promise<void>;
   setMseRecordedSeekConcealmentTarget(presentationTimeUs: bigint | null): Promise<void>;
+  getMseRecordedSeekLandingEvidence(): Promise<createTlvDemuxModule.MseRecordedSeekLandingEvidence>;
   beginMseRecordedSeek(): Promise<void>;
+  flushMseRecordedSeekLanding(): Promise<void>;
   finishMseRecordedSeek(playbackPositionUs: bigint): Promise<void>;
   cancelMseRecordedSeek(): Promise<void>;
   setMsePlaybackPosition(presentationTimeUs: bigint): Promise<void>;
@@ -74,6 +76,7 @@ export interface WorkerDemuxer {
   finalizeIndex(): Promise<boolean>;
   setIndexDuration(durationUs: bigint): Promise<boolean>;
   estimateOffset(targetUs: bigint, sourceSize: bigint): Promise<bigint | null>;
+  previousSync(targetUs: bigint): Promise<createTlvDemuxModule.SeekPoint | null>;
   seekPointCount(): Promise<number>;
   indexState(): Promise<createTlvDemuxModule.IndexState>;
   applicationEntry(contextId: number): string | null;

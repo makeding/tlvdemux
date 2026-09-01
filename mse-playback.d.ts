@@ -2,6 +2,7 @@ import type {MseAppendQueue, MseBufferedRange} from './mse-append-queue';
 
 export declare const MSE_STARTUP_NO_COMMON_AV: 'MSE_STARTUP_NO_COMMON_AV';
 export declare const MSE_SEEK_NO_COMMON_AV: 'MSE_SEEK_NO_COMMON_AV';
+export declare const MSE_RECORDED_SUPPLY_STALLED: 'MSE_RECORDED_SUPPLY_STALLED';
 export declare const TLV_VIDEO_UNAVAILABLE: 'TLV_VIDEO_UNAVAILABLE';
 export declare const MSE_SEEK_READ_BUDGET_BYTES: 16777216;
 export type MseRequiredTrack = 'video' | 'audio';
@@ -17,6 +18,13 @@ export declare const MsePlaybackMode: Readonly<{
 export declare class MseStartupBufferError extends Error {
   readonly code: typeof MSE_STARTUP_NO_COMMON_AV;
   constructor(message?: string);
+}
+
+export declare class MseRecordedSupplyError extends Error {
+  readonly code: typeof MSE_RECORDED_SUPPLY_STALLED;
+  readonly reason: string;
+  readonly diagnostics: unknown;
+  constructor(reason: string, diagnostics?: unknown);
 }
 
 export type MseRecordedSeekFailureReason =
@@ -45,11 +53,16 @@ export interface MseRecordedSeekDiagnostics {
   }>;
 }
 
-export interface MseMediaClock { currentTime: number; }
-export type MsePlaybackQueues = Map<string, Pick<
+export interface MseMediaClock { currentTime: number; playbackRate?: number; }
+export type MsePlaybackQueue = Pick<
   MseAppendQueue,
-  'bufferedRanges' | 'committedRanges' | 'trimBefore' | 'waitFlowControlled' | 'waitStable'
->>;
+  'bufferedRanges' | 'committedRanges' | 'trimBefore' | 'waitStable'
+> & Pick<Partial<MseAppendQueue>,
+  'queuedBytes' | 'error' | 'diagnostics' | 'waitFlowControlled' |
+  'waitQuotaResolved' | 'canReclaimBackBuffer' | 'trimBackBuffer' |
+  'quotaBlocked' | 'quotaExceededCount'
+>;
+export type MsePlaybackQueues = Map<string, MsePlaybackQueue>;
 
 export interface MsePlaybackFlowControlOptions {
   media: MseMediaClock;
@@ -64,7 +77,6 @@ export interface MsePlaybackFlowControlOptions {
   startupNoProgressBytes?: number;
   queueHighBytes?: number;
   backBufferSeconds?: number;
-  wait?: (milliseconds: number) => Promise<void>;
 }
 
 export interface MsePlaybackFlowControl {
@@ -75,11 +87,32 @@ export interface MsePlaybackFlowControl {
     requiredTracks: readonly MseRequiredTrack[], entryTimeSeconds?: number,
   ): MseRequiredTrack[];
   entryRange(): MseBufferedRange | null;
+  /** Native-video plus a <=250 ms AAC-tail gap; never sufficient on its own. */
+  heldFrameEntryRange(): MseBufferedRange | null;
   entryCovered(): boolean;
   commonAhead(): number;
+  highWatermarkSeconds(): number;
+  lowWatermarkSeconds(): number;
+  startupMinimumSeconds(): number;
+  readonly state: 'priming' | 'feeding' | 'quota-wait' | 'rebuffering' | 'ended' | 'error';
+  diagnostics(): Record<string, unknown>;
+  noteSourceFragment(offset: bigint, byteLength: number): void;
+  noteSourceProgress(nextOffset: bigint): void;
+  canStartFreshRecorded(): boolean;
+  queuePressure(): {
+    limitBytes: number;
+    tracks: Record<string, number>;
+    details: Record<string, ReturnType<MseAppendQueue['diagnostics']> | null>;
+  };
+  notifyBufferedChange(): void;
+  notifyRateChange(): void;
+  notifyWaiting(): Record<string, unknown>;
+  end(): void;
+  fail(error: unknown): void;
   afterPush(byteLength: number, isActive?: () => boolean): Promise<{
     commonAhead: number;
     entryCovered: boolean;
+    state: MsePlaybackFlowControl['state'];
   }>;
 }
 
@@ -188,6 +221,7 @@ export interface MsePlaybackResilienceController {
   readonly mode: MsePlaybackModeValue;
   readonly generation: unknown;
   readonly attemptedRaps: number[];
+  readonly lastPresentedTime: number | null;
   readonly videoFrameObservationSupported: boolean;
   reportDamage(damage: Record<string, unknown>): {start: number; end: number} | null;
   notifyWaiting(): {start: number; end: number} | MsePlaybackModeChange | null;
@@ -268,10 +302,40 @@ export interface MseSeekDemuxer {
   setMseOutputEnabled(enabled: boolean): unknown | Promise<unknown>;
   setMseRecordedSeekConcealmentTarget(presentationTimeUs: bigint | null): unknown | Promise<unknown>;
   beginMseRecordedSeek(): unknown | Promise<unknown>;
+  flushMseRecordedSeekLanding(): unknown | Promise<unknown>;
+  /** Evidence emitted only after a complete pre-target frame reaches a stable RAP. */
+  getMseRecordedSeekLandingEvidence?(): MseRecordedSeekLandingEvidence | null |
+    Promise<MseRecordedSeekLandingEvidence | null>;
   finishMseRecordedSeek(playbackPositionUs: bigint): unknown | Promise<unknown>;
   cancelMseRecordedSeek(): unknown | Promise<unknown>;
   setIndexDuration(durationUs: bigint): boolean | Promise<boolean>;
   estimateOffset(targetUs: bigint, sourceSize: bigint): bigint | null | Promise<bigint | null>;
+  previousSync?(targetUs: bigint): {
+    presentationTimeUs: bigint;
+    /** Safe mux-configuration restart offset, not the RAP packet offset. */
+    signallingOffset: bigint;
+    randomAccessOffset?: bigint;
+    videoTrackId: bigint | number;
+  } | null | Promise<{
+    presentationTimeUs: bigint;
+    randomAccessOffset: bigint;
+    videoTrackId: bigint | number;
+  } | null>;
+  /** Optional direct-WASM timestamp anchor used for bounded sparse planning. */
+  broadcastClock?(): {
+    mediaTimeValue: bigint;
+    mediaTimeTimescale: number;
+    inputOffset: bigint;
+  } | null | Promise<{
+    mediaTimeValue: bigint;
+    mediaTimeTimescale: number;
+    inputOffset: bigint;
+  } | null>;
+}
+export interface MseRecordedSeekLandingEvidence {
+  landingMode: 'exact' | 'held-frame';
+  heldFrameTimeUs?: bigint;
+  recoveryTimeUs?: bigint;
 }
 export interface MseRecordedSeekRap {
   trackId: bigint | number;
@@ -287,6 +351,7 @@ export interface MseRecordedSeekProgress {
 }
 export interface MseRecordedSeekResult {
   targetUs: bigint;
+  requestedTimeSeconds: number;
   sourceTargetUs: bigint;
   estimateOffset: bigint;
   restartOffset: bigint;
@@ -294,6 +359,11 @@ export interface MseRecordedSeekResult {
   nextOffset: bigint;
   bytesRead: bigint;
   budgetBytes: bigint;
+  landingMode: 'exact' | 'held-frame';
+  landingEvidence: MseRecordedSeekLandingEvidence | null;
+  heldFrameTimeSeconds: number | null;
+  recoveryTimeSeconds: number | null;
+  heldFrameRange: MseBufferedRange | null;
 }
 export interface MseRecordedSeekSessionOptions {
   targetTimeSeconds?: number;
@@ -323,7 +393,6 @@ export interface MseRecordedSeekSessionOptions {
   checkError?: () => void;
   chunkBytes?: number;
   readBudgetBytes?: number;
-  probePrerollSeconds?: number;
   onProgress?: (progress: MseRecordedSeekProgress) => void;
 }
 export interface MseRecordedSeekSession {

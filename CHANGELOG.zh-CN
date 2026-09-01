@@ -4,6 +4,30 @@
 > `tlvdemux` 命名空间。相关条目以 **旧 `tlvdemux` 实现** 标记；这只是历史名称，
 > 并非独立产品线。
 
+## [0.3.7] - 2026-08-31
+
+- 录制 seek 的 head discovery 不再仅凭轨道目录完成；进入稀疏 probe 前还必须观察到带时间戳的
+  候选 playback access unit。即使信令早于首个媒体 access unit，也能保留录制的真实
+  normalization origin。
+- 将 5.1 GiB 可变码率录制及其 `452.985098s` 目标加入 16 MiB budget 的直接回归，并增加
+  可定位已观测 RAP 的 restart/input offset 的 probe diagnostics。
+- 稀疏 probe 会先跨过时长线性 estimate 周边不含媒体的有界区间，再向后调整；同时用浏览器
+  兼容的音轨选择，在同一个 16 MiB budget 内验证 4.8 GiB 录制的 `110.390227s` 目标。
+- 稀疏 probe 调整期间会为 landing 保留预算，使同一录制在 `197.260826s` 的不连续 landing
+  能继续读过提前结束的 AAC 区间并提交精确的共同 A/V。
+
+## [0.3.6] - 2026-08-31
+
+- 让显式录制 seek 独占 probe、landing、append 和精确 A/V commit；自动层切换、韧性恢复及
+  过期的异步 playback intent 不再能够改写用户请求的 `currentTime` 或冻结的入口时钟。
+- 以 remuxer 已确认的 coded A/V 区间作为 landing commit 依据，同时仍要求与浏览器真实缓冲
+  区间相交；允许 Chromium 不精确的 HEVC RAP 边界，但不会接受确实只位于目标之后的媒体。
+- 在同一个 16 MiB budget 内使用有界的 1 MiB 读取、稳定 RAP 观测、更早的 AAC preroll 和
+  幂等的 worker 轨道重放；失败时会在取消前保存阶段、入口判定、已提交/浏览器缓冲区间及
+  字节消耗等诊断信息。
+- WASM 构建时刷新生成的 CMake metadata，避免 Nix 中 Emscripten 或 Ninja store path 更新后
+  继续复用失效的旧工具链路径。
+
 ## [0.3.5] - 2026-08-29
 
 - 在 AAC 配置变化、reposition、层切换和音轨复用过程中保持完整的绝对

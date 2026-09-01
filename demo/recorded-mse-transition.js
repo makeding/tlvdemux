@@ -24,6 +24,25 @@ export function createRecordedSeekConcealmentLogger({
   };
 }
 
+/**
+ * Keep the user-facing seek result separate from the RAP used to decode it.
+ * A held frame is a successful natural-playback degradation: the requested
+ * clock remains installed and sequential input restores the normal picture.
+ */
+export function describeRecordedSeekLanding(result, requestedTimeSeconds) {
+  const landingMode = result.landingMode ?? 'exact';
+  if (landingMode === 'held-frame') {
+    const recovery = result.recoveryTimeSeconds ??
+      (result.recoveryTimeUs === null || result.recoveryTimeUs === undefined
+        ? null : Number(result.recoveryTimeUs) / 1000000);
+    return recovery === null
+      ? `シーク ${requestedTimeSeconds.toFixed(3)}s は直前の利用可能な映像を保持し、そのまま自動復帰します`
+      : `シーク ${requestedTimeSeconds.toFixed(3)}s は直前の利用可能な映像を保持し、` +
+        `${recovery.toFixed(3)}s で自動復帰します`;
+  }
+  return `シーク ${requestedTimeSeconds.toFixed(3)}s の A/V を準備しました`;
+}
+
 export function createMseVideoRecoveryLogger({
   gapRecovery, observeConcealment, appendLog,
 }) {
@@ -192,8 +211,7 @@ export function createRecordedMseTransitionManager({
       const result = await seekSession.run();
       candidate.seekResult = result;
       candidate.demuxer = demuxer;
-      appendLog(`録画候補 seek ${candidate.target.toFixed(3)}s、` +
-        `単一 budget ${Number(result.bytesRead) / (1024 * 1024)} MiB`);
+      appendLog(describeRecordedSeekLanding(result, candidate.target));
     },
   });
   return manager;

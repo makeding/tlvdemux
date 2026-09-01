@@ -112,6 +112,22 @@ struct MseVideoRecoveryEvent {
     MseVideoRecoveryPhase phase = MseVideoRecoveryPhase::ObservationStarted;
 };
 
+// Evidence produced by the native remuxer for an explicit recorded seek.
+// `HeldFrame` means a complete decoded picture that began no later than the
+// requested clock was extended to the following stable RAP. It never means
+// that a future RAP was duplicated backward to fabricate a landing frame.
+enum class MseRecordedSeekLandingMode {
+    Exact,
+    HeldFrame,
+};
+
+struct MseRecordedSeekLandingEvidence {
+    MseRecordedSeekLandingMode landing_mode =
+        MseRecordedSeekLandingMode::Exact;
+    std::optional<std::int64_t> held_frame_time_us;
+    std::optional<std::int64_t> recovery_time_us;
+};
+
 struct MseVideoColor {
     std::uint16_t primaries = 0;
     std::uint16_t transfer = 0;
@@ -208,9 +224,14 @@ public:
     void clearAutomaticLayerSwitch();
     /** Set the recording-to-MSE timeline offset shared by startup and seeks. */
     void setTimestampOffset(std::int64_t timestamp_offset_us);
-    /** Arm or clear the one-shot source target for recorded-seek concealment. */
+    /**
+     * Arm or clear the one-shot recorded-seek target in the recording source
+     * presentation timeline (before any MSE timestamp offset).
+     */
     void setRecordedSeekConcealmentTarget(
         std::optional<std::int64_t> presentation_time_us);
+    /** Return native proof of a one-shot held-frame recorded seek landing. */
+    MseRecordedSeekLandingEvidence recordedSeekLandingEvidence() const;
     /** Fence automatic layer decisions for one explicit recorded seek. */
     void beginMseRecordedSeek();
     /** Commit exact coverage and resume automatic decisions at the target clock. */
