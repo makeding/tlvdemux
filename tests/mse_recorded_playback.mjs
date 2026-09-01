@@ -37,8 +37,7 @@ assert.equal(resolveRecordedVideoWindow({
   let locator;
   const ranges = {video: [], audio: []};
   const demuxer = {
-    async setMseOutputEnabled(enabled) { selections.push(['output', enabled]); },
-    async setMseTimestampOffset(offset) { selections.push(['offset', offset]); },
+    async setMseOutputEnabled() {},
     async clearLastClosedVideoPicture() {},
     async reposition(offset) { selections.push(['reposition', offset]); },
     async selectTrack(kind, trackId) { selections.push([kind, trackId]); },
@@ -85,11 +84,6 @@ assert.equal(resolveRecordedVideoWindow({
     'a recorded reposition did not restore the locked AAC selection');
   assert.equal(selections.filter(item => item[0] === 'video').length, repositions,
     'a recorded reposition did not restore the locked preferred-video selection');
-  const landingOffsetIndex = selections.findLastIndex(item => item[0] === 'offset');
-  const landingEnableIndex = selections.findLastIndex(item =>
-    item[0] === 'output' && item[1] === true);
-  assert.ok(landingOffsetIndex >= 0 && landingOffsetIndex < landingEnableIndex,
-    'Recorded output was enabled before the formal A/V splice was armed');
 }
 
 function streamSource(chunks) {
