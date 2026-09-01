@@ -297,14 +297,6 @@ may contain video through the target while its AAC ends before the target. The
 single formal landing must reserve enough of the same 16 MiB budget to continue
 to the following selected AAC and commit exact common A/V; probe refinement must
 not consume bytes that are required for that sequential landing.
-This recording is also the authoritative general seek gate at media times
-`1s`, `60s`, `139.276545s`, `300s`, and `450s`. A probe may not enter formal
-landing merely because it found the closest video RAP: it must first establish
-a landing plan whose selected AAC crosses the exact target from that RAP's safe
-restart offset. Probe reads must leave enough of the same 16 MiB ledger to
-execute that plan. In particular, a video interval beginning at `139.276545s`
-while selected AAC ends at `139.262647s` is an uncloseable candidate, not a
-reason to keep reading sequentially until the budget is exhausted.
 The monotonic playback-intent token and its single destructive commit lane are
 owned by the public `tlvdemux/mse-playback` SDK, not by the demo. Integrations
 create tokens for explicit seeks, layer switches, and recovery candidates and
@@ -341,14 +333,10 @@ media-free span without turning into an unbounded sequential scan and preserves
 the source-read budget needed by formal landing. If one side is still
 unavailable, the next bounded probe moves backward. It must not
 bisect toward the file head and spend the shared budget in an unrelated earlier
-interval. A real RAP not later than the target is eligible only when probe
-evidence forms a selected A/V landing plan from its safe restart offset:
-selected AAC must be present on both sides of the target, and the remaining
-shared budget must cover the still-unread span required by formal landing.
-There is no arbitrary one-second minimum and proximity alone is not viability.
-Formal landing remains the final proof that both selected audio and video cover
-the exact target. At the formal landing, the sole reposition uses that RAP's
-safe restart offset.
+interval. The closest real RAP not later than the target is valid preroll;
+there is no arbitrary one-second minimum. Formal landing, not probe distance,
+proves that both selected audio and video cover the exact target. At the formal
+landing, the sole reposition uses that RAP's safe restart offset.
 Before the sequential landing input, the session gives the HEVC remuxer the
 original source target as a one-shot recorded-seek concealment target. It remains
 armed across out-of-PTS-order input
