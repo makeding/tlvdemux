@@ -75,8 +75,6 @@ export interface MsePlaybackFlowControl {
     requiredTracks: readonly MseRequiredTrack[], entryTimeSeconds?: number,
   ): MseRequiredTrack[];
   entryRange(): MseBufferedRange | null;
-  /** Native-video plus a <=250 ms AAC-tail gap; never sufficient on its own. */
-  heldFrameEntryRange(): MseBufferedRange | null;
   entryCovered(): boolean;
   commonAhead(): number;
   afterPush(byteLength: number, isActive?: () => boolean): Promise<{
@@ -271,28 +269,10 @@ export interface MseSeekDemuxer {
   setMseRecordedSeekConcealmentTarget(presentationTimeUs: bigint | null): unknown | Promise<unknown>;
   beginMseRecordedSeek(): unknown | Promise<unknown>;
   flushMseRecordedSeekLanding(): unknown | Promise<unknown>;
-  /** Evidence emitted only after a complete pre-target frame reaches a stable RAP. */
-  getMseRecordedSeekLandingEvidence?(): MseRecordedSeekLandingEvidence | null |
-    Promise<MseRecordedSeekLandingEvidence | null>;
   finishMseRecordedSeek(playbackPositionUs: bigint): unknown | Promise<unknown>;
   cancelMseRecordedSeek(): unknown | Promise<unknown>;
   setIndexDuration(durationUs: bigint): boolean | Promise<boolean>;
   estimateOffset(targetUs: bigint, sourceSize: bigint): bigint | null | Promise<bigint | null>;
-  /** Optional direct-WASM timestamp anchor used for bounded sparse planning. */
-  broadcastClock?(): {
-    mediaTimeValue: bigint;
-    mediaTimeTimescale: number;
-    inputOffset: bigint;
-  } | null | Promise<{
-    mediaTimeValue: bigint;
-    mediaTimeTimescale: number;
-    inputOffset: bigint;
-  } | null>;
-}
-export interface MseRecordedSeekLandingEvidence {
-  landingMode: 'exact' | 'held-frame';
-  heldFrameTimeUs?: bigint;
-  recoveryTimeUs?: bigint;
 }
 export interface MseRecordedSeekRap {
   trackId: bigint | number;
@@ -308,7 +288,6 @@ export interface MseRecordedSeekProgress {
 }
 export interface MseRecordedSeekResult {
   targetUs: bigint;
-  requestedTimeSeconds: number;
   sourceTargetUs: bigint;
   estimateOffset: bigint;
   restartOffset: bigint;
@@ -316,11 +295,6 @@ export interface MseRecordedSeekResult {
   nextOffset: bigint;
   bytesRead: bigint;
   budgetBytes: bigint;
-  landingMode: 'exact' | 'held-frame';
-  landingEvidence: MseRecordedSeekLandingEvidence | null;
-  heldFrameTimeSeconds: number | null;
-  recoveryTimeSeconds: number | null;
-  heldFrameRange: MseBufferedRange | null;
 }
 export interface MseRecordedSeekSessionOptions {
   targetTimeSeconds?: number;
@@ -350,8 +324,6 @@ export interface MseRecordedSeekSessionOptions {
   checkError?: () => void;
   chunkBytes?: number;
   readBudgetBytes?: number;
-  /** Bytes reserved for the one formal landing after bounded backward planning. */
-  landingReserveBytes?: number;
   probePrerollSeconds?: number;
   onProgress?: (progress: MseRecordedSeekProgress) => void;
 }

@@ -247,13 +247,13 @@ same 16 MiB no-progress limit still stops input with
 An explicit recorded seek is a separate public playback-entry contract. From
 head discovery through every RAP probe and the final A/V preroll,
 `createMseRecordedSeekSession()` shares one hard 16 MiB source-read budget.
-From the first explicit-seek intent until an exact or explicitly degraded
-held-frame landing has been appended and committed, that seek owns the demux/MSE
+From the first explicit-seek intent until exact selected-video and selected-audio
+coverage has been appended and committed, that seek owns the demux/MSE
 transaction. Automatic layer switching is fenced for the complete probe,
 landing, append, and commit interval: an already pending switch is cancelled,
 new health or damage observations may warm the same preferred/rainfall trackers
 but cannot start, complete, or resume an automatic switch, and automatic mode is
-reevaluated only after the requested target is committed. The seek may choose a RAP
+reevaluated only after the exact target is committed. The seek may choose a RAP
 and matching AAC from either member of the automatic pair as its landing source;
 that choice is part of the explicit seek and is not an automatic layer switch.
 If the seek fails, is replaced, or terminates, `cancelMseRecordedSeek()` releases
@@ -262,34 +262,27 @@ that uncommitted transaction on later input.
 It must still preserve the requested `MediaElement.currentTime`, perform one
 formal landing, share the single 16 MiB budget, and never map a nonzero seek back
 to playback entry zero.
-The MediaElement must not move its clock to an earlier partial common range
+The MediaElement must not start playback from an earlier partial common range
 while that landing is still being appended. The frozen requested `currentTime`
-is installed only at the formal exact or held-frame commit, after
+is installed only at the formal exact-coverage commit, after
 `finishMseRecordedSeek()` succeeds, and playback may start only after that commit.
 For that commit, successful `SourceBuffer.updateend` events are the append
 acknowledgement, while the remuxer's mapped media-segment intervals are the
-coded-coverage evidence. Chromium may report a `SourceBuffer.buffered`
+exact coded-coverage evidence. Chromium may report a `SourceBuffer.buffered`
 start a few milliseconds after the requested time when an HEVC RAP has a later
 PTS than a dependent leading picture. A seek is complete when committed coded
 A/V both cover the exact target and the real common `buffered` range intersects
 that same committed interval; the imprecise browser boundary must not turn an
-otherwise decodable landing into `MSE_SEEK_NO_COMMON_AV`. When exact video is
-unavailable, a held-frame landing is also successful if the remuxer proves a
-complete decodable sample strictly before the target and extends that sample to
-the next stable RAP, matching natural playback through damaged input. The media
-clock stays at the requested target; the held frame is a picture source, not a
-replacement landing time. A selected AAC tail ending no more than one 250 ms mux
-fragment before the target may commit in this degraded mode and must resume from
-normal sequential input without timestamp remapping. Browser `buffered` alone
-never authorizes either exact or degraded coverage.
+otherwise decodable landing into `MSE_SEEK_NO_COMMON_AV`. Browser `buffered`
+alone never relaxes exact coverage, so genuinely later-only A/V still fails.
 The `819.749134s` regression in the authoritative recording exercises this
 case: Chromium reports the neighbouring RAP at about `819.752s` while the
 committed coded interval covers the requested clock.
 The 5.1 GiB recording
 `20260731-101-180000_9220c865-bfab-4d4d-8651-824b8e91a9e1.mmts` adds a
 variable-rate sparse-probe boundary at media time `452.985098s`. Its
-`453.647142s` source target must find a real preceding RAP, land exact or
-held-frame A/V, and remain within the same 16 MiB budget; repeatedly probing neighbouring
+`453.647142s` source target must find a real preceding RAP, land exact common
+A/V, and remain within the same 16 MiB budget; repeatedly probing neighbouring
 byte windows whose normalized access units remain near timestamp zero is not
 valid progress.
 The 4.8 GiB recording
@@ -297,22 +290,21 @@ The 4.8 GiB recording
 variable-rate boundary at media time `110.390227s` (`110.924893s` source
 target). A duration-linear byte estimate that lands in repeated media-free
 windows is not progress; the same bounded seek must refine its byte position
-from real timestamped observations and form a valid landing without scanning
+from real timestamped observations and form exact common A/V without scanning
 the recording. The same recording also has a discontinuous A/V landing at
 media time `197.260826s` (`197.795492s` source target): the first landing output
 may contain video through the target while its AAC ends before the target. The
 single formal landing must reserve enough of the same 16 MiB budget to continue
-to the following selected AAC and prefer exact common A/V; backward planning must
+to the following selected AAC and commit exact common A/V; probe refinement must
 not consume bytes that are required for that sequential landing.
 This recording is also the authoritative general seek gate at media times
-`1s`, `60s`, `139.276545s`, `150.886703s`, `300s`, and `450s`. The planner
-defaults to searching backward for the last usable frame rather than rejecting
-an otherwise natural damaged-stream presentation. In particular, video covering
-`150.550401..151.234423s` with selected AAC ending at `150.846647s` for target
-`150.886703s`, and video beginning at `139.276545s` while AAC ends at
-`139.262647s`, must use exact coverage when available or a proved held-frame
-landing; neither may consume the complete ledger and then fail merely because
-the final AAC fragment is short.
+`1s`, `60s`, `139.276545s`, `300s`, and `450s`. A probe may not enter formal
+landing merely because it found the closest video RAP: it must first establish
+a landing plan whose selected AAC crosses the exact target from that RAP's safe
+restart offset. Probe reads must leave enough of the same 16 MiB ledger to
+execute that plan. In particular, a video interval beginning at `139.276545s`
+while selected AAC ends at `139.262647s` is an uncloseable candidate, not a
+reason to keep reading sequentially until the budget is exhausted.
 The monotonic playback-intent token and its single destructive commit lane are
 owned by the public `tlvdemux/mse-playback` SDK, not by the demo. Integrations
 create tokens for explicit seeks, layer switches, and recovery candidates and
@@ -327,29 +319,67 @@ committed video interval `758.107362..760.242818s` and committed audio interval
 When a worker replays its track catalogue after `reposition()`, acknowledging
 the already selected non-null video or audio track is idempotent and must not
 reset, flush, or discard the in-flight seek landing.
-Overlapping planning and landing ranges are reused, and no source request is
-issued after exhaustion. The public state machine is `bootstrap -> backward-plan
--> single-landing -> exact-commit | held-frame-commit | failure`. It does not
-retain the superseded probe/locate/validate branches. Bootstrap establishes the
-track catalogue and a real timestamp origin. Backward planning uses real index,
-clock, and access-unit anchors to find the closest safe restart whose decoded
-history contains a complete frame before the target, while reserving bytes for
-formal landing. Sparse input uses bounded backward jumps rather than scanning
-adjacent empty windows or bisecting toward an unrelated file region.
-At formal landing, the sole reposition uses the chosen safe restart offset.
-The remuxer first prefers exact selected A/V coverage. If source damage crosses
-the target, it may extend only the last complete pre-target video sample to the
-next stable RAP decode boundary. It must not manufacture the target picture from
-a future RAP when no previous picture exists. AAC remains on its original
-timeline; a bounded trailing fragment gap is reported as degraded landing
-evidence and normal sequential reads resume immediately after commit. The
-session seals partial seek fragments once without another read, end-of-input
-transition, or second reposition. No prior complete frame, no stable following
-RAP, no safe restart, EOF, an AAC gap beyond the fragment bound, or budget
-exhaustion without exact or held-frame evidence fails with
-`MSE_SEEK_NO_COMMON_AV`. It must never be reported as
-`MSE_STARTUP_NO_COMMON_AV`, cause a hidden media-element seek, or fall back to
-scanning the complete recording.
+Overlapping probe and landing ranges are reused, and no source request is issued
+after exhaustion. Head discovery, probes, and landing use 1 MiB reads so a
+single coarse read cannot consume one eighth of that shared budget before the
+stable recovery RAP is reached. Head discovery is not complete merely because
+the track catalogue exists: it must also observe a candidate playback access
+unit with a valid timestamp so later sparse probes retain the recording's real
+normalization origin. A RAP before the requested media time is valid
+preroll: seek continues until the common buffered A/V interval covers the requested time,
+then normal 15-second/8-second backpressure resumes. The probe records RAPs only
+through target + 50 ms. It stops when the observed candidate frontiers pass the
+target, then selects the closest acceptable observed RAP not later than the
+target without letting an earlier head-discovery RAP short-circuit the locate
+window or waiting for an unobserved layer.
+Probe interpolation seeds its earlier anchor from the public
+union start at source offset zero, then retains the closest observations before
+and after the target instead of an access-unit history whose anchors can age
+out. The duration-linear estimate seeds one short preceding sequential locate;
+an isolated read at the estimate is not a bracket and may not consume the shared
+ledger. Real observations from the sequential locate drive later interpolation.
+For a target within the two-second preroll interval of presentation start, the
+already discovered presentation-start RAP is validated directly; a later RAP
+whose restart offset cannot reconstruct mux configuration is not a safe landing.
+This crosses a media-free span without turning into an unbounded sequential scan
+and preserves the source-read budget needed by formal landing. If one side is still
+unavailable, the next bounded probe moves backward. It must not
+bisect toward the file head and spend the shared budget in an unrelated earlier
+interval. A real RAP not later than the target is eligible only when probe
+evidence forms a selected A/V landing plan from its safe restart offset: the
+remuxer's normalized selected-A/V coded ranges must cross the target and remain
+crossed after one following input chunk seals pending mux samples; the remaining
+shared budget must cover the still-unread span required by formal landing.
+There is no arbitrary one-second minimum and proximity alone is not viability.
+The presentation-start RAP is the sole preroll boundary exception: when its
+video already crosses the target and normalized AAC is short by at most the
+250 ms mux fragment duration, formal replay plus the explicit seek-fragment
+seal remains eligible because no earlier source bytes exist.
+Formal landing remains the final proof that both selected audio and video cover
+the exact target. At the formal landing, the sole reposition uses that RAP's
+safe restart offset.
+After replay reaches the validated endpoint, formal landing explicitly seals
+the remuxer's partial seek fragments once. This publishes already validated
+target-crossing AAC without another source read, end-of-input transition, or
+second reposition.
+Before the sequential landing input, the session gives the HEVC remuxer the
+original source target as a one-shot recorded-seek concealment target. It remains
+armed across out-of-PTS-order input
+until exact entry coverage succeeds or the landing fails, then the session
+explicitly clears it. No second reposition occurs. If that target
+lies in a selected-video source-damage episode, the
+remuxer fills only that hole with a still picture after the existing stable-GOP
+check: it extends the last complete pre-damage sample to the stable RAP decode
+boundary, or, when landing contains no earlier picture, duplicates the stable
+RAP first frame at the target while retaining the original RAP at its original
+DTS/PTS. AAC remains on its original continuous timeline. This fill never moves
+`MediaElement.currentTime`, performs another landing seek, rescans the source,
+or increases the shared 16 MiB budget. Later-only or otherwise disjoint raw A/V
+is therefore valid when the fill creates common coverage at the exact target.
+No usable pre-damage frame and no stable following RAP, no RAP, EOF, remaining
+disjoint A/V, or budget exhaustion fails with `MSE_SEEK_NO_COMMON_AV` and stops
+reading. It must never be reported as `MSE_STARTUP_NO_COMMON_AV`, cause a hidden
+media-element seek, or fall back to scanning the complete recording.
 Every recorded-seek failure snapshots the requested target, phase, exact-entry
 decision, committed coded A/V ranges, real browser-buffered A/V ranges, and
 shared-budget consumption before cancellation so the failed boundary can be

@@ -74,18 +74,9 @@ assert.doesNotMatch(demo, /reposition\(item\.seekResult\.nextOffset/,
   'recorded candidate performs a second reposition after formal landing');
 assert.match(mediaTransaction, /promotedMedia\.currentTime\s*=\s*target;/,
   'recorded candidate does not preserve the exact user-requested time');
-assert.match(mediaTransaction, /candidate\.seekResult\?\.requestedTimeSeconds[\s\S]{0,160}candidate\.target/,
-  'recorded candidate does not prefer the SDK-approved requested seek clock');
 assert.doesNotMatch(mediaTransaction,
   /promotedMedia\.currentTime\s*=\s*Math\.max/,
   'recorded candidate still substitutes a later buffered landing time');
-assert.doesNotMatch(mediaTransaction,
-  /currentTime\s*=\s*candidate\.seekResult\?\.(?:heldFrameTime(?:Seconds|Us)|recoveryTime(?:Seconds|Us))/,
-  'recorded candidate replaces the requested clock with a held frame or recovery time');
-assert.match(recordedTransition, /landingMode\s*=\s*result\.landingMode\s*\?\?\s*'exact'/,
-  'demo does not distinguish exact and held-frame seek results');
-assert.match(recordedTransition, /直前の利用可能な映像を保持[\s\S]{0,120}自動復帰/,
-  'held-frame result does not describe automatic natural-playback recovery');
 assert.ok(demo.split('\n').length - 1 < 2000,
   'demo.js was not kept below 2000 lines after recorded-seek extraction');
 const msePlaybackVersions = [demo, adapter, liveTransition, recordedTransition]

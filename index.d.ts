@@ -842,15 +842,6 @@ declare namespace createTlvDemuxModule {
     mseMaxAudioChannels?: number;
   }
 
-  /** Evidence published by the completed recorded-seek landing. */
-  interface MseRecordedSeekLandingEvidence {
-    landingMode: "exact" | "held-frame";
-    /** The prior decodable video frame retained at the requested media clock. */
-    heldFrameTimeUs: bigint | null;
-    /** The first forward presentation time at which normal video resumes. */
-    recoveryTimeUs: bigint | null;
-  }
-
   interface TlvDemuxer extends Deletable {
     push(bytes: ArrayBufferView): boolean;
     pushFromHeap(address: number, size: number): boolean;
@@ -874,7 +865,6 @@ declare namespace createTlvDemuxModule {
     clearAutomaticLayerSwitch(): void;
     setMseTimestampOffset(timestampOffsetUs: bigint): void;
     setMseRecordedSeekConcealmentTarget(presentationTimeUs?: bigint | null): void;
-    getMseRecordedSeekLandingEvidence(): MseRecordedSeekLandingEvidence;
     beginMseRecordedSeek(): void;
     flushMseRecordedSeekLanding(): void;
     finishMseRecordedSeek(playbackPositionUs: bigint): void;

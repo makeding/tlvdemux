@@ -207,19 +207,19 @@ A/V buffered 区間であり、設定した live 起動 buffer が成立した�
 
 録画の明示 seek は別の public playback-entry contract です。head discovery、すべての RAP probe、
 正式な A/V preroll は `createMseRecordedSeekSession()` の単一 16 MiB source-read budget を共有します。
-最初の明示 seek intent から、exact または明示的な held-frame landing が append、commit されるまで、
+最初の明示 seek intent から、選択映像と選択音声の exact coverage が append、commit されるまで、
 その seek が demux/MSE transaction を占有します。automatic layer switch は probe、landing、
 append、commit の全区間で fence されます。既存の pending switch は中止し、health／damage
 観測は同じ通常／降雨 tracker を warm できますが、automatic switch の開始、完了、再開は
-できません。automatic mode の再評価は要求 target の commit 後に一度だけ行います。seek は
+できません。automatic mode の再評価は exact target の commit 後に一度だけ行います。seek は
 通常または降雨 layer の RAP と対応 AAC を landing source として直接選べますが、これは明示
 seek の一部であり automatic layer switch ではありません。要求された
 seek が失敗、置換、終了した場合、`cancelMseRecordedSeek()` は未 commit transaction 内で蓄積した
 startup、health、damage decision を後続 input で再生せずに fence を解除します。
 `MediaElement.currentTime`、一度だけの formal landing、共有 16 MiB budget を維持し、0 以外の
 seek を playback entry zero に写像してはいけません。
-landing の append 中に MediaElement clock を前の common range へ戻してはいけません。
-固定した要求 `currentTime` は `finishMseRecordedSeek()` 成功後の exact または held-frame formal
+landing の append 中に、それより前の部分的な common range から MediaElement の再生を開始しては
+いけません。固定した要求 `currentTime` は `finishMseRecordedSeek()` 成功後の exact-coverage formal
 commit でのみ設定し、再生開始もその commit 後だけ許可します。
 この commit では、成功した `SourceBuffer.updateend` を append の確認とし、remuxer が出力した mapping
 済み media segment 区間を exact coded coverage の根拠とします。HEVC RAP の PTS が、それに依存する
@@ -227,37 +227,26 @@ leading picture より後の場合、Chromium は `SourceBuffer.buffered` の開
 報告することがあります。commit 済み coded A/V が exact target をともに含み、実際の common
 `buffered` range が同じ commit 済み区間と交差すれば seek は完了です。この browser 境界の誤差だけで
 decode 可能な landing を `MSE_SEEK_NO_COMMON_AV` にしてはいけません。一方、browser `buffered` だけで
-exact coverage を緩和しません。ただし exact video がない場合、target より前の最後の完全な
-decode 済み sample を次の stable RAP まで延長できることを remuxer が証明すれば held-frame landing
-として成功します。これは損傷した入力を自然再生したときの画面停止と同じで、要求 `currentTime` は
-変更しません。選択 AAC の末尾が target より前でも差が 250 ms の mux fragment 一つ以内なら、
-timestamp を写像し直さず degraded mode で commit し、通常の sequential input から直ちに復帰します。
-browser `buffered` だけでは exact／held-frame のどちらも許可しません。authoritative recording の
+exact coverage を緩和せず、実際に later-only の A/V は失敗させます。authoritative recording の
 `819.749134s` regression では、隣接 RAP が約 `819.752s` と報告されても commit 済み coded 区間が
 要求 clock を覆うことを確認します。
 5.1 GiB の録画
 `20260731-101-180000_9220c865-bfab-4d4d-8651-824b8e91a9e1.mmts` は media time
 `452.985098s` の variable-rate sparse-probe 境界も検証します。source target
-`453.647142s` より前の実在 RAP を発見し、同じ 16 MiB budget 内で exact または
-held-frame A/V を landing しなければなりません。正規化後の access unit が timestamp zero 付近に留まる隣接
+`453.647142s` より前の実在 RAP を発見し、同じ 16 MiB budget 内で exact common A/V を
+landing しなければなりません。正規化後の access unit が timestamp zero 付近に留まる隣接
 byte window を繰り返し probe しても、正常な進捗とはみなしません。
 4.8 GiB の録画
 `20260731-102-170000_272b7cdc-8d85-4f77-91df-b935f3ae0e96.mmts` は media time
 `110.390227s`（source target `110.924893s`）の第二の variable-rate 境界を検証します。
 duration に比例した byte estimate が media を含まない window を繰り返し指す場合、それを
 進捗とはみなしません。同じ有界 seek が実際の timestamp 観測から byte 位置を補正し、録画
-全体を scan せず有効な landing を形成しなければなりません。同じ録画の media time
+全体を scan せず exact common A/V を形成しなければなりません。同じ録画の media time
 `197.260826s`（source target `197.795492s`）には不連続な A/V landing があります。最初の
 landing output は target を含む video を出力しても AAC が target より前で終わる場合があります。
 同じ 16 MiB budget の一部を正式な sequential landing 用に残し、後続の選択 AAC まで読み進めて
-exact common A/V を優先します。backward planning が landing に必要な byte を消費してはいけません。
-同じ録画は media time `1s`、`60s`、`139.276545s`、`150.886703s`、`300s`、`450s`
-の general seek gate でもあります。planner は自然再生で可能な画面停止を拒絶せず、target より前の
-最後の利用可能 frame を後方検索します。video `150.550401..151.234423s`、選択 AAC end
-`150.846647s`、target `150.886703s` の組合せ、および video start `139.276545s` に対して AAC end
-`139.262647s` となる組合せは、exact coverage が得られればそれを使用し、得られなければ証明済みの
-held-frame landing を使用します。最後の AAC fragment が短いだけで budget 全体を消費して失敗しては
-いけません。
+exact common A/V を commit しなければなりません。probe refinement が landing に必要な byte を
+消費してはいけません。
 単調増加する playback-intent token と単一の destructive commit lane は demo ではなく public な
 `tlvdemux/mse-playback` SDK が所有します。integration は明示 seek、layer switch、recovery candidate
 ごとに token を作り、すべての非同期 read／commit の前後で token と固定 demux identity を検証します。
@@ -269,23 +258,39 @@ demo は browser event を転送し、SDK が許可した結果を install す�
 worker が `reposition()` 後に track catalogue を再通知した場合、選択済みの non-null video／audio
 track を同じ ID で確認しても idempotent であり、進行中の seek landing を reset、flush、破棄しては
 いけません。
-planning と landing が重なる範囲は再利用し、budget 消費後は source request を発行しません。public
-state machine は `bootstrap -> backward-plan -> single-landing -> exact-commit |
-held-frame-commit | failure` とし、置換済みの probe／locate／validate branch は残しません。
-bootstrap は track catalogue と実 timestamp origin を確立します。backward planning は実 index、clock、
-access-unit anchor を使い、target より前の完全な frame を decode history に含む最も近い安全な restart を
-選び、formal landing 用 byte を予約します。sparse input では隣接する空 window を scan せず、無関係な
-file 区間へ二分せず、有界な後方 jump を使用します。
-formal landing の一度だけの reposition は選択した安全な restart offset を使用します。remuxer はまず
-exact selected A/V coverage を優先します。source damage が target を横切る場合だけ、target より前の
-最後の完全な video sample を次の stable RAP decode boundary まで延長できます。前画面が存在しない場合、
-future RAP の先頭 frame を target の代用にしてはいけません。AAC は元の timeline を維持し、末尾の
-fragment gap が上限内なら degraded landing evidence として報告し、commit 後すぐ通常の sequential read
-を再開します。session は追加 read、end-of-input transition、二回目の reposition を行わず partial seek
-fragment を一度だけ seal します。前の完全な frame なし、安定した後続 RAP なし、安全な restart なし、
-EOF、AAC gap が fragment 上限超過、または exact／held-frame evidence のない budget 消費は
-`MSE_SEEK_NO_COMMON_AV` で失敗します。`MSE_STARTUP_NO_COMMON_AV` として報告したり、MediaElement の
-hidden seek や録画全体の scan に fallback してはいけません。
+probe と landing が重なる範囲は再利用し、budget 消費後は source request を発行しません。head discovery、
+probe、landing は 1 MiB 単位で読み、stable recovery RAP に届く前に一度の粗い read が共有 budget の
+8 分の 1 を消費しないようにします。track catalogue が存在するだけでは head discovery は完了せず、
+後続の sparse probe が録画の実際の normalization origin を保持できるよう、有効な timestamp を持つ
+候補 playback access unit も観測しなければなりません。要求時刻より
+前の RAP は正常な preroll であり、共通 A/V buffered 区間が user の要求時刻を覆うまで seek を継続し、
+その後だけ通常の 15 秒停止／8 秒再開 backpressure へ移行します。probe は target + 50 ms までの RAP
+だけを記録します。target より後でない RAP を 2 秒 preroll window 内で観測した時点で停止し、それが
+なければ観測済み候補の解析前縁が target を越えた時点で停止します。未観測 layer を待たず target
+より後でない観測済みの最も近い有効な RAP を選択します。probe interpolation は source offset 0 の public union start を
+以前の anchor として初期化し、保持上限で anchor が失われる AU history ではなく、target の直前と直後に
+最も近い観測を保持します。duration 比例 estimate は短い前側 probe と有界な後側 probe で挟んでから
+通常の interpolation を行います。これにより media を含まない区間を越えながら無制限な sequential
+scan を避け、正式な landing に必要な source-read budget を残します。片側がまだ得られない場合、
+次の bounded probe は後方へ移動します。
+file 先頭との中間へ二分して無関係な過去区間で共有 budget を消費してはいけません。target より後でない
+最も近い実在 RAP は正常な preroll であり、任意の 1 秒 minimum は設けません。probe 距離ではなく formal
+landing が選択 audio／video の双方による exact target coverage を証明します。正式
+landing の一度だけの reposition はその RAP の安全な restart offset を使用します。順次 landing input
+より前に session は元の source target を一回限りの recorded-seek concealment target として HEVC
+remuxer へ渡します。
+input の PTS 順序が前後しても exact entry coverage の成立または landing failure まで保持し、その後 session
+が明示的に clear します。二回目の reposition は行いません。その target が選択映像の
+source-damage episode 内にある場合だけ、既存の stable-GOP 検証後に静止画で穴を埋めます。損傷前の
+完全な最終 sample があればその duration を stable RAP の decode boundary まで延長し、landing 内に
+前画面がなければ stable RAP の先頭 frame を target に複製します。この場合も元の RAP は元の DTS/PTS
+に残し、AAC は元の連続 timeline を維持します。この填補は `MediaElement.currentTime` を変更せず、
+追加 landing seek、source の再 scan、単一 16 MiB budget の増加を行いません。したがって生の共通 A/V
+が target より後だけ、または非交差でも、填補によって exact target の共通 coverage が形成されれば
+正常です。利用可能な損傷前 frame も安定後続 RAP もない場合、RAP なし、EOF、填補後も A/V が非交差、
+または budget 消費の場合は `MSE_SEEK_NO_COMMON_AV` で読み込みを停止します。これを
+`MSE_STARTUP_NO_COMMON_AV` として報告したり、MediaElement の hidden seek や録画全体の scan に
+fallback してはいけません。
 すべての recorded-seek failure は cancel 前に、要求 target、phase、exact-entry decision、commit 済み
 coded A/V ranges、実 browser-buffered A/V ranges、共有 budget の消費量を snapshot し、再度
 instrumentation 付きで実行せずに境界を判別できるようにします。
