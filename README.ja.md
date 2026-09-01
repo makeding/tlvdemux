@@ -230,12 +230,6 @@ decode 可能な landing を `MSE_SEEK_NO_COMMON_AV` にしてはいけません
 exact coverage を緩和せず、実際に later-only の A/V は失敗させます。authoritative recording の
 `819.749134s` regression では、隣接 RAP が約 `819.752s` と報告されても commit 済み coded 区間が
 要求 clock を覆うことを確認します。
-5.1 GiB の録画
-`20260731-101-180000_9220c865-bfab-4d4d-8651-824b8e91a9e1.mmts` は media time
-`452.985098s` の variable-rate sparse-probe 境界も検証します。source target
-`453.647142s` より前の実在 RAP を発見し、同じ 16 MiB budget 内で exact common A/V を
-landing しなければなりません。正規化後の access unit が timestamp zero 付近に留まる隣接
-byte window を繰り返し probe しても、正常な進捗とはみなしません。
 単調増加する playback-intent token と単一の destructive commit lane は demo ではなく public な
 `tlvdemux/mse-playback` SDK が所有します。integration は明示 seek、layer switch、recovery candidate
 ごとに token を作り、すべての非同期 read／commit の前後で token と固定 demux identity を検証します。
@@ -249,9 +243,7 @@ track を同じ ID で確認しても idempotent であり、進行中の seek l
 いけません。
 probe と landing が重なる範囲は再利用し、budget 消費後は source request を発行しません。head discovery、
 probe、landing は 1 MiB 単位で読み、stable recovery RAP に届く前に一度の粗い read が共有 budget の
-8 分の 1 を消費しないようにします。track catalogue が存在するだけでは head discovery は完了せず、
-後続の sparse probe が録画の実際の normalization origin を保持できるよう、有効な timestamp を持つ
-候補 playback access unit も観測しなければなりません。要求時刻より
+8 分の 1 を消費しないようにします。要求時刻より
 前の RAP は正常な preroll であり、共通 A/V buffered 区間が user の要求時刻を覆うまで seek を継続し、
 その後だけ通常の 15 秒停止／8 秒再開 backpressure へ移行します。probe は target + 50 ms までの RAP
 だけを記録します。target より後でない RAP を 2 秒 preroll window 内で観測した時点で停止し、それが
