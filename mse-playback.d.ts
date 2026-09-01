@@ -202,7 +202,6 @@ export interface MsePlaybackResilienceController {
   readonly mode: MsePlaybackModeValue;
   readonly generation: unknown;
   readonly attemptedRaps: number[];
-  readonly lastPresentedTime: number | null;
   readonly videoFrameObservationSupported: boolean;
   reportDamage(damage: Record<string, unknown>): {start: number; end: number} | null;
   notifyWaiting(): {start: number; end: number} | MsePlaybackModeChange | null;

@@ -275,26 +275,10 @@ notification cancels any deferred quota retry and pumps it synchronously. The
 reached `waiting` at `15.554s` with 9.7 seconds of common A/V, 33.2 MiB and 24
 pending video operations, no current video append, an idle SourceBuffer, and
 122 completed video `updateend` events. Leaving that runnable queue idle is a
-supply-state-machine failure. A quota failure is not itself progress: the same
-append must not be retried on a timer or demand notification until a completed
-`remove()` has reclaimed media or the failed coalesced batch has been reduced.
-The authoritative run reached `quota=330/retry=true` while the video
-SourceBuffer was idle, proving that unconditional retry is a supply-state-machine
-spin rather than recovery. Recorded video trimming uses the most recently
-presented compositor frame as its clock, not `MediaElement.currentTime`; at 2x
-the media clock may reach about `15.5s` while the visible frame remains near
-`5s`, and removing through `currentTime - 3s` would delete undecoded video needed
-for natural playback. Audio and video keep bounded back buffers, while older
-navigation is served by the existing bounded recorded-seek transaction.
-
-Calling `play()` only to open a `ManagedMediaSource` is an activation step, not
-authorization to start fresh recorded playback. The element must be paused
-again before the opened source is returned and before media append begins; the
-only visible recorded start remains the common-A/V high-watermark gate. In the
-authoritative Chrome run, 2x playback became effective at `2.428s` and video
-entered `DEMUXER_UNDERFLOW` at `7.246s` while audio remained
-`BUFFERING_HAVE_ENOUGH`. Any startup path that bypasses the initial 30 media
-seconds is a startup supply failure.
+supply-state-machine failure. Recorded playback retains at most three media
+seconds behind the playhead in the demo; older navigation is served by the
+existing bounded recorded-seek transaction instead of pinning hundreds of MiB
+of 8K coded frames in the active SourceBuffer.
 
 Live playback has no timestamp-zero entry. Its startup entry is the first common
 A/V buffered interval produced by the current stream, and the media clock is

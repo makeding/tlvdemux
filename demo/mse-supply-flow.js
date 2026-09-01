@@ -42,11 +42,3 @@ export function describeRecordedSupplyStart(commonAhead, playbackRate, startupWa
   return `録画共通バッファ ${commonAhead.toFixed(1)}s で再生開始 ` +
     `(${playbackRate}×, startup high=${startupWatermarkSeconds.toFixed(1)}s)`;
 }
-
-export async function activateManagedMediaSourceForBuffering(media, opened) {
-  // WebKit requires a play request before ManagedMediaSource becomes active,
-  // but that request must not become the recorded playback start.
-  Promise.resolve(media.play()).catch(() => {});
-  await opened;
-  media.pause();
-}

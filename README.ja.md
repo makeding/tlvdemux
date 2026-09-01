@@ -228,20 +228,8 @@ playback demand または `waiting` 通知は deferred quota retry を取り消�
 `20260731-102-170000_272b7cdc-8d85-4f77-91df-b935f3ae0e96.mmts` の 2x regression は `15.554s` の
 `waiting` で共通 A/V 9.7 秒、video 33.2 MiB／pending 24、current append なし、SourceBuffer idle、
 video `updateend` 122 回に到達しました。この実行可能な queue を idle のまま残すことは supply state machine
-failure です。quota failure 自体は進捗ではありません。同じ append は、完了した `remove()` が media を
-回収するか、失敗した結合 batch を縮小するまで、timer や demand 通知だけで再試行してはいけません。
-authoritative run が video SourceBuffer idle のまま `quota=330/retry=true` に達したことは、無条件 retry が
-復旧ではなく supply state machine の空転であることを示します。録画 video の trim clock は
-`MediaElement.currentTime` ではなく compositor が最後に実提示した frame とします。2x では media clock が
-約 `15.5s` に達しても表示 frame は約 `5s` に留まり得るため、`currentTime - 3s` まで remove すると自然再生に
-必要な未 decode video を削除します。audio／video の back buffer は有界に保ち、それより前への移動は
-既存の有界 recorded-seek transaction が担当します。
-
-`ManagedMediaSource` を開くためだけの `play()` は activation であり、fresh recorded playback の開始許可では
-ありません。opened source を返して media append を始める前に element を再び pause し、可視の録画開始は
-共通 A/V high-watermark gate だけが所有します。authoritative Chrome run では 2x playback が `2.428s` に
-有効になり、audio が `BUFFERING_HAVE_ENOUGH` のまま video は `7.246s` に `DEMUXER_UNDERFLOW` へ入りました。
-最初の 30 media 秒を迂回する startup path は startup supply failure です。
+failure です。demo の録画再生は playhead より後方の media を最大 3 秒だけ保持します。それより前への移動は
+既存の有界 recorded-seek transaction が担当し、active SourceBuffer に数百 MiB の 8K coded frame を固定しません。
 
 Live 再生には timestamp 0 の入口はありません。起動入口は現在の stream が生成した最初の共通
 A/V buffered 区間であり、設定した live 起動 buffer が成立した後だけ media clock をその区間へ

@@ -506,7 +506,6 @@ export function createMsePlaybackResilienceController({
     get mode() { return mode; },
     get generation() { return currentGeneration; },
     get attemptedRaps() { return attempts.map(item => item.target); },
-    get lastPresentedTime() { return lastPresentedTime; },
     get videoFrameObservationSupported() { return frameObservationSupported; },
     reportDamage(damage) {
       if (!usable() || mode === MsePlaybackMode.AUDIO_ONLY ||

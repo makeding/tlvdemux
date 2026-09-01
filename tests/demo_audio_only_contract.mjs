@@ -133,11 +133,8 @@ assert.match(demo,
 assert.match(demo, /const BACK_BUFFER_SECONDS = 3;/,
   'recorded 8K playback retains an excessive active SourceBuffer back buffer');
 assert.match(demo,
-  /quota=\$\{detail\.quotaExceededCount\}\/blocked=\$\{detail\.quotaBlocked\}[\s\S]{0,120}batch=\$\{formatBytes\(BigInt\(detail\.appendBatchLimitBytes\)\)\}[\s\S]{0,160}trimRef=\$\{detail\.backBufferReferenceTime/,
-  'waiting diagnostics cannot distinguish quota spin from reclaim or batch progress');
-assert.match(demo,
-  /activateManagedMediaSourceForBuffering\(elements\.video, opened\)/,
-  'ManagedMediaSource activation can escape the recorded startup watermark gate');
+  /quota=\$\{detail\.quotaExceededCount\}\/retry=\$\{detail\.retryScheduled\}/,
+  'waiting diagnostics cannot distinguish idle quota retry from a stuck updateend');
 
 {
   const supplyModule = await import(
@@ -155,21 +152,6 @@ assert.match(demo,
   assert.equal(coordinator.canStartFreshRecorded({
     liveMode: false, startTimeSeconds: 0, reuseMedia: false, playbackFlow,
   }), true, '2x fresh playback did not start at the 30-second high watermark');
-
-  let resolveOpened;
-  const opened = new Promise(resolve => { resolveOpened = resolve; });
-  const activationCalls = [];
-  const activation = supplyModule.activateManagedMediaSourceForBuffering({
-    play() { activationCalls.push('play'); return Promise.resolve(); },
-    pause() { activationCalls.push('pause'); },
-  }, opened);
-  await Promise.resolve();
-  assert.deepEqual(activationCalls, ['play'],
-    'ManagedMediaSource was not activated before waiting for sourceopen');
-  resolveOpened();
-  await activation;
-  assert.deepEqual(activationCalls, ['play', 'pause'],
-    'ManagedMediaSource activation escaped as an ungated recorded playback start');
 }
 
 {
