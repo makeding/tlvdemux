@@ -20,36 +20,21 @@ export function selectRequiredQueues(queues, requiredTracks) {
 }
 
 export function commonBufferedRanges(queues, requiredTracks = ['video', 'audio']) {
-  return commonQueueRanges(queues, requiredTracks, 'bufferedRanges');
-}
-
-export function commonCommittedRanges(queues, requiredTracks = ['video', 'audio']) {
-  return commonQueueRanges(queues, requiredTracks, 'committedRanges');
-}
-
-function commonQueueRanges(queues, requiredTracks, accessor) {
   const tracks = normalizeRequiredTracks(requiredTracks);
   const selected = selectRequiredQueues(queues, tracks);
   if (selected.size !== tracks.length) return [];
   let common = null;
   for (const queue of selected.values()) {
-    if (typeof queue[accessor] !== 'function') return [];
-    const ranges = queue[accessor]();
+    const ranges = queue.bufferedRanges();
     common = common === null ? ranges : intersectBufferedRanges(common, ranges);
     if (!common.length) break;
   }
   return common ?? [];
 }
 
-export function coveringBufferedRange(ranges, timeSeconds, toleranceSeconds) {
-  return ranges.find(range =>
-    range.start <= timeSeconds + toleranceSeconds && range.end >= timeSeconds) ?? null;
-}
-
 export function coveringRange(queues, timeSeconds, toleranceSeconds, requiredTracks) {
-  return coveringBufferedRange(
-    commonBufferedRanges(queues, requiredTracks), timeSeconds, toleranceSeconds,
-  );
+  return commonBufferedRanges(queues, requiredTracks).find(range =>
+    range.start <= timeSeconds + toleranceSeconds && range.end >= timeSeconds) ?? null;
 }
 
 export function commonBufferedAhead(

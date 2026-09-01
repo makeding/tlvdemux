@@ -1,9 +1,7 @@
 import {
   ENTRY_TOLERANCE_SECONDS,
-  commonCommittedRanges,
   commonBufferedAhead,
   commonBufferedRanges,
-  coveringBufferedRange,
   coveringRange,
   normalizeRequiredTracks,
   selectRequiredQueues,
@@ -20,7 +18,6 @@ export function createMsePlaybackFlowControl({
   entryKind = 'startup',
   entryTimeSeconds = entryKind === 'startup' ? 0 : media.currentTime,
   entryToleranceSeconds = entryKind === 'seek' ? 0.000002 : ENTRY_TOLERANCE_SECONDS,
-  browserBoundaryToleranceSeconds = ENTRY_TOLERANCE_SECONDS,
   highSeconds = 15,
   lowSeconds = 8,
   startupNoProgressBytes = MSE_SEEK_READ_BUDGET_BYTES,
@@ -43,19 +40,6 @@ export function createMsePlaybackFlowControl({
   };
   const liveEntryRange = () => commonBufferedRanges(queues, currentRequiredTracks).find(range =>
     range.end > media.currentTime + 0.001) ?? null;
-  const seekEntryRange = () => {
-    const committed = coveringBufferedRange(
-      commonCommittedRanges(queues, currentRequiredTracks),
-      entryTimeSeconds,
-      entryToleranceSeconds,
-    );
-    if (!committed) return null;
-    const buffered = commonBufferedRanges(queues, currentRequiredTracks).find(range =>
-      range.start <= entryTimeSeconds + browserBoundaryToleranceSeconds &&
-      range.end >= entryTimeSeconds &&
-      range.start < committed.end && range.end > committed.start);
-    return buffered ? committed : null;
-  };
 
   const api = {
     entryKind,
@@ -72,7 +56,6 @@ export function createMsePlaybackFlowControl({
     },
     entryRange() {
       if (entryKind === 'live') return liveEntryRange();
-      if (entryKind === 'seek') return seekEntryRange();
       return coveringRange(
         queues, entryTimeSeconds, entryToleranceSeconds, currentRequiredTracks,
       );

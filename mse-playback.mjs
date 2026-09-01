@@ -2,7 +2,6 @@ import {
   ENTRY_TOLERANCE_SECONDS,
 } from './mse-playback-buffer.mjs';
 export {
-  commonCommittedRanges,
   commonBufferedAhead,
   commonBufferedRanges,
   startMsePlayback,
@@ -1055,23 +1054,6 @@ export function createMseRecordedSeekSession({
     } catch (error) {
       await demuxer.cancelMseRecordedSeek();
       phase = 'cancelled';
-      if (error instanceof Error && error.name !== 'AbortError') {
-        const diagnostics = {
-          targetTimeSeconds: Number(targetUs) / 1000000,
-          sourceTargetUs: sourceTargetUs.toString(),
-          bytesRead: bytesRead.toString(),
-          budgetBytes: budget.toString(),
-          tracks: Object.fromEntries(requiredTracks.map(type => {
-            const queue = queues.get(type);
-            return [type, {
-              committed: queue?.committedRanges?.() ?? [],
-              buffered: queue?.bufferedRanges?.() ?? [],
-            }];
-          })),
-        };
-        error.diagnostics = diagnostics;
-        error.message += ` Diagnostics: ${JSON.stringify(diagnostics)}`;
-      }
       throw error;
     }
   };

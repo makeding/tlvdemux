@@ -152,7 +152,6 @@ function correspondingAudio(tracks, current, video) {
 function queue(ranges) {
   return {
     bufferedRanges() { return ranges; },
-    committedRanges() { return ranges; },
     trimBefore() {},
     waitFlowControlled() { return Promise.resolve(); },
     waitStable() { return Promise.resolve(); },

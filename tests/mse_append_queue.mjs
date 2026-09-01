@@ -91,8 +91,6 @@ const {
   assert.equal(queue.queue.at(0), undefined);
   sourceBuffer.complete();
   await queue.waitIdle();
-  assert.deepEqual(queue.committedRanges(), [{start: 0, end: 1.178056}],
-    'splice/remove did not retain only the successfully appended mapped interval');
 }
 
 {
@@ -143,25 +141,6 @@ async function tick() {
   sourceBuffer.complete();
   await queue.waitIdle();
   assert.equal(queue.queuedBytes, 0);
-  assert.deepEqual(queue.committedRanges(), [{start: 0, end: 12}],
-    'replaceFrom did not remove old committed media before recording replacement media');
-}
-
-{
-  const sourceBuffer = new FakeSourceBuffer();
-  const mediaSource = new FakeMediaSource(sourceBuffer);
-  const media = {currentTime: 0, error: null, buffered: sourceBuffer.buffered};
-  const queue = new MseAppendQueue(mediaSource, media, 'video/mp4', null, {
-    forwardBufferHighSeconds: Infinity,
-  });
-  queue.setTimestampOffset(819.686);
-  queue.append(new Uint8Array([1]), {startTimeSeconds: 0, endTimeSeconds: 2});
-  assert.deepEqual(queue.committedRanges(), [],
-    'an in-flight append was treated as committed before updateend');
-  sourceBuffer.complete();
-  await queue.waitIdle();
-  assert.deepEqual(queue.committedRanges(), [{start: 819.686, end: 821.686}],
-    'successful updateend did not commit the mapped coded interval');
 }
 
 {
@@ -186,8 +165,6 @@ async function tick() {
   assert.deepEqual(sourceBuffer.operations.at(-1), ['append', 3]);
   sourceBuffer.complete();
   await queue.waitIdle();
-  assert.deepEqual(queue.committedRanges(), [],
-    'append operations without timing invented committed coded coverage');
 }
 
 for (const mime of [
@@ -217,10 +194,6 @@ for (const mime of [
     ['append', 2],
     ['append', 3],
   ], `${mime} splice did not preserve remove -> timestampOffset -> changeType -> init -> media`);
-  assert.deepEqual(queue.committedRanges(), [{
-    start: 8 + (audio ? -0.714638 : -1),
-    end: 9 + (audio ? -0.714638 : -1),
-  }], `${mime} did not commit mapped media timing after updateend`);
 }
 
 {
@@ -288,8 +261,6 @@ for (const mime of [
   sourceBuffer.complete();
   await queue.waitIdle();
   assert.equal(queue.queuedBytes, 0);
-  assert.deepEqual(queue.committedRanges(), [],
-    'QuotaExceeded retry without timing invented committed coded coverage');
 }
 
 {
@@ -300,8 +271,8 @@ for (const mime of [
     endOfStream() { this.readyState = 'ended'; },
   };
   const queue = end => ({
+    sourceBuffer: {remove: (start, finish) => removals.push([start, finish])},
     bufferedRanges: () => [{start: 0, end}],
-    removeRange: (start, finish) => removals.push([start, finish]),
     waitIdle: async () => undefined,
   });
   const result = await finalizeMseMediaSource(mediaSource, [queue(10), queue(9)], {
