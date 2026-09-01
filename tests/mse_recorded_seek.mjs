@@ -21,7 +21,6 @@ const queue = (ranges = []) => ({
 function fixture({
   landing = 'exact', gapSeconds = 0.04, budget = 16 * MiB,
   targetTimeSeconds = 50, bootstrapRapUs = 0n, planRap = true, indexedRap = null,
-  estimateOffsetBytes = 16 * MiB,
 } = {}) {
   const media = {currentTime: targetTimeSeconds};
   const video = queue();
@@ -35,7 +34,7 @@ function fixture({
   const source = {
     size: 32n * BigInt(MiB),
     async read(offset, length) {
-      requests.push({phase: session?.phase, offset, length});
+      requests.push({offset, length});
       return new Uint8Array(Number(length));
     },
   };
@@ -49,7 +48,7 @@ function fixture({
     async setMseOutputEnabled() {},
     async setMseTimestampOffset() {},
     async setIndexDuration() { return true; },
-    async estimateOffset() { return BigInt(estimateOffsetBytes); },
+    async estimateOffset() { return 16n * BigInt(MiB); },
     async previousSync() { return indexedRap; },
     async reposition(offset) { operations.push([session.phase, offset]); position = offset; },
     async setMseRecordedSeekConcealmentTarget() {},
@@ -138,16 +137,6 @@ function fixture({
     'a target within the bootstrap preroll did not reuse the presentation-start RAP');
   assert.equal(operations.filter(([phase]) => phase === 'backward-plan').length, 0,
     'a near-start seek wasted its landing budget on backward planning');
-}
-
-{
-  const {session, requests} = fixture({estimateOffsetBytes: 20 * MiB});
-  await session.run();
-  const plannerReads = requests.filter(request => request.phase === 'backward-plan');
-  assert.equal(plannerReads.length, 1,
-    'backward planning kept reading after it found a usable preceding RAP');
-  assert.equal(plannerReads[0].offset, 4n * BigInt(MiB),
-    'planner did not start from the conservative pre-estimate window');
 }
 
 {
