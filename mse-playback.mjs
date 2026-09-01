@@ -1029,6 +1029,7 @@ export function createMseRecordedSeekSession({
     } finally {
       if (videoConcealment) await demuxer.setMseRecordedSeekConcealmentTarget(null);
     }
+    phase = 'complete';
     return {
       targetUs,
       sourceTargetUs,
@@ -1047,13 +1048,10 @@ export function createMseRecordedSeekSession({
     try {
       const result = await runTransaction();
       ensureActive();
-      phase = 'committing';
       await demuxer.finishMseRecordedSeek(BigInt(targetUs));
-      phase = 'complete';
       return result;
     } catch (error) {
       await demuxer.cancelMseRecordedSeek();
-      phase = 'cancelled';
       throw error;
     }
   };

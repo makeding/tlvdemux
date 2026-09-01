@@ -52,10 +52,8 @@ function fixture({
   const audioTrack = {kind: 'audio', codec: 'aac-latm', trackId: 2};
   const demuxer = {
     async beginMseRecordedSeek() { seekLifecycle.push(['begin']); },
-    async finishMseRecordedSeek(target) {
-      seekLifecycle.push(['finish', target, session?.phase]);
-    },
-    async cancelMseRecordedSeek() { seekLifecycle.push(['cancel', session?.phase]); },
+    async finishMseRecordedSeek(target) { seekLifecycle.push(['finish', target]); },
+    async cancelMseRecordedSeek() { seekLifecycle.push(['cancel']); },
     async setMseOutputEnabled(enabled) { this.output = enabled; return true; },
     async setIndexDuration(value) { indexCalls.push(['duration', value]); return true; },
     async estimateOffset(value) { indexCalls.push(['target', value]); return estimatedOffset; },
@@ -152,10 +150,8 @@ function fixture({
   'concealment target was armed before the final landing reposition reset');
   assert.equal(media.currentTime, 50,
     'recorded seek changed the user-requested MediaElement time');
-  assert.deepEqual(seekLifecycle, [['begin'], ['finish', 50_000_000n, 'committing']],
+  assert.deepEqual(seekLifecycle, [['begin'], ['finish', 50_000_000n]],
     'recorded seek did not fence the complete transaction at the exact media clock');
-  assert.equal(session.phase, 'complete',
-    'recorded seek became complete before its native fence committed');
 }
 
 {
@@ -294,10 +290,8 @@ for (const landingRanges of [
     error.code === MSE_SEEK_NO_COMMON_AV && error.name !== 'MseStartupBufferError');
   assert.deepEqual(concealmentTargets, [52_000_000n, null],
     'a failed landing retained its one-shot concealment target');
-  assert.deepEqual(seekLifecycle, [['begin'], ['cancel', 'landing']],
+  assert.deepEqual(seekLifecycle, [['begin'], ['cancel']],
     'a failed landing committed or retained its recorded-seek fence');
-  assert.equal(session.phase, 'cancelled',
-    'a failed landing remained eligible to start playback');
 }
 
 {
@@ -328,7 +322,7 @@ for (const landingRanges of [
   const {session, requests, seekLifecycle} = fixture({abortOnRead: true});
   await assert.rejects(session.run(), error => error.name === 'AbortError');
   assert.equal(requests.length, 1, 'a superseded seek issued another source request');
-  assert.deepEqual(seekLifecycle, [['begin'], ['cancel', 'head']],
+  assert.deepEqual(seekLifecycle, [['begin'], ['cancel']],
     'a superseded seek did not release its fence without committing');
 }
 

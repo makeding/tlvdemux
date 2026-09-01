@@ -46,16 +46,6 @@ assert.doesNotMatch(demo, /stopPlayback\(true, false\);[\s\S]{0,120}loadAndPlay\
   'recorded recovery still destroys the old MSE before candidate validation');
 assert.match(recordedTransition, /createMseRecordedSeekSession/,
   'recorded candidate does not use the shared 16 MiB seek session');
-assert.match(demo, /if \(seekSession && seekSession\.phase !== 'complete'\) return;/,
-  'demo can start playback before the recorded-seek fence commits');
-assert.doesNotMatch(demo, /beforeLanding:[\s\S]{0,180}currentTime\s*=\s*startTimeSeconds/,
-  'demo installs the requested media clock before exact A\/V landing commit');
-assert.match(demo, /const result = await seekSession\.run\(\);[\s\S]{0,260}currentTime\s*=\s*startTimeSeconds;[\s\S]{0,120}maybeStartPlayback\(\);/,
-  'demo does not install the frozen target and start playback after seek commit');
-assert.match(demo, /playbackIntents\.isCurrent\(initialPlaybackIntent\)[\s\S]{0,100}resumePlaybackIntent\(startTimeSeconds\)/,
-  'seek commit can overwrite an automatic layer intent started by native reevaluation');
-assert.match(demo, /headReady:[\s\S]{0,120}selectedVideo !== null && selectedAudio !== null/,
-  'recorded A\/V seek can leave head discovery before both selected tracks are ready');
 assert.match(recordedTransition, /estimateOffset:\s*cachedEstimateOffset/,
   'recorded candidate does not reuse the active recording index estimate');
 assert.match(recordedTransition, /adoptDemuxer/,

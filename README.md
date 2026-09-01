@@ -259,10 +259,6 @@ that choice is part of the explicit seek and is not an automatic layer switch.
 It must still preserve the requested `MediaElement.currentTime`, perform one
 formal landing, share the single 16 MiB budget, and never map a nonzero seek back
 to playback entry zero.
-The MediaElement must not start playback from an earlier partial common range
-while that landing is still being appended. The frozen requested `currentTime`
-is installed only at the formal exact-coverage commit, after
-`finishMseRecordedSeek()` succeeds, and playback may start only after that commit.
 The monotonic playback-intent token and its single destructive commit lane are
 owned by the public `tlvdemux/mse-playback` SDK, not by the demo. Integrations
 create tokens for explicit seeks, layer switches, and recovery candidates and
