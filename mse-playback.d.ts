@@ -278,17 +278,6 @@ export interface MseSeekDemuxer {
   cancelMseRecordedSeek(): unknown | Promise<unknown>;
   setIndexDuration(durationUs: bigint): boolean | Promise<boolean>;
   estimateOffset(targetUs: bigint, sourceSize: bigint): bigint | null | Promise<bigint | null>;
-  previousSync?(targetUs: bigint): {
-    presentationTimeUs: bigint;
-    /** Safe mux-configuration restart offset, not the RAP packet offset. */
-    signallingOffset: bigint;
-    randomAccessOffset?: bigint;
-    videoTrackId: bigint | number;
-  } | null | Promise<{
-    presentationTimeUs: bigint;
-    randomAccessOffset: bigint;
-    videoTrackId: bigint | number;
-  } | null>;
   /** Optional direct-WASM timestamp anchor used for bounded sparse planning. */
   broadcastClock?(): {
     mediaTimeValue: bigint;

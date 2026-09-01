@@ -3,10 +3,7 @@ import {MSE_SEEK_READ_BUDGET_BYTES, MseRecordedSeekError} from './mse-playback-c
 import {createMsePlaybackFlowControl} from './mse-playback-flow-control.mjs';
 
 const DEFAULT_CHUNK_BYTES = 1024 * 1024;
-const DEFAULT_LANDING_RESERVE_BYTES = 9 * 1024 * 1024;
-const PLANNER_WINDOW_BYTES = 4n * 1024n * 1024n;
-const INITIAL_PLANNER_PREROLL_BYTES = 20n * 1024n * 1024n;
-const MAX_PLANNER_WINDOWS = 1;
+const DEFAULT_LANDING_RESERVE_BYTES = 4 * 1024 * 1024;
 
 function abortError() {
   if (typeof DOMException === 'function') return new DOMException('The seek was superseded.', 'AbortError');
@@ -125,12 +122,6 @@ export function createMseRecordedSeekSession({
     if (phase === 'backward-plan') {
       const priorFrontier = planFrontiers.get(unit.trackId);
       if (priorFrontier === undefined || ptsUs > priorFrontier) planFrontiers.set(unit.trackId, ptsUs);
-      const offset = unit.inputOffset === undefined ? currentPushOffset : BigInt(unit.inputOffset);
-      const anchor = {ptsUs, offset};
-      if (ptsUs <= sourceTargetUs && ptsUs > anchorBefore.ptsUs) anchorBefore = anchor;
-      if (ptsUs > sourceTargetUs && (!anchorAfter || ptsUs < anchorAfter.ptsUs)) {
-        anchorAfter = anchor;
-      }
     }
     if ((track.kind === 'video' && !unit.randomAccess) || ptsUs > sourceTargetUs + toleranceUs) return;
     plannedRaps.set(`${unit.trackId}:${ptsUs}`, {
@@ -199,7 +190,7 @@ export function createMseRecordedSeekSession({
     .filter(rap => rap.ptsUs <= sourceTargetUs && tracks.has(rap.trackId) &&
       (allowBootstrap || rap.discoveredDuring === 'backward-plan'))
     .sort((left, right) => {
-      if (left.ptsUs !== right.ptsUs) return left.ptsUs < right.ptsUs ? -1 : 1;
+      if (left.ptsUs !== right.ptsUs) return left.ptsUs > right.ptsUs ? -1 : 1;
       return videoTrackPriority(tracks.get(left.trackId)) - videoTrackPriority(tracks.get(right.trackId));
     })[0] ?? null;
   const planPastTarget = () => {
@@ -239,29 +230,6 @@ export function createMseRecordedSeekSession({
       throw new MseRecordedSeekError('demux-failed', 'The demuxer could not estimate the target byte position.');
     }
     const estimate = BigInt(estimateValue);
-    // A retained RecordingIndex is stronger than a duration-linear byte
-    // estimate. It already names the preceding decodable restart boundary, so
-    // use it directly instead of trying to rediscover a RAP from raw sparse
-    // packets. Worker adapters may omit this optional direct-WASM fast path.
-    if (typeof demuxer.previousSync === 'function') {
-      const indexed = await demuxer.previousSync(sourceTargetUs);
-      if (indexed?.presentationTimeUs !== undefined &&
-          indexed?.signallingOffset !== undefined &&
-          BigInt(indexed.presentationTimeUs) <= sourceTargetUs &&
-          sourceTargetUs - BigInt(indexed.presentationTimeUs) <= 2_000_000n &&
-          tracks.has(indexed.videoTrackId)) {
-        return {
-          chosen: {
-            trackId: indexed.videoTrackId,
-            ptsUs: BigInt(indexed.presentationTimeUs),
-            seconds: Number(indexed.presentationTimeUs) / 1000000,
-            restartOffset: BigInt(indexed.signallingOffset),
-            discoveredDuring: 'recording-index',
-          },
-          estimate,
-        };
-      }
-    }
     const presentationStartRap = bestRap({allowBootstrap: true});
     if (presentationStartRap && sourceTargetUs - presentationStartRap.ptsUs <= 2_000_000n) {
       return {chosen: presentationStartRap, estimate};
@@ -269,20 +237,20 @@ export function createMseRecordedSeekSession({
     const estimatedWindow = source.size * 2_000_000n / BigInt(durationUs);
     const planStep = clampBigInt(estimatedWindow, chunkSize, 3n * chunkSize);
     const maximumCandidate = source.size > chunkSize ? source.size - chunkSize : 0n;
-    let candidate = clampBigInt(estimate > INITIAL_PLANNER_PREROLL_BYTES
-      ? estimate - INITIAL_PLANNER_PREROLL_BYTES : 0n, 0n, maximumCandidate);
+    let candidate = clampBigInt(estimate > planStep ? estimate - planStep : 0n, 0n, maximumCandidate);
     const visited = new Set();
     let backwardStride = planStep;
-    let windows = 0;
-    while (windows < MAX_PLANNER_WINDOWS && bytesRead < budget - landingReserve) {
+    while (bytesRead + chunkSize <= budget - landingReserve) {
       ensureActive();
       if (visited.has(candidate)) break;
       visited.add(candidate);
-      windows += 1;
       planFrontiers.clear();
       await demuxer.reposition(candidate, true);
+      // An estimate only chooses a sparse observation point. Empty media-free
+      // windows do not earn a forward scan; the next bounded observation is
+      // farther backward and the formal landing budget stays untouched.
       const remainingPlan = budget - landingReserve - bytesRead;
-      const activeSpan = remainingPlan < PLANNER_WINDOW_BYTES ? remainingPlan : PLANNER_WINDOW_BYTES;
+      const activeSpan = remainingPlan < chunkSize ? remainingPlan : chunkSize;
       const locateEnd = candidate + activeSpan < source.size ? candidate + activeSpan : source.size;
       let offset = candidate;
       while (offset < locateEnd && !planPastTarget()) {
@@ -292,15 +260,11 @@ export function createMseRecordedSeekSession({
         if (bestRap() && planPastTarget()) break;
       }
       const chosen = bestRap();
-      // Formal landing, not a probe frontier, is the proof of exact or
-      // natural-playback coverage. A real preceding RAP is therefore enough
-      // to spend the preserved landing budget.
-      if (chosen) return {chosen, estimate};
+      if (chosen && planPastTarget()) return {chosen, estimate};
       if (candidate === 0n) break;
       const projected = projectedTargetOffset();
       const projectedCandidate = projected === null ? null : clampBigInt(
-        projected > PLANNER_WINDOW_BYTES ? projected - PLANNER_WINDOW_BYTES : 0n,
-        0n, maximumCandidate,
+        projected > planStep ? projected - planStep : 0n, 0n, maximumCandidate,
       );
       if (projectedCandidate !== null && projectedCandidate < candidate &&
           !visited.has(projectedCandidate)) {
@@ -330,7 +294,7 @@ export function createMseRecordedSeekSession({
   };
   const hasNativeHeldFrameEvidence = evidence => {
     if (evidence?.landingMode !== 'held-frame' ||
-        evidence.heldFrameTimeUs == null || evidence.recoveryTimeUs == null) {
+        evidence.heldFrameTimeUs === undefined || evidence.recoveryTimeUs === undefined) {
       return false;
     }
     const heldFrameTimeUs = BigInt(evidence.heldFrameTimeUs);
