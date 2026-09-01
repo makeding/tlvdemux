@@ -201,10 +201,6 @@ public:
         if (mse_enabled_) mse_remuxer_.cancelMseRecordedSeek();
     }
 
-    void flushMseRecordedSeekLanding() {
-        if (mse_enabled_) mse_remuxer_.flush();
-    }
-
     void setMsePlaybackPosition(const std::int64_t presentation_time_us) {
         if (mse_enabled_) mse_remuxer_.setPlaybackPosition(presentation_time_us);
     }

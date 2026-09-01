@@ -866,7 +866,6 @@ declare namespace createTlvDemuxModule {
     setMseTimestampOffset(timestampOffsetUs: bigint): void;
     setMseRecordedSeekConcealmentTarget(presentationTimeUs?: bigint | null): void;
     beginMseRecordedSeek(): void;
-    flushMseRecordedSeekLanding(): void;
     finishMseRecordedSeek(playbackPositionUs: bigint): void;
     cancelMseRecordedSeek(): void;
     /** Report the unchanged media clock for automatic layer recovery decisions. */

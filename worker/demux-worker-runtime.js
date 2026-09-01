@@ -38,7 +38,6 @@ function copyBytes(source) {
 
 function transferAccessUnit(objectId, unit) {
   if (unit.codec === 'hevc' && !unit.randomAccess && !unit.discontinuity) return;
-  if (unit.codec !== 'hevc' && unit.codec !== 'ttml') return;
   const data = unit.codec === 'ttml' ? copyBytes(unit.data) : new Uint8Array(0);
   const resources = (unit.subtitleResources || []).map(resource => ({
     ...resource,

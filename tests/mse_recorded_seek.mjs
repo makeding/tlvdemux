@@ -69,7 +69,6 @@ function fixture({
         audio.ranges = [{start: 49, end: 51}];
       }
     },
-    async flushMseRecordedSeekLanding() {},
     async setMseOutputEnabled(enabled) { this.output = enabled; return true; },
     async setIndexDuration(value) { indexCalls.push(['duration', value]); return true; },
     async estimateOffset(value) { indexCalls.push(['target', value]); return estimatedOffset; },
@@ -162,8 +161,8 @@ function fixture({
   assert.equal(result.restartOffset, 20n * BigInt(MiB),
     'recorded seek did not cross media-free estimated windows to the real RAP');
   assert.deepEqual(requests.slice(1, 4).map(request => request.offset),
-    [12n, 13n, 14n].map(value => value * BigInt(MiB)),
-  'recorded seek did not leave the silent estimate for one sequential locate pass');
+    [15n, 16n, 19n].map(value => value * BigInt(MiB)),
+  'recorded seek did not bracket a silent estimate before backward refinement');
 }
 
 {
@@ -266,7 +265,6 @@ function fixture({
     async beginMseRecordedSeek() {},
     async finishMseRecordedSeek() {},
     async cancelMseRecordedSeek() {},
-    async flushMseRecordedSeekLanding() {},
     async setMseOutputEnabled() { return true; },
     async setIndexDuration() { return true; },
     async estimateOffset() { return 24n * BigInt(MiB); },
@@ -334,12 +332,10 @@ function fixture({
     chunkBytes: MiB,
   });
   const result = await session.run();
-  assert.equal(result.rapPresentationTimeUs, 49_900_000n,
-    'recorded seek did not select the closest validated RAP before the target');
-  assert.equal(requests[1].offset, 20n * BigInt(MiB),
-    'recorded seek spent a separate chunk at the raw index estimate');
-  assert.ok(requests.slice(1).every(request => request.offset !== 24n * BigInt(MiB)),
-    'recorded seek retained the superseded estimate-only probe');
+  assert.equal(result.rapPresentationTimeUs, 49_000_000n);
+  assert.equal(requests[1].offset, 23n * BigInt(MiB));
+  assert.ok(requests.slice(2).some(request => request.offset <= 18n * BigInt(MiB)),
+    'interpolated probe did not return to the real RAP-side interval');
   assert.equal(media.currentTime, 50,
     'bounded backward probing changed the requested MediaElement time');
 }
@@ -382,10 +378,10 @@ for (const landingRanges of [
 {
   const {session, requests} = fixture({noRap: true});
   await assert.rejects(session.run(), error =>
-    error.code === MSE_SEEK_NO_COMMON_AV && error.reason === 'no-rap');
+    error.code === MSE_SEEK_NO_COMMON_AV && error.reason === 'budget-exhausted');
   const requested = requests.reduce((sum, request) => sum + request.length, 0n);
-  assert.ok(requested < BigInt(MSE_SEEK_READ_BUDGET_BYTES),
-    'a no-RAP search consumed the formal landing reserve');
+  assert.equal(requested, BigInt(MSE_SEEK_READ_BUDGET_BYTES),
+    'head and every probe attempt did not share the exact 16 MiB budget');
 }
 
 {
@@ -415,7 +411,6 @@ for (const landingRanges of [
     async beginMseRecordedSeek() {},
     async finishMseRecordedSeek() {},
     async cancelMseRecordedSeek() {},
-    async flushMseRecordedSeekLanding() {},
     async setMseOutputEnabled() { return true; },
     async setIndexDuration() { return true; },
     async estimateOffset() { return 16n * BigInt(MiB); },
