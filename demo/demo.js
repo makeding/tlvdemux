@@ -18,7 +18,7 @@ import {
 import {
   createMseRecordedPlaybackController,
   createMseRecordedWindowLocator,
-} from '../mse-recorded-playback.mjs?v=recorded-audio-window-v3';
+} from '../mse-recorded-playback.mjs?v=recorded-audio-window-v5';
 import { createWorkerTlvDemuxModule } from '../worker-tlvdemux.mjs';
 import {MseAppendQueue} from '../mse-append-queue.mjs?v=recorded-seek-entry-fence-v2';
 import {createMseOutputPipeline} from '../mse-output-pipeline.mjs?v=audio-only-resilience-v1';
@@ -601,9 +601,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       activeQueueByType.set(type, queue);
       if (!activeQueues.includes(queue)) activeQueues.push(queue);
     },
-    freshRecordedEntryAlignment: !liveMode,
-    recordedPresentationStartUs: liveMode
-      ? null : timestampMicroseconds(probeResult.presentationStart),
     onInitObserved: init => appendLog(`${init.type} 初期化 ${init.mime}`),
     onInitInstalled(init) {
       const details = init.type === 'video'
@@ -925,6 +922,10 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false,
     elements.probeState.textContent = '失敗';
     elements.mediaInfo.textContent = error.message || String(error);
     appendLog(`エラー ${error.message || error}`);
+    if (error?.diagnostics) {
+      appendLog(`診断 ${JSON.stringify(error.diagnostics,
+        (_, value) => typeof value === 'bigint' ? value.toString() : value)}`);
+    }
     console.error(error);
   } finally {
     if (generation === runGeneration) {
@@ -1062,7 +1063,9 @@ function bindPlaybackMediaEvents(media) {
 
 bindPlaybackMediaEvents(elements.video);
 
-createWorkerTlvDemuxModule().then(module => {
+createWorkerTlvDemuxModule({
+  wasmUrl: new URL('../dist/tlvdemux.js?v=recorded-audio-window-v5', import.meta.url).href,
+}).then(module => {
   wasmModule = module;
   elements.wasmStatus.textContent = 'WASM Worker 準備完了';
   elements.wasmStatus.className = 'badge';
