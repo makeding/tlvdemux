@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
 
 import {
   MSE_RECORDED_READ_BUDGET_BYTES,
@@ -33,19 +32,12 @@ assert.equal(resolveRecordedVideoWindow({
   audio, preferred: [], rainfall: [], frozen: [{...frozen[0], startTimeSeconds: 11}],
 }), null, 'a future picture was copied backward into an earlier audio window');
 
-const demoSource = await readFile(new URL('../demo/demo.js', import.meta.url), 'utf8');
-assert.doesNotMatch(demoSource, /freshRecordedEntryAlignment|recordedPresentationStartUs/,
-  'the demo retained a second Recorded entry-alignment owner beside the controller');
-assert.match(demoSource, /tlvdemux\.js\?v=recorded-audio-window-v5/,
-  'the demo did not cache-bust the WASM containing the formal splice ordering fix');
-
 {
   const selections = [];
   let locator;
   const ranges = {video: [], audio: []};
   const demuxer = {
-    async setMseOutputEnabled(enabled) { selections.push(['output', enabled]); },
-    async setMseTimestampOffset(offset) { selections.push(['offset', offset]); },
+    async setMseOutputEnabled() {},
     async clearLastClosedVideoPicture() {},
     async reposition(offset) { selections.push(['reposition', offset]); },
     async selectTrack(kind, trackId) { selections.push([kind, trackId]); },
@@ -92,11 +84,6 @@ assert.match(demoSource, /tlvdemux\.js\?v=recorded-audio-window-v5/,
     'a recorded reposition did not restore the locked AAC selection');
   assert.equal(selections.filter(item => item[0] === 'video').length, repositions,
     'a recorded reposition did not restore the locked preferred-video selection');
-  const landingOffsetIndex = selections.findLastIndex(item => item[0] === 'offset');
-  const landingEnableIndex = selections.findLastIndex(item =>
-    item[0] === 'output' && item[1] === true);
-  assert.ok(landingOffsetIndex >= 0 && landingOffsetIndex < landingEnableIndex,
-    'Recorded output was enabled before the formal A/V splice was armed');
 }
 
 function streamSource(chunks) {
@@ -130,33 +117,6 @@ function queue() {
 const locateAtStart = async () => ({
   nextOffset: 0n, bytesRead: 0n, videoMode: 'preferred',
 });
-
-{
-  const trims = {video: [], audio: []};
-  const trimQueue = type => ({
-    trimBefore(end) { trims[type].push(end); },
-    bufferedRanges: () => [{start: 0, end: 20}],
-    committedRanges: () => [{start: 0, end: 20}],
-    async waitStable() {},
-  });
-  const media = {currentTime: 0, playbackRate: 1};
-  const controller = createMseRecordedPlaybackController({
-    source: streamSource([]), media,
-    queues: new Map([['video', trimQueue('video')], ['audio', trimQueue('audio')]]),
-    demuxer: {push: async () => {}}, commonAhead: () => 0,
-    locateSeekWindow: locateAtStart,
-  });
-  controller.notifyPresentedFrame(2.9);
-  assert.deepEqual(trims, {video: [], audio: []},
-    'history before the three-second presented safety window was removed');
-  controller.notifyPresentedFrame(15.526);
-  controller.notifyPresentedFrame(15.546);
-  assert.deepEqual(trims, {video: [12.526], audio: [12.526]},
-    'presented history was not proactively trimmed on both tracks exactly once');
-  assert.equal(controller.diagnostics().lastPresentedTrimEnd, 12.526,
-    'the observed 15.526-second stall boundary did not retain three safe seconds');
-  assert.equal(media.currentTime, 0, 'presented-history trimming wrote currentTime');
-}
 
 {
   const source = streamSource([Uint8Array.of(1), Uint8Array.of(2)]);

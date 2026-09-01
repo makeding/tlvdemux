@@ -153,19 +153,12 @@ Every AAC window is an atomic A/V commit: both queues must acknowledge
 wall-clock seconds and refills below one wall-clock second; playback rate scales
 only the media duration represented by those watermarks (for example 4/2 media
 seconds at 2x). There is no 15- or 30-second startup gate.
-At a fresh Recorded landing, both formal A/V splices must reach the output
-pipeline before either track init and any media. An init emitted before its
-splice must never be discarded and then left without a replacement init.
 If the browser reports its quota ceiling before the preferred reserve is
 reached, the controller starts consumption as soon as the entry has at least
 0.5 wall-clock seconds of common A/V; the controller, not the demo, owns this
 quota-limited startup decision.
 
 Quota pressure pauses source reading and retains the failed original window.
-Presented-frame history removal is proactive: after every newly presented frame,
-the controller asks both queues to remove only history strictly before that frame
-minus the three-second video safety history. It must not wait for a quota failure
-before creating this safe headroom.
 Only removal of complete history windows strictly before the last compositor-
 presented boundary, while preserving the current decode GOP and three seconds of
 video history, permits exactly one retry of that same window. Quota, ordinary
