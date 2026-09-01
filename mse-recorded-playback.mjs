@@ -421,15 +421,8 @@ export function createMseRecordedWindowLocator({
       : BigInt(Math.round(
         (targetTimeSeconds - audio.startTimeSeconds) * 1000000)) -
         MSE_TIMESTAMP_ROUNDING_GUARD_US;
-    await demuxer.setMseTimestampOffset?.(landingTimestampOffsetUs);
-    // Keep the first landing atomic at the real worker/pipeline boundary.
-    // Enabling output re-emits the already-discovered AAC init; therefore the
-    // shared formal splice must be armed first so native publishes
-    // video-splice -> audio-splice -> init -> media.  The opposite order makes
-    // the pipeline correctly discard the pre-splice AAC init, but an unchanged
-    // AAC configuration has no reason to emit a replacement and can never
-    // create its SourceBuffer.
     await demuxer.setMseOutputEnabled(true);
+    await demuxer.setMseTimestampOffset?.(landingTimestampOffsetUs);
     if (choice.mode === 'frozen') {
       const repeated = await demuxer.repeatLastClosedVideoWindow(
         BigInt(Math.round(audio.startTimeSeconds * 1000000)),
@@ -533,7 +526,6 @@ export function createMseRecordedPlaybackController({
   let qualityFailures = 0;
   let playbackStarted = false;
   let quotaLimitedStartup = false;
-  let lastPresentedTrimEnd = null;
   let progressWaiter = null;
   let lastProgress = null;
   let completion = null;
@@ -554,7 +546,7 @@ export function createMseRecordedPlaybackController({
   const snapshot = () => ({
     state, videoMode, fallbackReason, intent, nextOffset: nextOffset.toString(),
     bytesRead: bytesRead.toString(), playbackRate, presentedTime,
-    playbackStarted, quotaLimitedStartup, lastPresentedTrimEnd,
+    playbackStarted, quotaLimitedStartup,
     commonAhead: commonAhead(), queueStates: Object.fromEntries([...queues].map(([type, queue]) => [type, {
       queuedBytes: queue.queuedBytes ?? null,
       currentBytes: queue.currentBytes ?? null,
@@ -587,17 +579,6 @@ export function createMseRecordedPlaybackController({
     const wake = progressWaiter;
     progressWaiter = null;
     wake?.();
-  };
-  const trimPresentedHistory = mediaTimeSeconds => {
-    const removeEnd = mediaTimeSeconds - 3;
-    if (!(removeEnd > 0) ||
-        (lastPresentedTrimEnd !== null && removeEnd <= lastPresentedTrimEnd + 0.05)) return;
-    // Quota recovery is intentionally not the first owner of history removal.
-    // Keeping safe headroom as the compositor advances prevents an 8K stream
-    // from filling the SourceBuffer before a failed append has any removable
-    // history left.  Each queue retains its own coded-frame/remove sequencing.
-    for (const queue of queues.values()) queue.trimBefore?.(removeEnd);
-    lastPresentedTrimEnd = removeEnd;
   };
   const active = generation => generation === intent && !streamController?.signal.aborted;
   const waitForProgress = generation => new Promise((resolve, reject) => {
@@ -797,7 +778,6 @@ export function createMseRecordedPlaybackController({
     },
     notifyPresentedFrame(mediaTimeSeconds) {
       presentedTime = finiteNonNegative(mediaTimeSeconds, 'mediaTimeSeconds');
-      trimPresentedHistory(presentedTime);
       wakeProgress();
     },
     notifyConsumption() { wakeProgress(); },

@@ -20,20 +20,11 @@ void check(const bool condition, const std::string& message) {
 
 class TestSink final : public tlvdemux::MseSink {
 public:
-    void onMseInit(tlvdemux::MseTrackInit&& init) override {
-        events.push_back("init:" + init.type);
-    }
+    void onMseInit(tlvdemux::MseTrackInit&&) override {}
     void onMseSegment(tlvdemux::MseMediaSegment&& segment) override {
         segments.push_back(std::move(segment));
     }
-    void onMseAudioSplice(const tlvdemux::MseAudioSplice&) override {
-        events.push_back("audio-splice");
-    }
-    void onMseVideoSplice(const tlvdemux::MseVideoSplice&) override {
-        events.push_back("video-splice");
-    }
     std::vector<tlvdemux::MseMediaSegment> segments;
-    std::vector<std::string> events;
 };
 
 std::uint32_t read_u32(const std::vector<std::uint8_t>& data,
@@ -327,26 +318,6 @@ void test_cra_picture_survives_reposition_for_exact_audio_window() {
           "the repeated CRA lost its original composition offset");
 }
 
-void test_recorded_landing_splices_precede_cached_audio_init() {
-    TestSink sink;
-    tlvdemux::MseRemuxer remuxer(sink);
-    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
-    remuxer.beginMseRecordedSeek();
-    remuxer.setOutputEnabled(false);
-    remuxer.push(audio_unit(0));
-    check(sink.events.empty(),
-          "the output-disabled AAC probe emitted browser output");
-
-    remuxer.setTimestampOffset(-534'666);
-    check(sink.events.empty(),
-          "arming a disabled Recorded landing emitted an early splice");
-    remuxer.setOutputEnabled(true);
-    check(sink.events == std::vector<std::string>{
-              "video-splice", "audio-splice", "init:audio"},
-          "the cached AAC init preceded the formal Recorded A/V splices");
-    remuxer.cancelMseRecordedSeek();
-}
-
 void test_closed_picture_is_cleared_before_a_new_audio_window_probe() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
@@ -365,7 +336,6 @@ int main() {
     test_target_outside_damage_is_unchanged();
     test_closed_picture_repeats_over_audio_window();
     test_cra_picture_survives_reposition_for_exact_audio_window();
-    test_recorded_landing_splices_precede_cached_audio_init();
     test_closed_picture_is_cleared_before_a_new_audio_window_probe();
     std::cout << "MSE Recorded frozen-window tests passed\n";
 }

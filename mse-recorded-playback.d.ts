@@ -82,8 +82,7 @@ export declare function createMseRecordedPlaybackController(options: {
   demuxer: {push(data: Uint8Array): boolean | void | Promise<boolean | void>};
   media: {currentTime: number; playbackRate: number};
   queues: Map<string, Pick<MseAppendQueue,
-    'waitStable' | 'waitIdle' | 'bufferedRanges' | 'committedRanges' | 'trimBefore' |
-    'canRetryQuotaAfterRemove' | 'retryQuotaAfterRemove'>>;
+    'waitStable' | 'waitIdle' | 'bufferedRanges' | 'committedRanges'>>;
   initialOffset?: bigint;
   highWallSeconds?: number;
   lowWallSeconds?: number;
