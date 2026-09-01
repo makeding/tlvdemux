@@ -2,7 +2,6 @@ import type {MseAppendQueue, MseBufferedRange} from './mse-append-queue';
 
 export declare const MSE_STARTUP_NO_COMMON_AV: 'MSE_STARTUP_NO_COMMON_AV';
 export declare const MSE_SEEK_NO_COMMON_AV: 'MSE_SEEK_NO_COMMON_AV';
-export declare const MSE_RECORDED_SUPPLY_STALLED: 'MSE_RECORDED_SUPPLY_STALLED';
 export declare const TLV_VIDEO_UNAVAILABLE: 'TLV_VIDEO_UNAVAILABLE';
 export declare const MSE_SEEK_READ_BUDGET_BYTES: 16777216;
 export type MseRequiredTrack = 'video' | 'audio';
@@ -18,13 +17,6 @@ export declare const MsePlaybackMode: Readonly<{
 export declare class MseStartupBufferError extends Error {
   readonly code: typeof MSE_STARTUP_NO_COMMON_AV;
   constructor(message?: string);
-}
-
-export declare class MseRecordedSupplyError extends Error {
-  readonly code: typeof MSE_RECORDED_SUPPLY_STALLED;
-  readonly reason: string;
-  readonly diagnostics: unknown;
-  constructor(reason: string, diagnostics?: unknown);
 }
 
 export type MseRecordedSeekFailureReason =
@@ -57,11 +49,7 @@ export interface MseMediaClock { currentTime: number; playbackRate?: number; }
 export type MsePlaybackQueue = Pick<
   MseAppendQueue,
   'bufferedRanges' | 'committedRanges' | 'trimBefore' | 'waitStable'
-> & Pick<Partial<MseAppendQueue>,
-  'queuedBytes' | 'error' | 'diagnostics' | 'waitFlowControlled' |
-  'waitQuotaResolved' | 'canReclaimBackBuffer' | 'trimBackBuffer' |
-  'quotaBlocked' | 'quotaExceededCount'
->;
+> & Pick<Partial<MseAppendQueue>, 'queuedBytes' | 'error' | 'diagnostics' | 'notifyDemand'>;
 export type MsePlaybackQueues = Map<string, MsePlaybackQueue>;
 
 export interface MsePlaybackFlowControlOptions {
@@ -76,7 +64,9 @@ export interface MsePlaybackFlowControlOptions {
   lowSeconds?: number;
   startupNoProgressBytes?: number;
   queueHighBytes?: number;
+  queueHardBytes?: number;
   backBufferSeconds?: number;
+  wait?: (milliseconds: number) => Promise<void>;
 }
 
 export interface MsePlaybackFlowControl {
@@ -93,26 +83,17 @@ export interface MsePlaybackFlowControl {
   commonAhead(): number;
   highWatermarkSeconds(): number;
   lowWatermarkSeconds(): number;
-  startupMinimumSeconds(): number;
-  readonly state: 'priming' | 'feeding' | 'quota-wait' | 'rebuffering' | 'ended' | 'error';
-  diagnostics(): Record<string, unknown>;
-  noteSourceFragment(offset: bigint, byteLength: number): void;
-  noteSourceProgress(nextOffset: bigint): void;
-  canStartFreshRecorded(): boolean;
   queuePressure(): {
+    softLimitBytes: number;
+    hardLimitBytes: number;
     limitBytes: number;
     tracks: Record<string, number>;
     details: Record<string, ReturnType<MseAppendQueue['diagnostics']> | null>;
   };
-  notifyBufferedChange(): void;
-  notifyRateChange(): void;
-  notifyWaiting(): Record<string, unknown>;
-  end(): void;
-  fail(error: unknown): void;
+  notifyDemand(): void;
   afterPush(byteLength: number, isActive?: () => boolean): Promise<{
     commonAhead: number;
     entryCovered: boolean;
-    state: MsePlaybackFlowControl['state'];
   }>;
 }
 

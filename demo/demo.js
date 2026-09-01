@@ -20,7 +20,6 @@ import {
 } from '../mse-playback.mjs?v=recorded-seek-entry-fence-v2';
 import { createWorkerTlvDemuxModule } from '../worker-tlvdemux.mjs';
 import {MseAppendQueue} from '../mse-append-queue.mjs?v=recorded-seek-entry-fence-v2';
-import {runMseRecordedSupply} from '../mse-recorded-supply.mjs?v=recorded-supply-sm-v1';
 import {createMseOutputPipeline} from '../mse-output-pipeline.mjs?v=audio-only-resilience-v1';
 import {MsePlaybackMode, createDemoPlaybackResilience}
   from './playback-resilience.js?v=recorded-seek-entry-fence-v2';
@@ -49,11 +48,13 @@ const b62RendererClass = import('/aribb62.js/dist/aribb62.js')
   });
 
 const MiB = 1024n * 1024n;
+const PLAYBACK_CHUNK = 2n * MiB;
 const FORWARD_BUFFER_HIGH_SECONDS = 15;
 const FORWARD_BUFFER_LOW_SECONDS = 8;
 const LIVE_STARTUP_BUFFER_SECONDS = 0.5;
 const BACK_BUFFER_SECONDS = 3;
 const SOURCE_QUEUE_HIGH_BYTES = 4 * 1024 * 1024;
+const SOURCE_QUEUE_HARD_BYTES = 32 * 1024 * 1024;
 const LIVE_PUSH_TARGET_BYTES = 512 * 1024;
 const LIVE_PUSH_MAX_DELAY_MS = 25;
 const DEFAULT_PLAYBACK_RATE = 2;
@@ -536,6 +537,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     lowSeconds: FORWARD_BUFFER_LOW_SECONDS,
     backBufferSeconds: BACK_BUFFER_SECONDS,
     queueHighBytes: SOURCE_QUEUE_HIGH_BYTES,
+    queueHardBytes: SOURCE_QUEUE_HARD_BYTES,
   });
   supplyCoordinator.install(playbackFlow);
   let msePipeline = null;
@@ -1528,51 +1530,54 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     maybeStartPlayback();
     appendLog(describeRecordedSeekLanding(result, startTimeSeconds));
   }
-  {
-    const supplied = await runMseRecordedSupply({
-      source,
-      startOffset: offset,
-      signal: activeController?.signal,
-      isActive: () => generation === runGeneration,
-      consume: ({data, offset: fragmentOffset}) => withActiveDemux(async () => {
-        if (generation !== runGeneration) throw new DOMException('Playback superseded.', 'AbortError');
-        playbackFlow.noteSourceFragment(fragmentOffset, data.byteLength);
-        await demuxer.setMsePlaybackPosition(
-          BigInt(Math.round(elements.video.currentTime * 1000000)));
-        try {
-          if (!await demuxer.push(data)) {
-            throw new Error(`${liveMode ? 'Live ' : ''}分離入力に失敗しました: ${fragmentOffset}`);
-          }
-        } catch (error) {
-          if (error?.code === 'MSE_RECORDED_SUPPLY_STALLED') {
-            error.diagnostics = {
-              ...playbackFlow.diagnostics(),
-              queueFailure: error.diagnostics,
-            };
-          }
-          throw error;
-        }
-        if (callbackError) throw callbackError;
-        maybeStartPlayback();
-        await playbackFlow.afterPush(data.byteLength, () => generation === runGeneration);
-        maybeStartPlayback();
-      }),
-      onProgress: progress => {
-        offset = progress.nextOffset;
-        playbackBytes += BigInt(progress.fragmentBytes);
-        playbackFlow.noteSourceProgress(offset);
-        elements.transferred.textContent = `${formatBytes(probeResult.transferred + playbackBytes)} / ` +
-          `${playbackFlow.commonAhead().toFixed(1)}s`;
-        if (playbackBytes - lastReported >= 32n * MiB || offset === source.size) {
-          appendLog(`${liveMode ? 'Live' : '再生'} ${formatBytes(offset)}` +
-            (source.size === null ? '' : ` / ${formatBytes(source.size)}`) + '、' +
-            `共通バッファ=${playbackFlow.commonAhead().toFixed(1)}s`);
-          lastReported = playbackBytes;
-        }
-      },
+  if (liveMode && source.stream) {
+    for await (const data of source.stream()) {
+      if (generation !== runGeneration) return;
+      const dataLength = BigInt(data.byteLength);
+      await demuxer.setMsePlaybackPosition(
+        BigInt(Math.round(elements.video.currentTime * 1000000)));
+      if (!await demuxer.push(data)) {
+        throw new Error(`Live 分離入力に失敗しました: ${playbackBytes}`);
+      }
+      if (callbackError) throw callbackError;
+      await playbackFlow.afterPush(data.byteLength, () => generation === runGeneration);
+      playbackBytes += dataLength;
+      elements.transferred.textContent =
+        `${formatBytes(playbackBytes)} / ${playbackFlow.commonAhead().toFixed(1)}s`;
+      if (playbackBytes - lastReported >= 32n * MiB) {
+        appendLog(`Live ${formatBytes(playbackBytes)}、` +
+          `共通バッファ=${playbackFlow.commonAhead().toFixed(1)}s`);
+        lastReported = playbackBytes;
+      }
+    }
+  }
+  while ((!liveMode || !source.stream) && offset < source.size && generation === runGeneration) {
+    const pushedBytes = await withActiveDemux(async () => {
+      if (generation !== runGeneration || offset >= source.size) return null;
+      const readOffset = offset;
+      const length = source.size - readOffset < PLAYBACK_CHUNK
+        ? source.size - readOffset : PLAYBACK_CHUNK;
+      const data = await source.read(readOffset, length);
+      if (generation !== runGeneration) return null;
+      if (!data.byteLength) throw new Error(`録画入力が ${readOffset} で終了しました`);
+      await demuxer.setMsePlaybackPosition(
+        BigInt(Math.round(elements.video.currentTime * 1000000)));
+      if (!await demuxer.push(data)) throw new Error(`分離入力に失敗しました: ${readOffset}`);
+      if (callbackError) throw callbackError;
+      const byteLength = BigInt(data.byteLength);
+      offset += byteLength;
+      playbackBytes += byteLength;
+      await playbackFlow.afterPush(data.byteLength, () => generation === runGeneration);
+      return data.byteLength;
     });
-    offset = supplied.nextOffset;
-    playbackFlow.end();
+    if (pushedBytes === null) return;
+    elements.transferred.textContent = `${formatBytes(probeResult.transferred + playbackBytes)} / ` +
+      `${playbackFlow.commonAhead().toFixed(1)}s`;
+    if (playbackBytes - lastReported >= 32n * MiB || offset === source.size) {
+      appendLog(`再生 ${formatBytes(offset)} / ${formatBytes(source.size)}、` +
+        `共通バッファ=${playbackFlow.commonAhead().toFixed(1)}s`);
+      lastReported = playbackBytes;
+    }
   }
   if (generation !== runGeneration) return;
   liveTransitionManager?.destroy();
@@ -1805,9 +1810,6 @@ function bindPlaybackMediaEvents(media) {
   }, options);
   media.addEventListener('waiting', () => {
     const supply = supplyCoordinator.notifyWaiting();
-    if (supply?.state === 'rebuffering' || supply?.state === 'quota-wait') {
-      elements.probeState.textContent = '再バッファ中';
-    }
     const pressure = supply?.pressure;
     const queueDetail = pressure
       ? Object.entries(pressure.tracks)
@@ -1818,9 +1820,10 @@ function bindPlaybackMediaEvents(media) {
               `/pending=${detail.pendingOperations}/updating=${detail.updating}` +
               `/state=${detail.state}/updateend=${detail.updateEndCount}` +
               `/quota=${detail.quotaExceededCount}/blocked=${detail.quotaBlocked}` +
-              `/fragment=${formatBytes(BigInt(detail.pendingFragmentBytes))}` +
+              `/batch=${formatBytes(BigInt(detail.appendBatchLimitBytes))}` +
               `/trimRef=${detail.backBufferReferenceTime?.toFixed(3) ?? '-'}s` +
               `/trimTo=${detail.pendingTrimBeforeTime?.toFixed(3) ?? '-'}s` +
+              `/retry=${detail.retryScheduled}` +
               `/appendAge=${detail.millisecondsSinceAppendStarted ?? '-'}ms` +
               `/updateAge=${detail.millisecondsSinceUpdateEnd ?? '-'}ms` +
               `/quotaAge=${detail.millisecondsSinceQuotaExceeded ?? '-'}ms`
@@ -1835,12 +1838,6 @@ function bindPlaybackMediaEvents(media) {
     activeGapRecovery?.notifyWaiting();
   }, options);
   media.addEventListener('ratechange', () => supplyCoordinator.notifyRateChange(), options);
-  media.addEventListener('timeupdate', () => {
-    const state = supplyCoordinator.notifyBufferedChange();
-    if (state === 'feeding' && elements.probeState.textContent === '再バッファ中') {
-      elements.probeState.textContent = currentLiveMode ? 'Live 再生中' : '再生中';
-    }
-  }, options);
   media.addEventListener('pause', () => {
     activeGapRecovery?.notifyPlaybackPaused();
     activeLiveTransitionManager?.notifyPlaybackPaused();

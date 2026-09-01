@@ -229,58 +229,72 @@ When the first usable rainfall RAP is later than that fresh playback entry, the
 splice retains the RAP's source presentation time and carries a negative MSE
 timestamp offset that maps the replacement A/V output onto timestamp zero. The
 demo applies that offset in the same SourceBuffer mutation queue before the
-replacement init and media. Blob and HTTP recordings expose a cancellable
-`stream(offset, {signal})`; HTTP uses one open-ended `Range: bytes=<offset>-`
-request. Duration probing and explicit seek retain bounded random
-`read(offset, length)` ownership. Recorded and Live input share the 512 KiB / 25
-ms stream coalescer and the same push runner. Completing a seek cancels the old
-stream and starts exactly one new stream at its returned `nextOffset`.
+replacement init and media. It applies input backpressure from the common A/V
+buffered interval, not parser progress: requests stop at 15 seconds of wall-clock
+playback reserve and resume below 8 seconds. The corresponding media-time
+watermarks are multiplied by the current positive `playbackRate`; at 2x they are
+therefore 30 seconds high and 16 seconds low. Those common A/V watermarks are
+the only time-based append/read throttle. An individual audio or video
+SourceBuffer must not stop appending at its own 15-second horizon, because that can strand the other track
+later in the same multiplexed input behind a per-queue byte limit. The 4 MiB
+per-queue limit is a soft pending-append watermark: while common A/V ahead is
+below the rate-adjusted low watermark, the sequential reader bypasses that soft
+limit and continues up to a bounded 32 MiB hard limit per required queue. A
+reader already sleeping at the soft limit must re-evaluate immediately when a
+`waiting` event reports low common A/V; it must not wait for that queue to fall
+back below 4 MiB. Per-queue limits therefore bound pending append bytes but
+never authorize stopped source reads while common A/V is starved. Fresh
+recorded playback must reach the rate-adjusted common high watermark before
+calling `play()`: 15 media seconds at 1x and 30 media seconds at 2x. The low
+watermark is only the resume threshold after playback has started; it is not a
+startup target. Selecting or defaulting to 2x must retain 2x while the initial
+30 seconds are appended to both SourceBuffers. In the 4.8 GiB
+`20260731-102-170000_272b7cdc-8d85-4f77-91df-b935f3ae0e96.mmts` regression,
+starting from the 16-second low watermark exhausts the picture reserve after
+about six visible seconds and reaches `waiting` near `15.525s` with only about
+one second of common A/V and 32.5 MiB of pending video; that state is a startup
+underbuffer failure, not an acceptable hard-limit steady state. `waiting` with common A/V
+below the rate-adjusted low watermark is a supply failure and immediately resumes
+the same sequential source-read loop instead of waiting for a queue-local
+timer. Before any common interval covers the playback entry,
+at most 16 MiB of playback input may be read without progress; exhaustion fails
+with `MSE_STARTUP_NO_COMMON_AV` instead of fetching the recording to EOF.
 
-Recorded supply is one SDK-owned linear state machine. `priming` prefers 15
-seconds multiplied by the current positive `playbackRate`, but that high
-watermark is not a hard playback gate: after the browser has demonstrated a
-quota ceiling, common entry A/V of at least 0.5 seconds multiplied by that rate
-starts playback without changing the requested rate. `feeding` supplies below
-8 seconds multiplied by the rate and pauses above the preferred high watermark;
-`ratechange` immediately recalculates both values. `rebuffering` preserves the
-last presented frame and the user's play intent. It never seeks, changes
-`currentTime`, rebuilds MSE, or changes playback rate. A MediaElement `waiting`
-event only reports consumer starvation; it neither authorizes another source
-read nor retries an append.
-
-Each SourceBuffer owns at most one active append and one pending original media
-fragment. The append queue does not merge adjacent media fragments and never
-relaxes its 4 MiB pending limit for track skew. On `QuotaExceededError`,
-`quota-wait` stops source reads and retains that original fragment exactly once.
-Only a completed safe `remove()` based on the most recently compositor-presented
-video frame releases one retry. There is no timer, demand, or `waiting` retry.
-While that exact fragment remains quota-held, newly presented safe history is
-eligible for removal immediately rather than waiting for the ordinary coarse
-trim granularity; this changes only reclamation timing and never authorizes an
-append before `remove()` completes.
-If no presented history can be reclaimed safely, the state machine fails with
-`MSE_RECORDED_SUPPLY_STALLED` and a snapshot containing state, source offset,
-original fragment size, common A/V, presented/current clocks, quota counters,
-and recent progress instead of buffering forever. Video retains three seconds
-of presented history; older navigation remains owned by the bounded explicit
-recorded-seek transaction. Before any common interval covers playback entry, at
-most 16 MiB may be read without progress; exhaustion remains
-`MSE_STARTUP_NO_COMMON_AV`.
-
-Real-browser acceptance is mandatory for the authoritative recording
-`20260731-102-170000_272b7cdc-8d85-4f77-91df-b935f3ae0e96.mmts`: File playback
-at both 1x and 2x must cross the previously observed `15.554s` stall boundary
-and reach EOS. A page that still reports playback while its media clock remains
-at that boundary is a failed acceptance result even when unit, WASM, and native
-tests pass. Acceptance also forbids a hidden seek, playback-rate downgrade,
-non-EOS `DEMUXER_UNDERFLOW`, permanent quota wait, or supply-caused dropped
-frames. Live 1x remains the control run for the same source.
+The append queue coalesces adjacent queued media fragments into an append of at
+most 8 MiB without crossing an initialization segment, codec change,
+timestamp-offset mutation, splice, remove, or trim operation. One successful
+`updateend` commits every original coded interval in that batch independently;
+batching must not manufacture coverage across a source gap. This bounds copy
+memory while avoiding hundreds of individual `appendBuffer()` transactions for
+the first 30 seconds of 8K media.
+The queue must also remain work-conserving under browser quota pressure. A
+required queue with pending operations, `SourceBuffer.updating === false`, and
+no current operation is immediately runnable: a playback-demand or `waiting`
+notification cancels any deferred quota retry and pumps it synchronously. The
+`20260731-102-170000_272b7cdc-8d85-4f77-91df-b935f3ae0e96.mmts` 2x regression
+reached `waiting` at `15.554s` with 9.7 seconds of common A/V, 33.2 MiB and 24
+pending video operations, no current video append, an idle SourceBuffer, and
+122 completed video `updateend` events. Leaving that runnable queue idle is a
+supply-state-machine failure. A quota failure is not itself progress: the same
+append must not be retried on a timer or demand notification until a completed
+`remove()` has reclaimed media or the failed coalesced batch has been reduced.
+The authoritative run reached `quota=330/retry=true` while the video
+SourceBuffer was idle, proving that unconditional retry is a supply-state-machine
+spin rather than recovery. Recorded video trimming uses the most recently
+presented compositor frame as its clock, not `MediaElement.currentTime`; at 2x
+the media clock may reach about `15.5s` while the visible frame remains near
+`5s`, and removing through `currentTime - 3s` would delete undecoded video needed
+for natural playback. Audio and video keep bounded back buffers, while older
+navigation is served by the existing bounded recorded-seek transaction.
 
 Calling `play()` only to open a `ManagedMediaSource` is an activation step, not
 authorization to start fresh recorded playback. The element must be paused
 again before the opened source is returned and before media append begins; the
-visible recorded start remains owned by the supply state machine's preferred or
-quota-limited priming rule.
+only visible recorded start remains the common-A/V high-watermark gate. In the
+authoritative Chrome run, 2x playback became effective at `2.428s` and video
+entered `DEMUXER_UNDERFLOW` at `7.246s` while audio remained
+`BUFFERING_HAVE_ENOUGH`. Any startup path that bypasses the initial 30 media
+seconds is a startup supply failure.
 
 Live playback has no timestamp-zero entry. Its startup entry is the first common
 A/V buffered interval produced by the current stream, and the media clock is
@@ -1140,11 +1154,9 @@ broadcast iframe through the same-origin Service Worker VFS shipped by
 `libaribhtml5`. The receiver API, video-plane handling, document preparation,
 built-in ROM sounds, and remote-control behavior also come from
 `libaribhtml5`; external application URLs remain blocked.
-Local files use `Blob.slice()` for bounded random reads and `Blob.stream()` for
-sequential playback. Remote files require validated `206` and `Content-Range`
-responses, including the single open-ended playback Range. Live mode skips
-duration probing and seeking, uses a normal streaming `GET`, and exposes the
-Media Source as an unbounded timeline.
+Local files use `Blob.slice()`; remote files require validated `206` and
+`Content-Range` responses. Live mode skips duration probing and seeking, uses a
+normal streaming `GET`, and exposes the Media Source as an unbounded timeline.
 HTTP URLs that do not return a valid Range response automatically fall back to
 Live mode.
 The demo contains a deliberately small fMP4/MSE layer and does not depend on

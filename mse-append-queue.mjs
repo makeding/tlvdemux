@@ -1,7 +1,7 @@
-import {MseRecordedSupplyError} from './mse-playback-contract.mjs';
-
-const DEFAULT_BACK_BUFFER_SECONDS = 3;
+const DEFAULT_RETRY_DELAY_MILLISECONDS = 250;
+const DEFAULT_BACK_BUFFER_SECONDS = 8;
 const DEFAULT_TRIM_GRANULARITY_SECONDS = 2;
+const DEFAULT_MAXIMUM_APPEND_BATCH_BYTES = 8 * 1024 * 1024;
 
 function snapshotTimeRanges(ranges) {
   const result = [];
@@ -80,14 +80,20 @@ export class MseAppendQueue {
     this.committedMediaRanges = [];
     this.waiters = [];
     this.error = null;
+    this.retryTimer = null;
     this.trimBeforeTime = null;
     this.forceTrim = false;
     this.quotaBlocked = false;
+    this.quotaRetryAfterBatchReduction = false;
     this.state = 'running';
     this.onUpdateEnd = onUpdateEnd;
     this.scheduledTimestampOffsetSeconds = this.sourceBuffer.timestampOffset || 0;
+    this.retryDelayMilliseconds = options.retryDelayMilliseconds ?? DEFAULT_RETRY_DELAY_MILLISECONDS;
     this.backBufferSeconds = options.backBufferSeconds ?? DEFAULT_BACK_BUFFER_SECONDS;
     this.trimGranularitySeconds = options.trimGranularitySeconds ?? DEFAULT_TRIM_GRANULARITY_SECONDS;
+    this.maximumAppendBatchBytes = options.maximumAppendBatchBytes ??
+      DEFAULT_MAXIMUM_APPEND_BATCH_BYTES;
+    this.currentAppendBatchBytes = this.maximumAppendBatchBytes;
     this.getBackBufferReferenceTime = options.getBackBufferReferenceTime ??
       (media => media.currentTime);
     this.getMediaError = options.getMediaError ?? defaultMediaError;
@@ -114,6 +120,7 @@ export class MseAppendQueue {
           operation.endTimeSeconds,
         );
         this.quotaBlocked = false;
+        this.quotaRetryAfterBatchReduction = false;
       }
       this.currentBytes = 0;
       this.recountQueuedBytes();
@@ -228,17 +235,6 @@ export class MseAppendQueue {
     if (this.state !== 'running') {
       throw new DOMException(`SourceBuffer queue is ${this.state}`, 'InvalidStateError');
     }
-    const isMediaFragment = operation => operation?.kind === 'append' &&
-      operation.mime === null && operation.startTimeSeconds !== null &&
-      operation.endTimeSeconds !== null;
-    const appendOperations = (isMediaFragment(this.currentOperation) ? 1 : 0) +
-      this.queue.filter(isMediaFragment).length;
-    if (appendOperations >= 2) {
-      throw new MseRecordedSupplyError(
-        'A SourceBuffer track exceeded one active and one pending original fragment.',
-        this.diagnostics(),
-      );
-    }
     this.enqueueOperation(item);
     this.queuedBytes += item.data.byteLength;
     this.pump();
@@ -279,7 +275,9 @@ export class MseAppendQueue {
       }
     }
     if (this.quotaBlocked) {
-      return;
+      if (!this.quotaRetryAfterBatchReduction) return;
+      this.quotaBlocked = false;
+      this.quotaRetryAfterBatchReduction = false;
     }
     if (!this.queue.length) return;
     let item = this.queue.shift();
@@ -309,7 +307,37 @@ export class MseAppendQueue {
       this.pump();
       return;
     }
-    const data = item.data;
+    const batchItems = [item];
+    let data = item.data;
+    if (item.mime === null && item.startTimeSeconds !== null &&
+        item.endTimeSeconds !== null) {
+      let batchBytes = data.byteLength;
+      while (this.queue.length) {
+        const next = this.queue[0];
+        if (next.kind !== 'append' || next.mime !== null ||
+            next.startTimeSeconds === null || next.endTimeSeconds === null ||
+            batchBytes + next.data.byteLength > this.currentAppendBatchBytes) break;
+        batchItems.push(this.queue.shift());
+        batchBytes += next.data.byteLength;
+      }
+      if (batchItems.length > 1) {
+        data = new Uint8Array(batchBytes);
+        let offset = 0;
+        for (const part of batchItems) {
+          data.set(part.data, offset);
+          offset += part.data.byteLength;
+        }
+        item = {
+          ...item,
+          data,
+          endTimeSeconds: batchItems.at(-1).endTimeSeconds,
+          mediaRanges: batchItems.map(part => ({
+            start: part.startTimeSeconds,
+            end: part.endTimeSeconds,
+          })),
+        };
+      }
+    }
     this.currentBytes = data.byteLength;
     try {
       if (item.mime !== null && (item.forceChangeType || item.mime !== this.mime)) {
@@ -324,14 +352,21 @@ export class MseAppendQueue {
       this.sourceBuffer.appendBuffer(data);
     } catch (error) {
       this.currentOperation = null;
-      this.queue.unshift(item);
+      this.queue.unshift(...batchItems);
       this.currentBytes = 0;
       this.recountQueuedBytes();
       if (error?.name === 'QuotaExceededError') {
         this.quotaExceededCount += 1;
         this.lastQuotaExceededAtMilliseconds = Date.now();
+        const largestItemBytes = Math.max(...batchItems.map(part => part.data.byteLength));
+        const reducedBatchBytes = Math.max(largestItemBytes, Math.floor(data.byteLength / 2));
+        const batchReduced = batchItems.length > 1 &&
+          reducedBatchBytes < this.currentAppendBatchBytes;
+        if (batchReduced) this.currentAppendBatchBytes = reducedBatchBytes;
         this.quotaBlocked = true;
+        this.quotaRetryAfterBatchReduction = batchReduced;
         this.trimBackBuffer(true);
+        if (batchReduced) this.scheduleRetry();
       } else {
         this.fail(error);
       }
@@ -372,10 +407,11 @@ export class MseAppendQueue {
       updateEndCount: this.updateEndCount,
       quotaExceededCount: this.quotaExceededCount,
       quotaBlocked: this.quotaBlocked,
-      pendingFragmentBytes: this.queue.find(item => item.kind === 'append')?.data.byteLength ?? 0,
+      appendBatchLimitBytes: this.currentAppendBatchBytes,
       backBufferReferenceTime: Number.isFinite(backBufferReferenceTime)
         ? backBufferReferenceTime : null,
       pendingTrimBeforeTime: this.trimBeforeTime,
+      retryScheduled: this.retryTimer !== null,
       millisecondsSinceAppendStarted: this.lastAppendStartedAtMilliseconds === null
         ? null : Math.max(0, nowMilliseconds - this.lastAppendStartedAtMilliseconds),
       millisecondsSinceUpdateEnd: this.lastUpdateEndAtMilliseconds === null
@@ -385,17 +421,19 @@ export class MseAppendQueue {
     };
   }
 
+  notifyDemand() {
+    if (this.error || this.state !== 'running' || this.sourceBuffer.updating ||
+        (this.queue.length === 0 && this.trimBeforeTime === null)) return false;
+    if (this.retryTimer !== null) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    this.pump();
+    return this.sourceBuffer.updating || this.currentOperation !== null;
+  }
+
   trimBackBuffer(force = false) {
     const referenceTime = this.getBackBufferReferenceTime(this.mediaElement);
     if (!Number.isFinite(referenceTime)) return;
     this.trimBefore(referenceTime - this.backBufferSeconds, force);
-  }
-
-  canReclaimBackBuffer() {
-    const referenceTime = this.getBackBufferReferenceTime(this.mediaElement);
-    const start = this.bufferedRanges()[0]?.start;
-    return Number.isFinite(referenceTime) && Number.isFinite(start) &&
-      referenceTime - this.backBufferSeconds > start;
   }
 
   trimBefore(time, force = false) {
@@ -406,32 +444,25 @@ export class MseAppendQueue {
     }
     this.trimBeforeTime = this.trimBeforeTime === null ? time : Math.max(this.trimBeforeTime, time);
     this.forceTrim ||= force;
-    this.pump();
+    this.scheduleRetry();
   }
 
-  waitQuotaResolved() {
-    if (this.error) return Promise.reject(this.error);
-    if (!this.quotaBlocked) return Promise.resolve();
-    return new Promise((resolve, reject) =>
-      this.waiters.push({quotaResolved: true, resolve, reject}));
+  scheduleRetry() {
+    if (this.retryTimer !== null || this.state !== 'running') return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      try {
+        this.pump();
+      } catch (error) {
+        this.fail(error);
+      }
+    }, this.retryDelayMilliseconds);
   }
 
   waitBelow(limit) {
     if (this.error) return Promise.reject(this.error);
     if (this.queuedBytes <= limit) return Promise.resolve();
     return new Promise((resolve, reject) => this.waiters.push({ limit, idle: false, resolve, reject }));
-  }
-
-  mediaFragmentCount() {
-    const isMediaFragment = operation => operation?.kind === 'append' &&
-      operation.mime === null && operation.startTimeSeconds !== null &&
-      operation.endTimeSeconds !== null;
-    return (isMediaFragment(this.currentOperation) ? 1 : 0) +
-      this.queue.filter(isMediaFragment).length;
-  }
-
-  hasAppendCapacity() {
-    return this.mediaFragmentCount() < 2;
   }
 
   isStable() {
@@ -446,7 +477,7 @@ export class MseAppendQueue {
   }
 
   isFlowControlled(limit) {
-    return this.queuedBytes <= limit && this.hasAppendCapacity();
+    return this.queuedBytes <= limit;
   }
 
   waitFlowControlled(limit) {
@@ -470,9 +501,12 @@ export class MseAppendQueue {
   async quiesce() {
     if (this.error) throw this.error;
     this.state = 'quiescing';
+    if (this.retryTimer !== null) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
     this.trimBeforeTime = null;
     this.forceTrim = false;
     this.quotaBlocked = false;
+    this.quotaRetryAfterBatchReduction = false;
     this.queue = [];
     this.queuedBytes = this.currentBytes;
     if (!this.sourceBuffer.updating) {
@@ -495,6 +529,8 @@ export class MseAppendQueue {
   }
 
   destroy(error = new Error('SourceBuffer queue stopped')) {
+    if (this.retryTimer !== null) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
     this.state = 'destroyed';
     this.error ||= error;
     this.queue = [];
@@ -505,6 +541,7 @@ export class MseAppendQueue {
     this.trimBeforeTime = null;
     this.forceTrim = false;
     this.quotaBlocked = false;
+    this.quotaRetryAfterBatchReduction = false;
     this.resolveWaiters();
   }
 
@@ -523,8 +560,7 @@ export class MseAppendQueue {
     this.waiters = [];
     for (const waiter of pending) {
       if (this.error) waiter.reject(this.error);
-      else if (waiter.quotaResolved ? !this.quotaBlocked
-        : waiter.flowLimit !== undefined ? this.isFlowControlled(waiter.flowLimit)
+      else if (waiter.flowLimit !== undefined ? this.isFlowControlled(waiter.flowLimit)
         : waiter.stable ? this.isStable()
         : waiter.idle ? this.isIdle()
         : this.queuedBytes <= waiter.limit) waiter.resolve();
