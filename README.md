@@ -298,30 +298,57 @@ same 16 MiB no-progress limit still stops input with
 `MSE_STARTUP_NO_COMMON_AV`.
 
 An explicit recorded seek is a separate public playback-entry contract. From
-head discovery through every RAP probe and the final A/V preroll,
-`createMseRecordedSeekSession()` shares one hard 16 MiB source-read budget.
-Overlapping probe and landing ranges are reused, and no source request is issued
-after exhaustion. A RAP before the requested media time is valid preroll: seek
-continues until the common buffered A/V interval covers the requested time,
-then normal 15-second/8-second backpressure resumes. The probe records RAPs only
-through target + 50 ms, stops when observed candidate frontiers pass the target,
-and selects the closest RAP not later than the target without waiting for an
-unobserved layer. At the formal landing, immediately after its sole reposition
-and before any landing input, the session gives the HEVC remuxer the original
-source target as a one-shot recorded-seek concealment target. If that target
-lies in a selected-video source-damage episode, the
-remuxer fills only that hole with a still picture after the existing stable-GOP
-check: it extends the last complete pre-damage sample to the stable RAP decode
-boundary, or, when landing contains no earlier picture, duplicates the stable
-RAP first frame at the target while retaining the original RAP at its original
-DTS/PTS. AAC remains on its original continuous timeline. This fill never moves
-`MediaElement.currentTime`, performs another landing seek, rescans the source,
-or increases the shared 16 MiB budget. Later-only or otherwise disjoint raw A/V
-is therefore valid when the fill creates common coverage at the exact target.
-No usable pre-damage frame and no stable following RAP, no RAP, EOF, remaining
-disjoint A/V, or budget exhaustion fails with `MSE_SEEK_NO_COMMON_AV` and stops
+head discovery through backward planning and the final A/V preroll,
+`createMseRecordedSeekSession()` executes `bootstrap -> backward-plan ->
+single-landing -> committing`, shares one hard 16 MiB source-read budget, uses
+1 MiB chunks, and reserves at least 7 MiB for the formal landing. A reused
+demuxer uses its established tracks, timeline, and RecordingIndex
+`previousSync()` without rereading the file head. Without an index, planning
+moves backward from a conservative pre-target window and stops as soon as a
+usable preceding RAP is observed. Probe repositioning never changes the media
+clock, and only the formal landing repositions playback.
+
+The requested time is immutable. Successful landing is `exact` when real
+committed coded A/V covers the target and the actual SourceBuffer intersection
+also covers it; `natural-start` is allowed only at recording time zero when AAC
+starts at zero and the first stable real video RAP follows naturally; and
+`held-frame` requires native proof that the target lies inside a real damage
+episode with a complete earlier frame and a later stable RAP. Damage-episode
+RAPs are excluded, so severe damage may choose an earlier verified decodable
+RAP without replacing the target. The session brackets the transaction with
+`beginMseRecordedSeek()`, `finishMseRecordedSeek(requestedTimeUs)`, or
+`cancelMseRecordedSeek()` so automatic layer evidence cannot leak into the
+seek. It may seal a short real AAC prefix, but never copies AAC, duplicates a
+future RAP at the target, performs a second landing, increases the budget,
+scales it by playback rate, or enters the Live state machine.
+
+No usable RAP, EOF, disjoint committed/buffered A/V, missing native damage
+evidence, or budget exhaustion fails with `MSE_SEEK_NO_COMMON_AV` and stops
 reading. It must never be reported as `MSE_STARTUP_NO_COMMON_AV`, cause a hidden
 media-element seek, or fall back to scanning the complete recording.
+
+The authoritative `139.276545s` failure also fixes two false-negative entry
+decisions. Head discovery is not complete when track metadata alone exists: it
+must observe an eligible timed access unit before any probe reposition, or the
+probe position can be normalized as recording time zero and consume the whole
+budget. A reused demuxer whose sparse playback callback already proves a timed
+media unit instead seeds the seek session with its existing tracks and
+established timeline; it must not feed byte zero into a parser positioned at the sequential
+playback offset. Explicit seek to media time zero still runs the bounded seek
+transaction; only initial playback at zero takes the sequential-start path.
+During formal landing, selected AAC frames that cover the exact target
+may still sit below the ordinary 250 ms fragment threshold. The Recorded seek
+session explicitly seals that real selected-AAC prefix after each landing push;
+this does not flush input as EOF, manufacture media, add a read or reposition,
+increase 16 MiB, or modify `MediaElement.currentTime`. Live never calls this
+Recorded-only operation.
+
+The authoritative seek sample is exercised at media times `0`, `1`, `60`,
+`139.276545`, `150.886703`, `197.260826`, `300`, and `450` seconds plus
+deterministic random targets. Every target must remain unchanged and complete
+inside 16 MiB without `MSE_SEEK_NO_COMMON_AV` or a hidden seek. Real Chrome runs
+the same set at 1x and the existing default 2x; full 1x/2x EOS and the real Live
+entry remain separate release gates.
 
 For automatic dual-video recordings, the public recorded timeline is the union
 of the preferred and rainfall video presentation ranges. The recording start is
@@ -420,6 +447,17 @@ failure being corrected, not an acceptable switch point. Automated
 acceptance uses the native VideoToolbox MSE probe plus the full-sample WASM
 assertions; it must not invoke browser automation or ask a user to be the
 runtime tester.
+
+`rain-3.tlv` is the authoritative preferred-layer restoration sample. After
+manual rainfall selection completes on `0xf301/0xf314`, preferred
+`0xf300/0xf310` must remain continuously healthy for at least five seconds and
+restore together in one transaction, preserving the established timestamp
+offset. The restored layer must have a higher selection level and resolution,
+not only different packet IDs. This path must not reposition input, begin a
+Recorded seek, change `currentTime`, emit cancellation, or create a Live
+candidate MediaSource. `rain.tlv` remains the negative case while preferred A/V
+is unhealthy; `rain-2.tlv` is not acceptance input because it lacks a complete
+preferred/fallback A/V pair. The local captures are never added to Git or npm.
 
 The captured single-layer sample
 `20260828-141-020000_99332dc9-025e-4e76-afc4-e31c3d577059.mmts` remains a

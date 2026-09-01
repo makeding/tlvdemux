@@ -189,6 +189,39 @@ public:
             optional_number<std::int64_t>(presentation_time_us));
     }
 
+    val getMseRecordedSeekLandingEvidence() const {
+        const auto evidence = mse_remuxer_.recordedSeekLandingEvidence();
+        auto result = val::object();
+        result.set("landingMode", evidence.landing_mode ==
+                tlvdemux::MseRecordedSeekLandingMode::HeldFrame
+            ? "held-frame" : "exact");
+        result.set("heldFrameTimeUs", evidence.held_frame_time_us.has_value()
+            ? val(*evidence.held_frame_time_us) : val::null());
+        result.set("recoveryTimeUs", evidence.recovery_time_us.has_value()
+            ? val(*evidence.recovery_time_us) : val::null());
+        return result;
+    }
+
+    void beginMseRecordedSeek() {
+        if (mse_enabled_) mse_remuxer_.beginMseRecordedSeek();
+    }
+
+    void finishMseRecordedSeek(const std::int64_t playback_position_us) {
+        if (mse_enabled_) mse_remuxer_.finishMseRecordedSeek(playback_position_us);
+    }
+
+    void cancelMseRecordedSeek() {
+        if (mse_enabled_) mse_remuxer_.cancelMseRecordedSeek();
+    }
+
+    void flushMseRecordedSeekAudio() {
+        if (mse_enabled_) mse_remuxer_.flushRecordedSeekAudio();
+    }
+
+    void flushMseRecordedSeekLanding() {
+        if (mse_enabled_) mse_remuxer_.flush();
+    }
+
     void setMsePlaybackPosition(const std::int64_t presentation_time_us) {
         if (mse_enabled_) mse_remuxer_.setPlaybackPosition(presentation_time_us);
     }

@@ -255,12 +255,13 @@ export function createMseRecordedPlaybackController({
     },
   });
 
-  const locate = async (targetTimeSeconds, selectedGeneration) => {
+  const locate = async (targetTimeSeconds, selectedGeneration, seeking) => {
     transition('locating-entry', 'entry-requested');
     if (typeof locateEntry !== 'function') return null;
     transition('supplying', 'entry-source-read');
     const entry = await locateEntry({
       targetTimeSeconds,
+      seeking,
       generation: selectedGeneration,
       source: gatedSource(selectedGeneration),
       demuxer: gatedDemuxer(selectedGeneration),
@@ -361,7 +362,7 @@ export function createMseRecordedPlaybackController({
       wake(seeking ? 'seek-generation' : 'start-generation');
       await feedPromise;
       transition(seeking ? 'seeking' : 'preparing', seeking ? 'explicit-seek' : 'start');
-      const entry = await locate(target, selectedGeneration);
+      const entry = await locate(target, selectedGeneration, seeking);
       ensureCurrent(selectedGeneration);
       transition('supplying', entry ? 'entry-located' : 'sequential-entry');
       feedPromise = supply(selectedGeneration);

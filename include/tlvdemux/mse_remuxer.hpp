@@ -112,6 +112,17 @@ struct MseVideoRecoveryEvent {
     MseVideoRecoveryPhase phase = MseVideoRecoveryPhase::ObservationStarted;
 };
 
+enum class MseRecordedSeekLandingMode {
+    Exact,
+    HeldFrame,
+};
+
+struct MseRecordedSeekLandingEvidence {
+    MseRecordedSeekLandingMode landing_mode = MseRecordedSeekLandingMode::Exact;
+    std::optional<std::int64_t> held_frame_time_us;
+    std::optional<std::int64_t> recovery_time_us;
+};
+
 struct MseVideoColor {
     std::uint16_t primaries = 0;
     std::uint16_t transfer = 0;
@@ -211,6 +222,10 @@ public:
     /** Arm or clear the one-shot source target for recorded-seek concealment. */
     void setRecordedSeekConcealmentTarget(
         std::optional<std::int64_t> presentation_time_us);
+    MseRecordedSeekLandingEvidence recordedSeekLandingEvidence() const;
+    void beginMseRecordedSeek();
+    void finishMseRecordedSeek(std::int64_t playback_position_us);
+    void cancelMseRecordedSeek();
     /** Report the real media playhead used to authorize rainfall recovery. */
     void setPlaybackPosition(std::int64_t presentation_time_us);
     // Reinterpret an explicitly identified HLG video track as UHD SDR.
@@ -225,6 +240,8 @@ public:
     std::optional<MseAutomaticLayerSwitchAccepted> observeDamage(
         const aribtlv::DamageSpan& damage);
     void flush();
+    /** Seal the selected AAC prefix while completing a bounded Recorded seek. */
+    void flushRecordedSeekAudio();
     std::optional<MseLayerSwitchCancelled> endOfStream();
     std::optional<MseLayerSwitchCancelled> reset();
     std::optional<MseLayerSwitchCancelled> reposition();

@@ -1081,6 +1081,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   };
   const onPlaybackDamage = damage => {
     try {
+      seekSession?.observeDamage(damage);
       recordedPlaybackController?.submitEvent({type: 'playback-damage', detail: damage});
       gapRecovery.reportDamage(damage);
       if (damage.severity !== 'severe' && damage.action !== 'seek-if-stalled') return;
@@ -1201,6 +1202,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   };
 
   let demuxer;
+  let recordedTimelineEstablished = false;
   const demuxCallbacks = {
     mseMaxAudioChannels: MSE_MAX_AUDIO_CHANNELS,
     onMseVideoStart(detail) {
@@ -1368,6 +1370,9 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     },
     onPlaybackAccessUnitView(unit) {
       try {
+        if (!liveMode && (unit.codec === 'hevc' || unit.codec === 'aac-latm')) {
+          recordedTimelineEstablished = true;
+        }
         seekSession?.observeAccessUnit(unit);
         gapRecovery.observeAccessUnit(unit);
         const subtitleTrack = tracks.get(unit.trackId);
@@ -1604,10 +1609,12 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       checkError: () => { if (callbackError) throw callbackError; },
       locateEntry: createRecordedEntryLocator({
         durationUs: externalDurationUs, presentationStartUs, presentationEndUs,
-        media: elements.video, queues, flowControl: playbackFlow, requiredTracks,
+        media: elements.video, queues, requiredTracks,
         isActive: () => generation === runGeneration,
         headReady: () => requiredTracks.length === 1
           ? selectedAudio !== null : selectedVideo !== null,
+        initialTracks: () => [...tracks.values()],
+        timelineEstablished: () => recordedTimelineEstablished,
         candidateTrack: track => requiredTracks.length === 1
           ? track.kind === 'audio' && track.trackId === selectedAudio
           : track.kind === 'video' &&

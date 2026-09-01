@@ -74,6 +74,29 @@ const {
   const queue = new MseAppendQueue(mediaSource, media, 'video/mp4', null, {
     forwardBufferHighSeconds: Infinity,
   });
+  queue.append(new Uint8Array([1]), {startTimeSeconds: 1, endTimeSeconds: 3});
+  assert.deepEqual(queue.committedRanges(), [],
+    'an in-flight append was reported as committed coded media');
+  sourceBuffer.complete();
+  assert.deepEqual(queue.committedRanges(), [{start: 1, end: 3}],
+    'successful timed media append did not commit its coded interval');
+  queue.appendInitialization(new Uint8Array([2]), 'video/mp4');
+  sourceBuffer.complete();
+  assert.deepEqual(queue.committedRanges(), [{start: 1, end: 3}],
+    'initialization append invented a coded media interval');
+  queue.replaceFrom(2);
+  sourceBuffer.complete();
+  assert.deepEqual(queue.committedRanges(), [{start: 1, end: 2}],
+    'SourceBuffer removal did not invalidate the removed committed interval');
+}
+
+{
+  const sourceBuffer = new FakeSourceBuffer([[0, 20]]);
+  const mediaSource = new FakeMediaSource(sourceBuffer);
+  const media = {currentTime: 0, error: null, buffered: sourceBuffer.buffered};
+  const queue = new MseAppendQueue(mediaSource, media, 'video/mp4', null, {
+    forwardBufferHighSeconds: Infinity,
+  });
   queue.append(new Uint8Array([1]), {startTimeSeconds: 0, endTimeSeconds: 5});
   queue.spliceFrom(0, -0.821944);
   queue.appendInitialization(new Uint8Array([2]), 'video/mp4; codecs="hvc1.2.4.L123"', true);

@@ -52,8 +52,12 @@ assert.ok(demo.indexOf('const gapRecovery = createDemoPlaybackResilience') <
   'demo constructs the video-recovery logger before gapRecovery is initialized');
 assert.match(recordedPlayback, /createMseRecordedSeekSession/,
   'Recorded controller entry does not reuse the public shared-budget seek API');
+assert.match(recordedPlayback, /targetTimeSeconds === 0 && !seeking/,
+  'explicit seek to zero was mistaken for initial sequential startup');
 assert.match(demo, /activeRecordedPlaybackController\.seek\(target\)/,
   'explicit Recorded seek bypasses the active controller generation');
+assert.match(demo, /timelineEstablished: \(\) => recordedTimelineEstablished/,
+  'reused Recorded seek does not preserve its proven demux timeline origin');
 assert.doesNotMatch(demo, /reposition\(item\.seekResult\.nextOffset/,
   'Recorded entry performs a second reposition after formal landing');
 assert.ok(demo.split('\n').length - 1 < 2000,

@@ -45,9 +45,15 @@ public:
     void set_recorded_seek_concealment_target(
         const std::optional<std::int64_t> target_us) noexcept {
         recorded_seek_concealment_target_us_ = target_us;
+        recorded_seek_landing_evidence_ = {};
+        held_frame_source_pts_us_.reset();
         concealment_episode_marker_start_us_.reset();
         concealment_episode_start_us_.reset();
         concealment_pending_stable_rap_ = false;
+    }
+    tlvdemux::MseRecordedSeekLandingEvidence
+    recorded_seek_landing_evidence() const noexcept {
+        return recorded_seek_landing_evidence_;
     }
     bool is_input_track_switch(const aribtlv::AccessUnit& unit) const noexcept {
         return unit.discontinuity && input_track_id_.has_value() &&
@@ -84,12 +90,18 @@ public:
         return scaled(*timeline_offset_ticks_, track_->timescale, 1000000);
     }
     void observe_source_damage(const aribtlv::DamageSpan& damage) {
+        const bool natural_recording_start = recorded_seek_concealment_target_us_ &&
+            *recorded_seek_concealment_target_us_ +
+                source_buffer_timestamp_offset_us_ == 0;
         if (damage.kind != aribtlv::TrackKind::Video ||
             !input_track_id_ || damage.track_id != *input_track_id_ ||
             (!recovery_observation_eligible_ &&
              !recorded_seek_concealment_target_us_) ||
             !aribtlv::hasDiscontinuityReason(
-                damage.reasons, aribtlv::DiscontinuityReason::SourceDamage)) return;
+                damage.reasons, aribtlv::DiscontinuityReason::SourceDamage) ||
+            (aribtlv::hasDiscontinuityReason(
+                 damage.reasons, aribtlv::DiscontinuityReason::Reposition) &&
+             !natural_recording_start)) return;
         const auto timestamp = damage.start_time.value_or(damage.end_time);
         const auto start_us = scaled(timestamp.value, timestamp.timescale, 1000000);
         if (recorded_seek_concealment_target_us_ &&
@@ -136,6 +148,8 @@ public:
         recovery_candidate_rejected_ = false;
         recovery_episode_reported_ = false;
         recorded_seek_concealment_target_us_.reset();
+        recorded_seek_landing_evidence_ = {};
+        held_frame_source_pts_us_.reset();
         concealment_episode_marker_start_us_.reset();
         concealment_episode_start_us_.reset();
         concealment_pending_stable_rap_ = false;
@@ -178,10 +192,17 @@ public:
                 has_eos = true;
             }
         }
+        const bool natural_recording_start = recorded_seek_concealment_target_us_ &&
+            *recorded_seek_concealment_target_us_ +
+                source_buffer_timestamp_offset_us_ == 0;
         const bool source_damage = unit.discontinuity &&
             aribtlv::hasDiscontinuityReason(
                 unit.discontinuity_reasons,
-                aribtlv::DiscontinuityReason::SourceDamage);
+                aribtlv::DiscontinuityReason::SourceDamage) &&
+            (!aribtlv::hasDiscontinuityReason(
+                 unit.discontinuity_reasons,
+                 aribtlv::DiscontinuityReason::Reposition) ||
+             natural_recording_start);
         const bool track_switch_boundary = input_track_id_.has_value() &&
             *input_track_id_ != unit.track_id && irap >= 0;
         const bool requested_switch_boundary =
@@ -446,27 +467,30 @@ public:
         const auto pts = scaled(unit.pts.value, unit.pts.timescale, track_->timescale) + offset;
         if (dts < 0) return;
         if (concealment_pending_stable_rap_) {
-            if (!has_pending_sample()) {
-                const auto target_pts = scaled(
-                    *recorded_seek_concealment_target_us_, 1000000,
-                    track_->timescale) + offset;
-                const auto composition_offset = pts - dts;
-                const auto target_dts = target_pts - composition_offset;
-                if (target_dts >= 0 && target_dts < dts) {
-                    auto filler = data;
-                    enqueue({std::move(filler), target_dts, target_pts, 0, true});
-                }
+            if (held_frame_source_pts_us_.has_value()) {
+                recorded_seek_landing_evidence_ = {
+                    tlvdemux::MseRecordedSeekLandingMode::HeldFrame,
+                    held_frame_source_pts_us_,
+                    scaled(unit.pts.value, unit.pts.timescale, 1000000),
+                };
             }
-            // With a retained pre-damage sample, ordinary enqueue seals its
-            // trun duration at this stable decode boundary. With no earlier
-            // sample, the duplicate RAP above is sealed here and the original
-            // RAP remains at its unmodified DTS/PTS.
+            // Ordinary enqueue seals a retained complete pre-damage sample at
+            // this stable decode boundary. Never duplicate the future RAP back
+            // to the requested time when no earlier complete picture exists.
             concealment_pending_stable_rap_ = false;
             recorded_seek_concealment_target_us_.reset();
             concealment_episode_marker_start_us_.reset();
             concealment_episode_start_us_.reset();
         }
         if (enqueue({std::move(data), dts, pts, 0, irap >= 0})) {
+            const auto source_pts_us = scaled(
+                unit.pts.value, unit.pts.timescale, 1000000);
+            if (recorded_seek_concealment_target_us_ &&
+                source_pts_us <= *recorded_seek_concealment_target_us_ &&
+                (!held_frame_source_pts_us_ ||
+                 source_pts_us > *held_frame_source_pts_us_)) {
+                held_frame_source_pts_us_ = source_pts_us;
+            }
             recovery_observation_eligible_ = true;
         }
         if (recorded_seek_concealment_target_us_ &&
@@ -648,6 +672,8 @@ private:
     bool recovery_candidate_rejected_ = false;
     bool recovery_episode_reported_ = false;
     std::optional<std::int64_t> recorded_seek_concealment_target_us_;
+    tlvdemux::MseRecordedSeekLandingEvidence recorded_seek_landing_evidence_;
+    std::optional<std::int64_t> held_frame_source_pts_us_;
     std::optional<std::int64_t> concealment_episode_marker_start_us_;
     std::optional<std::int64_t> concealment_episode_start_us_;
     bool concealment_pending_stable_rap_ = false;

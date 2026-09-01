@@ -108,6 +108,14 @@ await demuxer.setMseRecordedSeekConcealmentTarget(5n);
 assert.deepEqual(fake.messages.find(entry =>
   entry.message.method === 'setMseRecordedSeekConcealmentTarget')?.message.args, [5n],
   'worker proxy did not forward the one-shot recorded-seek target');
+await demuxer.flushMseRecordedSeekAudio();
+assert.deepEqual(fake.messages.find(entry =>
+  entry.message.method === 'flushMseRecordedSeekAudio')?.message.args, [],
+  'worker proxy did not forward the Recorded-seek AAC prefix flush');
+await demuxer.flushMseRecordedSeekLanding();
+assert.deepEqual(fake.messages.find(entry =>
+  entry.message.method === 'flushMseRecordedSeekLanding')?.message.args, [],
+  'worker proxy did not forward the Recorded-seek final landing flush');
 assert.equal(await demuxer.switchLayerAtPlaybackEntry(3n, 4n, 0n), true,
   'worker proxy lost the playback-entry layer-switch result');
 await demuxer.push(bytes);

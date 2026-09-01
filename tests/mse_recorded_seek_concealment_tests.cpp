@@ -24,7 +24,12 @@ public:
     void onMseSegment(tlvdemux::MseMediaSegment&& segment) override {
         segments.push_back(std::move(segment));
     }
+    void onMseVideoRecovery(
+        const tlvdemux::MseVideoRecoveryEvent& event) override {
+        video_recovery.push_back(event);
+    }
     std::vector<tlvdemux::MseMediaSegment> segments;
+    std::vector<tlvdemux::MseVideoRecoveryEvent> video_recovery;
 };
 
 std::uint32_t read_u32(const std::vector<std::uint8_t>& data,
@@ -179,6 +184,13 @@ tlvdemux::AccessUnit damaged(tlvdemux::AccessUnit unit) {
     return unit;
 }
 
+tlvdemux::AccessUnit repositioned(tlvdemux::AccessUnit unit) {
+    unit.discontinuity = true;
+    unit.discontinuity_reasons = aribtlv::DiscontinuityReason::SourceDamage |
+        aribtlv::DiscontinuityReason::Reposition;
+    return unit;
+}
+
 void push_damage_episode(tlvdemux::MseRemuxer& remuxer) {
     remuxer.push(damaged(hevc_unit(2, 98'380'000, 98'380'000, false, false)));
     remuxer.push(hevc_unit(2, 99'201'500, 99'201'500, true, false));
@@ -222,7 +234,7 @@ void test_previous_frame_fill_and_continuous_aac() {
           "AAC and concealed video do not intersect at the target");
 }
 
-void test_stable_rap_fill_without_previous_frame() {
+void test_future_stable_rap_is_not_duplicated_without_previous_frame() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
     remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
@@ -235,21 +247,13 @@ void test_stable_rap_fill_without_previous_frame() {
 
     const auto video = segments_of(sink.segments, "video");
     check(composition_timestamps(video) == std::vector<std::int64_t>{
-              99'000'000, 100'269'228, 100'302'595},
-          "stable-RAP fill moved the original RAP");
-    check(!video.empty() && video.front().tfdt == 99'000'000 &&
-              video.front().samples.front().duration == 1'269'228,
-          "stable-RAP fill does not end at the original decode boundary");
-    std::vector<std::uint32_t> sizes;
-    std::vector<std::vector<std::uint8_t>> payloads;
-    for (const auto& segment : video) {
-        for (const auto& sample : segment.samples) sizes.push_back(sample.size);
-        payloads.insert(payloads.end(), segment.payloads.begin(), segment.payloads.end());
-    }
-    check(sizes.size() >= 2 && sizes[0] == sizes[1],
-          "target filler did not reuse the stable RAP bytes");
-    check(payloads.size() >= 2 && payloads[0] == payloads[1],
-          "target filler is not byte-identical to the decodable stable RAP");
+              100'269'228, 100'302'595},
+          "a future stable RAP was duplicated backward to the requested target");
+    check(!video.empty() && video.front().tfdt == 100'269'228,
+          "the real stable RAP did not retain its source decode boundary");
+    check(remuxer.recordedSeekLandingEvidence().landing_mode ==
+              tlvdemux::MseRecordedSeekLandingMode::Exact,
+          "held-frame landing was authorized without a complete earlier frame");
 }
 
 void test_target_outside_damage_is_unchanged() {
@@ -270,11 +274,28 @@ void test_target_outside_damage_is_unchanged() {
           "target outside damage changed normal output");
 }
 
+void test_reposition_marker_is_not_a_damage_episode() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.setRecordedSeekConcealmentTarget(99'000'000);
+    remuxer.push(repositioned(hevc_unit(2, 98'000'000, 98'000'000, true, true)));
+    remuxer.push(hevc_unit(2, 98'033'367, 98'033'367, false, false));
+    remuxer.flush();
+
+    check(composition_timestamps(segments_of(sink.segments, "video")) ==
+              std::vector<std::int64_t>{98'000'000, 98'033'367},
+          "recorded landing treated SourceDamage|Reposition as content loss");
+    check(sink.video_recovery.empty(),
+          "reposition marker emitted a false damage-recovery episode");
+}
+
 } // namespace
 
 int main() {
     test_previous_frame_fill_and_continuous_aac();
-    test_stable_rap_fill_without_previous_frame();
+    test_future_stable_rap_is_not_duplicated_without_previous_frame();
     test_target_outside_damage_is_unchanged();
+    test_reposition_marker_is_not_a_damage_episode();
     std::cout << "MSE recorded-seek concealment tests passed\n";
 }

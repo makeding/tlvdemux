@@ -1599,6 +1599,28 @@ void test_unlimited_22_2_channel_count() {
           "AAC channel_configuration 13 was not exposed as 24 channels");
 }
 
+void test_recorded_seek_audio_flush_seals_subthreshold_prefix_only() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.push(hevc_unit(2, 0, 0, true, true));
+    remuxer.push(audio_unit(1, 0));
+    remuxer.push(audio_unit(1, 1024));
+    check(sink.segments.empty(),
+          "short Recorded landing AAC unexpectedly reached the normal fragment threshold");
+
+    remuxer.flushRecordedSeekAudio();
+    const auto segments = segments_of(sink.segments, "audio");
+    check(segments.size() == 1 && segments.front().samples.size() == 2,
+          "Recorded seek did not seal its real selected-AAC prefix");
+    check(std::all_of(sink.segments.begin(), sink.segments.end(),
+              [](const tlvdemux::MseMediaSegment& segment) {
+                  return segment.type == "audio";
+              }),
+          "Recorded AAC prefix flush emitted another track");
+}
+
 void test_video_configuration_change_is_a_rap_splice_boundary() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
@@ -1934,6 +1956,7 @@ int main() {
     test_audio_init_is_restored_when_output_is_reenabled();
     test_audio_channel_limit();
     test_unlimited_22_2_channel_count();
+    test_recorded_seek_audio_flush_seals_subthreshold_prefix_only();
     test_video_configuration_change_is_a_rap_splice_boundary();
     test_video_track_switch_configuration_change_preserves_old_pending_media();
     test_video_track_switch_same_configuration_is_a_splice_without_new_init();

@@ -1,4 +1,8 @@
-import {commonBufferedRanges, createMseRecordedSeekSession}
+import {
+  commonBufferedRanges,
+  createMsePlaybackFlowControl,
+  createMseRecordedSeekSession,
+}
   from '../mse-playback.mjs?v=recorded-seek-concealment-v1';
 import {createMseRecordedPlaybackController}
   from '../mse-recorded-playback.mjs?v=recorded-controller-v1';
@@ -53,10 +57,11 @@ export function createRecordedEntryLocator({
   presentationEndUs,
   media,
   queues,
-  flowControl,
   requiredTracks,
   isActive,
   headReady,
+  initialTracks = () => [],
+  timelineEstablished = () => false,
   candidateTrack,
   trackPriority,
   activateVideoTrack,
@@ -66,13 +71,23 @@ export function createRecordedEntryLocator({
   onProgress,
   onComplete,
 }) {
-  return async ({targetTimeSeconds, source, demuxer, signal}) => {
-    if (targetTimeSeconds === 0) return null;
+  return async ({targetTimeSeconds, seeking = false, source, demuxer, signal}) => {
+    if (targetTimeSeconds === 0 && !seeking) return null;
+    const seekFlowControl = createMsePlaybackFlowControl({
+      media,
+      queues,
+      requiredTracks,
+      entryKind: 'seek',
+      entryTimeSeconds: targetTimeSeconds,
+      allowNaturalStart: targetTimeSeconds === 0,
+    });
     const session = createMseRecordedSeekSession({
       targetTimeSeconds, source, durationUs, presentationStartUs,
-      presentationEndUs, demuxer, media, queues, flowControl, signal,
+      presentationEndUs, demuxer, media, queues, flowControl: seekFlowControl, signal,
       isActive: () => isActive() && !signal.aborted,
       requiredTracks, headReady, candidateTrack, trackPriority,
+      initialTracks: initialTracks(),
+      timelineEstablished: timelineEstablished(),
       activateVideoTrack,
       beforeLanding: (...args) => beforeLanding(targetTimeSeconds, ...args),
       waitForAppends: () => Promise.all(

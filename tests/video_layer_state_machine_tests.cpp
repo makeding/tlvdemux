@@ -173,6 +173,40 @@ void test_manual_mode_keeps_health_observations_for_automatic_restore() {
           "manual mode discarded preferred health needed when automatic mode resumed");
 }
 
+void test_recorded_seek_discards_deferred_layer_evidence() {
+    VideoLayerStateMachine machine;
+    machine.configure(VideoLayerPair{1, 11, 2, 22});
+    machine.select(2);
+    machine.setSelectedOutputStarted(true);
+    warm(machine, true, true);
+    machine.setPlaybackPosition(5000000);
+    check(machine.reevaluate().switch_request.has_value(),
+          "test did not prepare a deferred preferred-layer decision");
+
+    machine.suspend();
+    machine.discardDeferredDecision();
+    machine.resume();
+    check(!machine.reevaluate().switch_request,
+          "recorded seek leaked a pre-seek preferred-layer decision");
+
+    bool switched = false;
+    for (std::int64_t timestamp = 6000000; timestamp <= 11000000;
+         timestamp += 500000) {
+        machine.setPlaybackPosition(timestamp);
+        machine.observe(unit(11, aribtlv::Codec::AacLatm, timestamp));
+        const auto preferred = machine.observe(unit(
+            1, aribtlv::Codec::Hevc, timestamp, timestamp % 1000000 == 0));
+        if (preferred.switch_request) {
+            check(timestamp >= 11000000,
+                  "preferred-layer health survived recorded seek isolation");
+            switched = true;
+            break;
+        }
+    }
+    check(switched,
+          "preferred layer did not recover after a fresh five-second baseline");
+}
+
 void test_parser_frontier_cannot_restore_preferred_at_stalled_playhead() {
     VideoLayerStateMachine machine;
     machine.configure(VideoLayerPair{1, 11, 2, 22});
@@ -294,6 +328,7 @@ int main() {
     test_unavailable_fallback_waits_then_seeks_to_preferred_recovery_rap();
     test_rainfall_mode_keeps_warming_preferred_and_returns_after_five_seconds();
     test_manual_mode_keeps_health_observations_for_automatic_restore();
+    test_recorded_seek_discards_deferred_layer_evidence();
     test_parser_frontier_cannot_restore_preferred_at_stalled_playhead();
     test_rainfall_damage_uses_preferred_or_its_own_real_rap();
     std::cout << "video layer state machine tests passed\n";

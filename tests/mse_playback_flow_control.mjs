@@ -7,9 +7,11 @@ import {
   startMsePlayback,
 } from '../mse-playback.mjs';
 
-const queue = ranges => ({
+const queue = (ranges, committed = ranges) => ({
   ranges,
+  committed,
   bufferedRanges() { return this.ranges; },
+  committedRanges() { return this.committed; },
   trimBefore() {},
   waitFlowControlled() { return Promise.resolve(); },
 });
@@ -42,10 +44,61 @@ const queue = ranges => ({
   assert.equal(flow.entryCovered(), false,
     'recorded seek accepted later-only A/V without exact-target coverage');
   video.ranges = [{start: 50.000001, end: 53}];
+  video.committed = video.ranges;
   assert.equal(flow.entryCovered(), true,
     'recorded seek rejected a one-tick exact-target rounding boundary');
   assert.equal(media.currentTime, 50,
     'recorded seek flow control moved the requested media time');
+}
+
+{
+  const media = {currentTime: 50};
+  const video = queue([{start: 49, end: 53}], []);
+  const audio = queue([{start: 49, end: 53}], []);
+  const queues = new Map([['video', video], ['audio', audio]]);
+  const flow = createMsePlaybackFlowControl({
+    media, queues, entryKind: 'seek', entryTimeSeconds: 50,
+  });
+  assert.equal(flow.entryCovered(), false,
+    'browser-buffered ranges authorized a seek before coded A/V was committed');
+  video.committed = [{start: 49, end: 53}];
+  audio.committed = [{start: 49, end: 53}];
+  audio.ranges = [{start: 51, end: 53}];
+  assert.equal(flow.entryCovered(), false,
+    'committed coded A/V authorized a seek without a real SourceBuffer intersection');
+  audio.ranges = [{start: 49, end: 53}];
+  assert.equal(flow.entryCovered(), true,
+    'joint committed and browser-buffered coverage did not authorize an exact seek');
+  assert.equal(flow.landingMode(), 'exact');
+}
+
+{
+  const media = {currentTime: 0};
+  const queues = new Map([
+    ['video', queue([{start: 0.533873, end: 4}])],
+    ['audio', queue([{start: 0, end: 4}])],
+  ]);
+  const flow = createMsePlaybackFlowControl({
+    media,
+    queues,
+    entryKind: 'seek',
+    entryTimeSeconds: 0,
+    allowNaturalStart: true,
+  });
+  assert.equal(flow.entryCovered(), true,
+    'recording-start audio plus a later real RAP did not authorize natural start');
+  assert.equal(flow.landingMode(), 'natural-start');
+  assert.equal(media.currentTime, 0,
+    'natural start moved the requested media clock away from zero');
+  const nonzero = createMsePlaybackFlowControl({
+    media: {currentTime: 0.2},
+    queues,
+    entryKind: 'seek',
+    entryTimeSeconds: 0.2,
+    allowNaturalStart: true,
+  });
+  assert.equal(nonzero.entryCovered(), false,
+    'natural-start relaxation was applied away from the recording start');
 }
 
 {

@@ -842,6 +842,12 @@ declare namespace createTlvDemuxModule {
     mseMaxAudioChannels?: number;
   }
 
+  interface MseRecordedSeekLandingEvidence {
+    landingMode: "exact" | "held-frame";
+    heldFrameTimeUs: bigint | null;
+    recoveryTimeUs: bigint | null;
+  }
+
   interface TlvDemuxer extends Deletable {
     push(bytes: ArrayBufferView): boolean;
     pushFromHeap(address: number, size: number): boolean;
@@ -865,6 +871,12 @@ declare namespace createTlvDemuxModule {
     clearAutomaticLayerSwitch(): void;
     setMseTimestampOffset(timestampOffsetUs: bigint): void;
     setMseRecordedSeekConcealmentTarget(presentationTimeUs?: bigint | null): void;
+    getMseRecordedSeekLandingEvidence(): MseRecordedSeekLandingEvidence;
+    beginMseRecordedSeek(): void;
+    flushMseRecordedSeekAudio(): void;
+    flushMseRecordedSeekLanding(): void;
+    finishMseRecordedSeek(playbackPositionUs: bigint): void;
+    cancelMseRecordedSeek(): void;
     /** Report the unchanged media clock for automatic layer recovery decisions. */
     setMsePlaybackPosition(presentationTimeUs: bigint): void;
     switchAudioTrack(trackId: bigint, earliestPresentationTimeUs: bigint): bigint | null;

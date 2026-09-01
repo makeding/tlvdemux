@@ -213,24 +213,46 @@ A/V buffered 区間であり、設定した live 起動 buffer が成立した�
 進捗なし上限で入力を停止し、`MSE_STARTUP_NO_COMMON_AV` を返します。
 
 録画の明示 seek は別の public playback-entry contract です。head discovery、すべての RAP probe、
-正式な A/V preroll は `createMseRecordedSeekSession()` の単一 16 MiB source-read budget を共有します。
-probe と landing が重なる範囲は再利用し、budget 消費後は source request を発行しません。要求時刻より
-前の RAP は正常な preroll であり、共通 A/V buffered 区間が user の要求時刻を覆うまで seek を継続し、
-その後だけ通常の 15 秒停止／8 秒再開 backpressure へ移行します。probe は target + 50 ms までの RAP
-だけを記録し、観測済み候補の解析前縁が target を越えた時点で停止して、未観測 layer を待たず target
-より後でない最も近い RAP を選択します。正式 landing では一度だけの reposition の直後、landing input
-を一つも渡す前に、session は元の source target を一回限りの recorded-seek concealment target として
-HEVC remuxer へ渡します。その target が選択映像の
-source-damage episode 内にある場合だけ、既存の stable-GOP 検証後に静止画で穴を埋めます。損傷前の
-完全な最終 sample があればその duration を stable RAP の decode boundary まで延長し、landing 内に
-前画面がなければ stable RAP の先頭 frame を target に複製します。この場合も元の RAP は元の DTS/PTS
-に残し、AAC は元の連続 timeline を維持します。この填補は `MediaElement.currentTime` を変更せず、
-追加 landing seek、source の再 scan、単一 16 MiB budget の増加を行いません。したがって生の共通 A/V
-が target より後だけ、または非交差でも、填補によって exact target の共通 coverage が形成されれば
-正常です。利用可能な損傷前 frame も安定後続 RAP もない場合、RAP なし、EOF、填補後も A/V が非交差、
+正式な A/V preroll は `createMseRecordedSeekSession()` の
+`bootstrap -> backward-plan -> single-landing -> committing` という一つの transaction です。
+1 MiB chunk と単一 16 MiB source-read budget を使い、正式 landing 用に最低 7 MiB を予約します。
+再利用 demuxer は確立済み track／timeline と RecordingIndex `previousSync()` を使い、file head を
+再読込しません。index がなければ target 前方の保守的な byte window から後方へ計画し、利用可能な
+前置 RAP を観測した時点で停止します。probe reposition は media clock を変更せず、正式 landing だけが
+playback を一度 reposition します。
+
+user の要求時刻は不変です。成功 mode は、実際に commit 済みの coded A/V と現実の SourceBuffer
+intersection が target を覆う `exact`、録画時刻 0 だけで AAC が 0 から始まり最初の安定した実映像 RAP が
+自然に後続する `natural-start`、または target が実 damage episode 内にあり完全な前画面と後続安定 RAP が
+あることを native が証明した `held-frame` の三つだけです。damage episode 内の RAP は除外し、深刻な
+damage では target を置換せず budget 内のさらに前の検証済み RAP を選べます。transaction は
+`beginMseRecordedSeek()` と `finishMseRecordedSeek(requestedTimeUs)`、失敗時の
+`cancelMseRecordedSeek()` で囲み、automatic layer の証拠を隔離します。短い実 AAC prefix は封じられますが、
+AAC の複製、未来 RAP の target への複製、二度目の landing、budget 増加、playback rate による budget 変更、
+Live state machine への移行は禁止です。
+
+利用可能な RAP なし、EOF、commit／buffered A/V の非交差、native damage evidence 不足、
 または budget 消費の場合は `MSE_SEEK_NO_COMMON_AV` で読み込みを停止します。これを
 `MSE_STARTUP_NO_COMMON_AV` として報告したり、MediaElement の hidden seek や録画全体の scan に
 fallback してはいけません。
+
+実在する `139.276545s` の失敗では、entry の偽陰性を二つ修正します。track metadata だけでは
+head discovery 完了ではなく、probe reposition より前に対象の時刻付き access unit を観測しなければ
+なりません。そうしないと probe 位置を録画時刻ゼロとして正規化し、budget 全体を消費します。
+一方、sparse playback callback が時刻付き media unit を既に証明する再利用 demuxer は、既存 track と確立済み timeline
+を seek session に渡します。sequential playback offset にいる parser へ byte zero を直接入力しては
+なりません。
+media time zero への明示 seek も bounded seek transaction を実行し、初回 zero 再生だけが
+sequential-start path を使います。
+正式 landing では正確な target を覆う選択 AAC frame が通常の 250 ms fragment 閾値未満に残る場合が
+あります。Recorded seek session は各 landing push 後にその実在する選択 AAC prefix だけを明示的に
+封じます。これは input を EOF flush せず、media、read、reposition、16 MiB budget を増やさず、
+`MediaElement.currentTime` も変更しません。Live はこの Recorded 専用操作を呼びません。
+
+権威 seek sample は media time `0`、`1`、`60`、`139.276545`、`150.886703`、`197.260826`、
+`300`、`450` 秒と固定 seed の任意 target で検証します。各 target は不変のまま 16 MiB 以内で完了し、
+`MSE_SEEK_NO_COMMON_AV` も hidden seek も発生してはいけません。実 Chrome は同じ集合を 1x と既存の
+default 2x で実行します。1x／2x の完全 EOS と実 Live entry は別の release gate のままです。
 
 自動の 2 映像 track を持つ録画では、public な録画 timeline は通常映像と降雨映像の
 presentation range の和集合です。録画開始はより早い最初の映像 frame、録画終了はその
@@ -307,6 +329,14 @@ startup flow-control はその共通区間へ到達し、通常 prefetch は 15 
 ではなく、今回修正する失敗です。この復旧 path の自動 acceptance は native VideoToolbox MSE probe
 と全 sample WASM assertion だけで行い、browser automation を起動せず、user を最初の runtime
 tester にしません。
+
+`rain-3.tlv` は通常 layer 自動復帰の権威 sample です。降雨 `0xf301/0xf314` への手動切替完了後、
+通常 `0xf300/0xf310` が最低 5 秒連続して healthy になってから、確立済み timestamp offset を維持した
+一つの transaction で video／audio を同時に復帰させます。復帰先は packet ID が違うだけでなく、
+selection level と解像度が高くなければなりません。この path は input reposition、Recorded seek 開始、
+`currentTime` 変更、cancel event、Live candidate MediaSource 作成を行いません。`rain.tlv` は通常 A/V が
+未健康な間 defer する負の contract として残し、complete な preferred／fallback A/V pair を欠く
+`rain-2.tlv` は acceptance input にしません。local capture は Git／npm に追加しません。
 
 単一 layer の captured sample
 `20260828-141-020000_99332dc9-025e-4e76-afc4-e31c3d577059.mmts` は damage event の

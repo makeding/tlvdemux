@@ -56,6 +56,7 @@ export declare class MseAppendQueue {
   pump(): void;
   bufferedAhead(): number;
   bufferedRanges(): MseBufferedRange[];
+  committedRanges(): MseBufferedRange[];
   snapshot(): {
     state: string;
     updating: boolean;

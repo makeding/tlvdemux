@@ -777,6 +777,15 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("setMseTimestampOffset", &WasmDemuxer::setMseTimestampOffset)
         .function("setMseRecordedSeekConcealmentTarget",
                   &WasmDemuxer::setMseRecordedSeekConcealmentTarget)
+        .function("getMseRecordedSeekLandingEvidence",
+                  &WasmDemuxer::getMseRecordedSeekLandingEvidence)
+        .function("beginMseRecordedSeek", &WasmDemuxer::beginMseRecordedSeek)
+        .function("flushMseRecordedSeekAudio",
+                  &WasmDemuxer::flushMseRecordedSeekAudio)
+        .function("flushMseRecordedSeekLanding",
+                  &WasmDemuxer::flushMseRecordedSeekLanding)
+        .function("finishMseRecordedSeek", &WasmDemuxer::finishMseRecordedSeek)
+        .function("cancelMseRecordedSeek", &WasmDemuxer::cancelMseRecordedSeek)
         .function("setMsePlaybackPosition",
                   &WasmDemuxer::setMsePlaybackPosition)
         .function("setMseSdrInHlg", &WasmDemuxer::setMseSdrInHlg)

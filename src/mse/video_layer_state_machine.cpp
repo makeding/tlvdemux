@@ -45,6 +45,10 @@ void VideoLayerStateMachine::suspend() noexcept {
     enabled_ = false;
 }
 
+void VideoLayerStateMachine::resume() noexcept {
+    enabled_ = pair_.has_value();
+}
+
 void VideoLayerStateMachine::clearConfiguration() noexcept {
     enabled_ = false;
     pair_.reset();
@@ -69,6 +73,11 @@ void VideoLayerStateMachine::resetObservations() noexcept {
 void VideoLayerStateMachine::clearUnrecoveredDamage() noexcept {
     preferred_.unrecovered_damage.reset();
     fallback_.unrecovered_damage.reset();
+}
+
+void VideoLayerStateMachine::discardDeferredDecision() noexcept {
+    discardDeferredDecision(preferred_);
+    discardDeferredDecision(fallback_);
 }
 
 void VideoLayerStateMachine::switchCompleted(
@@ -222,6 +231,11 @@ void VideoLayerStateMachine::markDamaged(
     tracker.recent_breaks = std::max(tracker.recent_breaks, kBreakThreshold);
     tracker.recent_raps.clear();
     tracker.recent_audio_pts_us.clear();
+}
+
+void VideoLayerStateMachine::discardDeferredDecision(
+    LayerTracker& tracker) noexcept {
+    tracker = {};
 }
 
 VideoLayerStateMachine::LayerTracker* VideoLayerStateMachine::layerForVideo(

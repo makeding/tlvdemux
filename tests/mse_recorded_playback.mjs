@@ -221,8 +221,8 @@ function fixture({
   const located = [];
   const controller = createMseRecordedPlaybackController({
     source, demuxer, media, queues, chunkBytes: 2, progressPollMilliseconds: 1,
-    async locateEntry({targetTimeSeconds}) {
-      located.push(targetTimeSeconds);
+    async locateEntry({targetTimeSeconds, seeking}) {
+      located.push([targetTimeSeconds, seeking]);
       return targetTimeSeconds === 0 ? null : {nextOffset: 2n, bytesRead: 0n};
     },
   });
@@ -234,7 +234,8 @@ function fixture({
   const result = await seek;
   await waitFor(() => controller.state === 'ended');
   assert.equal(result.nextOffset, 2n);
-  assert.deepEqual(located, [0, 139.276545]);
+  assert.deepEqual(located, [[0, false], [139.276545, true]],
+    'Recorded controller did not distinguish initial zero from an explicit seek');
   assert.deepEqual(pushes, [], 'a late read from the cancelled supply generation reached demuxer.push');
   assert.equal(media.currentTime, 12.345,
     'Recorded controller replaced the exact user-selected MediaElement time');

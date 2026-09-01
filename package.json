@@ -105,6 +105,8 @@
     "mse-playback.mjs",
     "mse-playback-contract.mjs",
     "mse-playback-buffer.mjs",
+    "mse-playback-flow-control.mjs",
+    "mse-recorded-seek.mjs",
     "mse-recorded-playback.d.ts",
     "mse-recorded-playback.mjs",
     "mse-output-pipeline.d.ts",

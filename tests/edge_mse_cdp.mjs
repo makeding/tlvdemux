@@ -136,6 +136,9 @@ while (Date.now() < deadline) {
   })()`);
   console.log(JSON.stringify(state));
   if (state.error) throw new Error(`media error at ${state.currentTime}s: ${state.error.message}`);
+  if (state.controller?.state === 'failed' || /MSE_(?:SEEK|STARTUP)_/.test(state.status || '')) {
+    throw new Error(`playback controller failed: ${JSON.stringify(state)}`);
+  }
   if (state.currentTime >= targetSeconds) break;
 }
 socket.close();
