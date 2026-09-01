@@ -211,7 +211,6 @@ try {
     let session;
     let demuxer;
     demuxer = new module.TlvDemuxer({
-      mseMaxAudioChannels: 8,
       onTrack(track) {
         tracks.set(track.trackId, track);
         session?.observeTrack(track);
@@ -223,8 +222,7 @@ try {
           // callback acknowledgement must be idempotent during a seek landing.
           demuxer.selectTrack('video', selectedVideo);
           demuxer.selectTrack('video', selectedVideo);
-        } else if (track.kind === 'audio' && selectedAudio === null &&
-            (track.audio?.channels === 0 || track.audio?.channels <= 8)) {
+        } else if (track.kind === 'audio' && selectedAudio === null) {
           selectedAudio = track.trackId;
           demuxer.selectTrack('audio', selectedAudio);
           demuxer.selectTrack('audio', selectedAudio);

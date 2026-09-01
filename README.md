@@ -285,13 +285,6 @@ variable-rate sparse-probe boundary at media time `452.985098s`. Its
 A/V, and remain within the same 16 MiB budget; repeatedly probing neighbouring
 byte windows whose normalized access units remain near timestamp zero is not
 valid progress.
-The 4.8 GiB recording
-`20260731-102-170000_272b7cdc-8d85-4f77-91df-b935f3ae0e96.mmts` adds a second
-variable-rate boundary at media time `110.390227s` (`110.924893s` source
-target). A duration-linear byte estimate that lands in repeated media-free
-windows is not progress; the same bounded seek must refine its byte position
-from real timestamped observations and form exact common A/V without scanning
-the recording.
 The monotonic playback-intent token and its single destructive commit lane are
 owned by the public `tlvdemux/mse-playback` SDK, not by the demo. Integrations
 create tokens for explicit seeks, layer switches, and recovery candidates and
@@ -322,15 +315,17 @@ observed RAP not later than the target without waiting for an unobserved layer.
 Probe interpolation seeds its earlier anchor from the public
 union start at source offset zero, then retains the closest observations before
 and after the target instead of an access-unit history whose anchors can age
-out. A probe may move forward through at most half of the shared budget before
-the next interpolation so it can cross a bounded media-free span around a
-variable-rate estimate without becoming an unbounded sequential scan. If one
-side is still unavailable, the next bounded probe moves backward. It must not
-bisect toward the file head and spend the shared budget in an unrelated earlier
-interval. The closest real RAP not later than the target is valid preroll;
-there is no arbitrary one-second minimum. Formal landing, not probe distance,
-proves that both selected audio and video cover the exact target. At the formal
-landing, the sole reposition uses that RAP's safe restart offset.
+out. Each candidate reads at most one two-second probe window before the next
+interpolation, and observed RAPs remain eligible across those candidates. This
+prevents a variable-bitrate estimate on the wrong side of the target from
+turning into an unbounded sequential scan. If one side is still unavailable,
+the next bounded probe moves backward by one probe window. It must not bisect
+toward the file head and spend the shared budget in an unrelated earlier
+interval. An A/V landing requires its
+chosen RAP to precede the target by at least one second; a closer RAP triggers one
+bounded earlier probe so AAC begins before the exact target. The recording's
+earliest available RAP is the only exception when no earlier input exists. At
+the formal landing, the sole reposition uses that RAP's safe restart offset.
 Before the sequential landing input, the session gives the HEVC remuxer the
 original source target as a one-shot recorded-seek concealment target. It remains
 armed across out-of-PTS-order input

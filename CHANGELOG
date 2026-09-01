@@ -5,20 +5,6 @@
 > labelled **legacy `tlvdemux` implementation**; this is a historical name,
 > not a separate product line.
 
-## [0.3.7] - 2026-08-31
-
-- Require recorded-seek head discovery to observe a timestamped candidate
-  playback access unit, not only the track catalogue, before sparse probing.
-  This preserves the recording's real normalization origin when signalling
-  precedes the first media access unit.
-- Add the 5.1 GiB variable-rate recording and its `452.985098s` target as a
-  direct 16 MiB-budget regression, plus probe diagnostics that identify the
-  restart and input offsets of observed RAPs.
-- Cross a bounded media-free span around a duration-linear estimate before
-  moving the sparse probe backward, and validate the 4.8 GiB recording's
-  `110.390227s` target with the same 16 MiB budget and browser-compatible
-  audio-track selection.
-
 ## [0.3.6] - 2026-08-31
 
 - Give an explicit recorded seek exclusive ownership of probe, landing, append,
