@@ -53,7 +53,6 @@ const FORWARD_BUFFER_LOW_SECONDS = 8;
 const LIVE_STARTUP_BUFFER_SECONDS = 0.5;
 const BACK_BUFFER_SECONDS = 8;
 const SOURCE_QUEUE_HIGH_BYTES = 4 * 1024 * 1024;
-const SOURCE_QUEUE_HARD_BYTES = 32 * 1024 * 1024;
 const LIVE_PUSH_TARGET_BYTES = 512 * 1024;
 const LIVE_PUSH_MAX_DELAY_MS = 25;
 const DEFAULT_PLAYBACK_RATE = 2;
@@ -534,7 +533,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     lowSeconds: FORWARD_BUFFER_LOW_SECONDS,
     backBufferSeconds: BACK_BUFFER_SECONDS,
     queueHighBytes: SOURCE_QUEUE_HIGH_BYTES,
-    queueHardBytes: SOURCE_QUEUE_HARD_BYTES,
   });
   supplyCoordinator.install(playbackFlow);
   let msePipeline = null;
@@ -663,7 +661,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   };
   const onMseUpdateEnd = () => {
     gapRecovery.notifyBufferedChange();
-    supplyCoordinator.notifyBufferedChange();
+    maybeStartPlayback();
   };
   supplyCoordinator.install(playbackFlow, maybeStartPlayback);
   for (const queue of activeQueues) queue.onUpdateEnd = onMseUpdateEnd;
@@ -1800,16 +1798,8 @@ function bindPlaybackMediaEvents(media) {
   }, options);
   media.addEventListener('waiting', () => {
     const supply = supplyCoordinator.notifyWaiting();
-    const pressure = supply?.pressure;
-    const queueDetail = pressure
-      ? Object.entries(pressure.tracks)
-        .map(([track, bytes]) => `${track}=${formatBytes(BigInt(bytes))}`)
-        .join(',')
-      : '';
     appendLog(`MediaElement waiting ${media.currentTime.toFixed(3)}s` +
-      (supply ? ` (共通A/V=${supply.ahead.toFixed(1)}s, low=${supply.low.toFixed(1)}s` +
-        (pressure ? `, queues=${queueDetail}, limit=${formatBytes(BigInt(pressure.limitBytes))}` : '') +
-        ')' : ''));
+      (supply ? ` (共通A/V=${supply.ahead.toFixed(1)}s, low=${supply.low.toFixed(1)}s)` : ''));
     activeGapRecovery?.notifyWaiting();
   }, options);
   media.addEventListener('ratechange', () => supplyCoordinator.notifyRateChange(), options);

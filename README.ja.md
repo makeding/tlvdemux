@@ -200,11 +200,8 @@ request を止め、8 秒未満で再開します。media-time 上の watermark 
 append／read throttle を所有します。
 個別の audio／video SourceBuffer がそれぞれの 15 秒 horizon で append を止めてはいけません。そうすると
 同じ multiplex input の後方にあるもう一方の track が per-queue byte limit の後ろに取り残されます。
-queue ごとの 4 MiB は pending append の soft watermark です。共通 A/V ahead が rate 換算後の low watermark
-未満なら、sequential reader はこの soft limit を迂回し、required queue ごとの有界な 32 MiB hard limit まで
-読み進めます。soft limit で既に sleep 中の reader も、低い共通 A/V を報告する `waiting` で直ちに再評価し、
-その queue が 4 MiB 未満になるまで待ってはいけません。per-queue limit は pending append byte だけを制限し、
-共通 A/V が枯渇しているのに source read が停止する状態を許可しません。fresh recorded playback は `play()` 前に少なくとも rate 換算後の
+per-queue limit は pending append byte だけを制限し、共通 A/V ahead が rate 換算後の low watermark 未満なのに
+source read が停止する状態を許可しません。fresh recorded playback は `play()` 前に少なくとも rate 換算後の
 共通 low watermark を buffer します。2x を選択または default にした場合は 2x を維持し、共通 media-time ahead
 を 16 秒確保します。共通 A/V が rate 換算後の low watermark 未満の `waiting` は
 供給失敗として、queue local timer を待たず同じ sequential source-read loop を直ちに再開します。

@@ -27,15 +27,11 @@ export function createMsePlaybackFlowControl({
   lowSeconds = 8,
   startupNoProgressBytes = MSE_SEEK_READ_BUDGET_BYTES,
   queueHighBytes = 4 * 1024 * 1024,
-  queueHardBytes = 32 * 1024 * 1024,
   backBufferSeconds = 8,
   wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
 }) {
   if (entryKind !== 'startup' && entryKind !== 'live' && entryKind !== 'seek') {
     throw new TypeError(`Unknown MSE playback entry kind: ${entryKind}`);
-  }
-  if (!(queueHardBytes >= queueHighBytes)) {
-    throw new RangeError('MSE queue hard limit must be at least its soft limit.');
   }
   let startupBytes = 0;
   let entryCovered = false;
@@ -64,16 +60,6 @@ export function createMsePlaybackFlowControl({
   const trim = () => {
     for (const queue of requiredQueues().values()) {
       queue.trimBefore(media.currentTime - backBufferSeconds);
-    }
-  };
-  const queuedBytes = queue => Number.isFinite(queue.queuedBytes)
-    ? Math.max(0, queue.queuedBytes) : 0;
-  const queuesFit = limit => [...requiredQueues().values()].every(
-    queue => queuedBytes(queue) <= limit,
-  );
-  const throwQueueError = () => {
-    for (const queue of requiredQueues().values()) {
-      if (queue.error) throw queue.error;
     }
   };
   const liveEntryRange = () => commonBufferedRanges(queues, currentRequiredTracks).find(range =>
@@ -125,18 +111,6 @@ export function createMsePlaybackFlowControl({
     get requiredTracks() { return [...currentRequiredTracks]; },
     highWatermarkSeconds,
     lowWatermarkSeconds,
-    queuePressure() {
-      const ahead = api.commonAhead();
-      const limitBytes = ahead < lowWatermarkSeconds() ? queueHardBytes : queueHighBytes;
-      return {
-        softLimitBytes: queueHighBytes,
-        hardLimitBytes: queueHardBytes,
-        limitBytes,
-        tracks: Object.fromEntries([...requiredQueues()].map(([track, queue]) => [
-          track, queuedBytes(queue),
-        ])),
-      };
-    },
     notifyDemand() {
       const pending = [...demandWaiters];
       demandWaiters.clear();
@@ -175,23 +149,9 @@ export function createMsePlaybackFlowControl({
     },
     async afterPush(byteLength, isActive = () => true) {
       trim();
-      throwQueueError();
-      // A required track can temporarily run ahead because both tracks share
-      // one multiplexed input.  Its 4 MiB watermark is therefore soft: once
-      // common A/V falls below low, continuing to read is the only way to
-      // reach the lagging track.  The 32 MiB watermark remains a hard memory
-      // bound.  Poll through the demand waiter so a MediaElement `waiting`
-      // event can release a reader that went to sleep while common A/V was
-      // still above low.
-      while (isActive()) {
-        throwQueueError();
-        const ahead = api.commonAhead();
-        const queueLimit = ahead < lowWatermarkSeconds()
-          ? queueHardBytes : queueHighBytes;
-        if (queuesFit(queueLimit)) break;
-        await waitForDemandOrDelay(250);
-      }
-      throwQueueError();
+      await Promise.all([...requiredQueues().values()].map(
+        queue => queue.waitFlowControlled(queueHighBytes),
+      ));
       if (!isActive()) return {commonAhead: 0, entryCovered};
 
       const range = api.entryRange();

@@ -25,11 +25,7 @@ export function createMseSupplyCoordinator() {
       const ahead = flow.commonAhead();
       const low = flow.lowWatermarkSeconds();
       if (ahead < low) flow.notifyDemand();
-      return {ahead, low, pressure: flow.queuePressure()};
-    },
-    notifyBufferedChange() {
-      flow?.notifyDemand();
-      maybeStart?.();
+      return {ahead, low};
     },
     notifyRateChange() {
       flow?.notifyDemand();

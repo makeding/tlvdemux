@@ -66,7 +66,6 @@ const {
   finalizeMseMediaSource,
   nextBufferedRange,
 } = await import('../mse-append-queue.mjs');
-const {createMsePlaybackFlowControl} = await import('../mse-playback.mjs');
 
 {
   const sourceBuffer = new FakeSourceBuffer([[0, 20]]);
@@ -254,33 +253,6 @@ for (const mime of [
   await controlled;
   assert.equal(resolved, true);
   await queue.waitIdle();
-}
-
-{
-  const videoBuffer = new FakeSourceBuffer([[0, 30]]);
-  const audioBuffer = new FakeSourceBuffer([[0, 1.5]]);
-  const media = {currentTime: 0, playbackRate: 2, error: null};
-  const videoQueue = new MseAppendQueue(
-    new FakeMediaSource(videoBuffer), media, 'video/mp4', null,
-  );
-  const audioQueue = new MseAppendQueue(
-    new FakeMediaSource(audioBuffer), media, 'audio/mp4', null,
-  );
-  audioQueue.append(new Uint8Array(5 * 1024 * 1024), {
-    startTimeSeconds: 1.5,
-    endTimeSeconds: 2,
-  });
-  const flow = createMsePlaybackFlowControl({
-    media,
-    queues: new Map([['video', videoQueue], ['audio', audioQueue]]),
-    wait: () => new Promise(() => {}),
-  });
-  const result = await flow.afterPush(2 * 1024 * 1024);
-  assert.equal(result.commonAhead, 1.5);
-  assert.equal(audioQueue.queuedBytes, 5 * 1024 * 1024,
-    'integration setup did not exceed the real queue soft watermark');
-  audioBuffer.complete();
-  await audioQueue.waitIdle();
 }
 
 {
