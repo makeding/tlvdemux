@@ -168,14 +168,11 @@ Every AAC window is an atomic A/V commit: both queues must acknowledge
 `updateend` before the next window is read. Recorded forward reserve is two
 wall-clock seconds and refills below one wall-clock second; playback rate scales
 only the media duration represented by those watermarks (for example 4/2 media
-seconds at 2x). Those watermarks are reserve targets, not a startup gate.
-The controller starts consumption as soon as the fresh entry has at least 0.5
-wall-clock seconds of common A/V and continues filling toward the preferred
-reserve in the background. It must not hold an already-decodable 8K entry at
-its first frame while prefetching the full two-wall-clock-second reserve. The
-same entry threshold applies if the browser reports its quota ceiling first;
-the controller, not the demo, owns the startup decision. There is no 15- or
-30-second startup gate.
+seconds at 2x). There is no 15- or 30-second startup gate.
+If the browser reports its quota ceiling before the preferred reserve is
+reached, the controller starts consumption as soon as the entry has at least
+0.5 wall-clock seconds of common A/V; the controller, not the demo, owns this
+quota-limited startup decision.
 
 Quota pressure pauses source reading and retains the failed original window.
 Only removal of complete history windows strictly before the last compositor-

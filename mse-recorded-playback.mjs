@@ -529,7 +529,7 @@ export function createMseRecordedPlaybackController({
   initialOffset = 0n,
   highWallSeconds = 2,
   lowWallSeconds = 1,
-  startupWallSeconds = 0.5,
+  quotaStartWallSeconds = 0.5,
   readBudgetBytes = MSE_RECORDED_READ_BUDGET_BYTES,
   commonAhead = () => commonBufferedAhead(media, queues),
   locateSeekWindow,
@@ -551,7 +551,7 @@ export function createMseRecordedPlaybackController({
   }
   finiteNonNegative(highWallSeconds, 'highWallSeconds');
   finiteNonNegative(lowWallSeconds, 'lowWallSeconds');
-  finiteNonNegative(startupWallSeconds, 'startupWallSeconds');
+  finiteNonNegative(quotaStartWallSeconds, 'quotaStartWallSeconds');
   if (!(highWallSeconds > lowWallSeconds)) throw new TypeError('highWallSeconds must exceed lowWallSeconds.');
 
   let state = 'idle';
@@ -662,10 +662,7 @@ export function createMseRecordedPlaybackController({
   };
   const startPlayback = quotaLimited => {
     if (playbackStarted) return true;
-    // The high watermark is the reserve we keep filling after playback starts;
-    // it is not permission to hold a decodable entry on its first frame.  At
-    // 8K/2x the old check withheld play until more than 44 MiB had been appended.
-    const required = startupWallSeconds * playbackRate;
+    const required = (quotaLimited ? quotaStartWallSeconds : highWallSeconds) * playbackRate;
     if (commonAhead() + 0.001 < required) return false;
     playbackStarted = true;
     quotaLimitedStartup = quotaLimited;

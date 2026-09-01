@@ -157,12 +157,10 @@ controller の線形 transaction state は `idle`、`locating-audio`、
 atomic A/V commit であり、両 queue の `updateend` 成功前に次の window を読んでは
 いけません。録画の forward reserve は wall clock 2 秒、refill low は 1 秒で、
 playback rate はその media duration だけを比例させます（2x は 4/2 media 秒）。
-この watermark は reserve の目標であり startup gate ではありません。fresh entry に
-wall clock 0.5 秒以上の共通 A/V ができた時点で controller は消費を開始し、preferred
-reserve までは背後で供給を継続します。decode 可能な 8K entry を最初の frame に止めた
-まま wall clock 2 秒分すべてを prefetch してはいけません。browser が先に quota ceiling
-を報告した場合も同じ entry threshold を使い、startup decision は demo ではなく
-controller が所有します。15 秒／30 秒の startup gate はありません。
+15 秒／30 秒の startup gate はありません。
+preferred reserve に達する前に browser が quota ceiling を報告した場合、entry に
+wall clock 0.5 秒以上の共通 A/V があれば controller が直ちに消費を開始します。
+この quota-limited startup の所有者は demo ではなく controller です。
 
 quota pressure では source read を停止し、失敗した元の window を保持します。
 compositor が最後に提示した境界より前の完全な history window だけを remove し、

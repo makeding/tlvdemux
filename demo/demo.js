@@ -845,8 +845,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         played = true;
         monitorPlaybackQuality(generation);
         elements.probeState.textContent = '再生中';
-        elements.mediaInfo.textContent =
-          elements.mediaInfo.textContent.replace(/^準備中/, '再生中');
         if (quotaLimited) appendLog('MSE quota 上限で共通 A/V entry から再生を開始');
         Promise.resolve(playResult).catch(() => {
           appendLog('自動再生がブロックされました。再生ボタンを押してください');
