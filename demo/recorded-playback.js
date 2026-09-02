@@ -3,7 +3,8 @@ import {
   createMsePlaybackFlowControl,
   createMseRecordedSeekSession,
 }
-  from '../mse-playback.mjs?v=recorded-seek-concealment-v1';
+  from '../mse-playback.mjs?v=unified-av-recovery-v1';
+import {commonCommittedRanges} from '../mse-playback-buffer.mjs';
 import {createMseRecordedPlaybackController}
   from '../mse-recorded-playback.mjs?v=recorded-controller-v1';
 export {createMseRecordedPlaybackController};
@@ -122,12 +123,48 @@ export function createRecordedSeekConcealmentLogger({
   };
 }
 
+export function createRecordedRecoveryLanding({
+  queues, checkError, chunkBytes = 1024 * 1024,
+}) {
+  return async ({candidate, targetTimeSeconds: target, source, demuxer, maxReadBytes, signal}) => {
+    const covered = ranges => ranges.some(range =>
+      range.start <= target + 0.000002 && range.end >= target + 0.000002);
+    let offset = BigInt(candidate.restartOffset);
+    let bytesRead = 0n;
+    await demuxer.beginMseRecordedSeek?.();
+    try {
+      while (!signal.aborted && bytesRead < maxReadBytes) {
+        const remaining = maxReadBytes - bytesRead;
+        const length = remaining < BigInt(chunkBytes) ? remaining : BigInt(chunkBytes);
+        const data = await source.read(offset, length);
+        if (!data.byteLength) break;
+        if (!await demuxer.push(data)) throw new Error('Recorded recovery demux failed.');
+        offset += BigInt(data.byteLength);
+        bytesRead += BigInt(data.byteLength);
+        await demuxer.flushMseRecordedSeekAudio?.();
+        await Promise.all([...queues.values()].map(queue => queue.waitIdle?.() ?? queue.waitStable()));
+        checkError();
+        if (covered(commonCommittedRanges(queues, ['video', 'audio'])) &&
+            covered(commonBufferedRanges(queues, ['video', 'audio']))) {
+          await demuxer.finishMseRecordedSeek?.(
+            BigInt(Math.round(target * 1000000)),
+          );
+          return {landingMode: 'exact', nextOffset: offset};
+        }
+      }
+      throw new Error('Recorded recovery did not commit exact common A/V within 64 MiB.');
+    } catch (error) {
+      await demuxer.cancelMseRecordedSeek?.();
+      throw error;
+    }
+  };
+}
+
 export function createMseVideoRecoveryLogger({
-  gapRecovery, observeConcealment, submitRecordedEvent = () => {}, appendLog,
+  observeConcealment, submitRecordedEvent = () => {}, appendLog,
 }) {
   return event => {
     submitRecordedEvent({type: 'video-recovery', detail: event});
-    gapRecovery.observeVideoRecoveryEvent(event);
     observeConcealment(event);
     const label = {
       'observation-started': '映像復旧観察開始',

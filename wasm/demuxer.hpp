@@ -19,6 +19,7 @@ public:
         if (byte_length != 0) {
             val(emscripten::typed_memory_view(copy.size(), copy.data())).call<void>("set", bytes);
         }
+        observeIndexInput(byte_length);
         demuxer_.push(copy.data(), copy.size());
         return true;
     }
@@ -26,6 +27,7 @@ public:
     bool pushFromHeap(const std::uintptr_t address, const std::size_t size) {
         const auto heap_size = static_cast<std::uintptr_t>(emscripten_get_heap_size());
         if (address > heap_size || size > heap_size - address) return false;
+        observeIndexInput(size);
         demuxer_.push(reinterpret_cast<const std::uint8_t*>(address), size);
         return true;
     }
@@ -43,7 +45,12 @@ public:
         const auto cancelled = mse_enabled_ ? mse_remuxer_.reset() : std::nullopt;
         demuxer_.reset();
         restoreLayerSelection(cancelled);
-        if (index_active_) recording_index_.begin(index_growing_);
+        if (index_active_) {
+            recording_index_.begin(index_growing_);
+            video_recording_indexes_.clear();
+            index_input_ranges_.clear();
+            index_input_cursor_ = 0;
+        }
     }
 
     void reposition(const std::uint64_t input_offset, const bool preserve_timeline) {
@@ -53,6 +60,14 @@ public:
         // therefore open data broadcasting immediately after a seek and keep
         // refreshing it from later carousel cycles.
         restart_application_assembly();
+        index_input_cursor_ = input_offset;
+        if (index_active_ && recording_index_.state() == aribtlv::IndexState::Partial) {
+            recording_index_.resume();
+            for (auto& [track_id, index] : video_recording_indexes_) {
+                (void)track_id;
+                index.resume();
+            }
+        }
         const auto cancelled = mse_enabled_ ? mse_remuxer_.reposition() : std::nullopt;
         demuxer_.reposition(aribtlv::RepositionOptions{input_offset, preserve_timeline});
         restoreLayerSelection(cancelled);
@@ -203,15 +218,24 @@ public:
     }
 
     void beginMseRecordedSeek() {
+        recorded_seek_observation_active_ = true;
         if (mse_enabled_) mse_remuxer_.beginMseRecordedSeek();
+    }
+
+    void prepareMseRecordedSeekLanding(const std::int64_t source_boundary_us) {
+        if (mse_enabled_) {
+            mse_remuxer_.prepareMseRecordedSeekLanding(source_boundary_us);
+        }
     }
 
     void finishMseRecordedSeek(const std::int64_t playback_position_us) {
         if (mse_enabled_) mse_remuxer_.finishMseRecordedSeek(playback_position_us);
+        recorded_seek_observation_active_ = false;
     }
 
     void cancelMseRecordedSeek() {
         if (mse_enabled_) mse_remuxer_.cancelMseRecordedSeek();
+        recorded_seek_observation_active_ = false;
     }
 
     void flushMseRecordedSeekAudio() {
@@ -224,6 +248,10 @@ public:
 
     void setMsePlaybackPosition(const std::int64_t presentation_time_us) {
         if (mse_enabled_) mse_remuxer_.setPlaybackPosition(presentation_time_us);
+    }
+
+    void setMseRecoveryGeneration(const std::uint64_t generation) {
+        if (mse_enabled_) mse_remuxer_.setRecoveryGeneration(generation);
     }
 
     void setMseSdrInHlg(const std::uint64_t video_track_id, const bool enabled) {
@@ -313,12 +341,39 @@ public:
 
     void startIndex(const bool growing) {
         recording_index_.begin(growing);
+        video_recording_indexes_.clear();
+        index_duration_us_.reset();
+        index_input_ranges_.clear();
+        index_input_cursor_ = 0;
         index_active_ = true;
         index_growing_ = growing;
     }
 
     bool finalizeIndex() {
-        return index_active_ && recording_index_.finalize();
+        if (!index_active_) return false;
+        const bool contiguous = (index_input_ranges_.empty() && index_input_cursor_ == 0) ||
+            (index_input_ranges_.size() == 1 &&
+             index_input_ranges_.front().first == 0 &&
+             index_input_ranges_.front().second == index_input_cursor_);
+        if (!contiguous) {
+            if (recording_index_.state() == aribtlv::IndexState::Building) {
+                if (!recording_index_.pause()) return false;
+            }
+            for (auto& [track_id, index] : video_recording_indexes_) {
+                (void)track_id;
+                if (index.state() == aribtlv::IndexState::Building && !index.pause()) return false;
+            }
+            return true;
+        }
+        if (recording_index_.state() == aribtlv::IndexState::Partial &&
+            !recording_index_.resume()) return false;
+        if (!recording_index_.finalize()) return false;
+        for (auto& [track_id, index] : video_recording_indexes_) {
+            (void)track_id;
+            if (index.state() == aribtlv::IndexState::Partial && !index.resume()) return false;
+            if (!index.finalize()) return false;
+        }
+        return true;
     }
 
     std::string indexState() const {
@@ -328,10 +383,17 @@ public:
     val indexDuration() const { return duration_value(recording_index_.duration()); }
     bool setIndexDuration(const std::int64_t duration_us) {
         if (!index_active_ || duration_us < 0) return false;
-        return recording_index_.updateDuration(aribtlv::DurationInfo{
+        const auto duration = aribtlv::DurationInfo{
             aribtlv::Timestamp{duration_us, 1000000},
             aribtlv::DurationStatus::Provisional,
-        });
+        };
+        if (!recording_index_.updateDuration(duration)) return false;
+        index_duration_us_ = duration_us;
+        for (auto& [track_id, index] : video_recording_indexes_) {
+            (void)track_id;
+            if (!index.updateDuration(duration)) return false;
+        }
+        return true;
     }
     std::size_t seekPointCount() const { return recording_index_.seekPoints().size(); }
     val indexedVideoTrack() const {
@@ -341,6 +403,15 @@ public:
 
     val previousSync(const std::int64_t target_us) const {
         const auto point = recording_index_.previousSync(
+            aribtlv::Timestamp{target_us, 1000000});
+        return point.has_value() ? seek_point_value(*point) : val::null();
+    }
+
+    val previousSyncForTrack(const std::int64_t target_us,
+                             const std::uint64_t video_track_id) const {
+        const auto found = video_recording_indexes_.find(video_track_id);
+        if (found == video_recording_indexes_.end()) return val::null();
+        const auto point = found->second.previousSync(
             aribtlv::Timestamp{target_us, 1000000});
         return point.has_value() ? seek_point_value(*point) : val::null();
     }
@@ -624,7 +695,23 @@ public:
     }
 
     void onAccessUnit(aribtlv::AccessUnit&& unit) override {
-        if (index_active_) recording_index_.observe(unit);
+        if (index_active_) {
+            recording_index_.observe(unit);
+            if (unit.codec == aribtlv::Codec::Hevc) {
+                auto [found, inserted] = video_recording_indexes_.try_emplace(unit.track_id);
+                if (inserted) {
+                    found->second.begin(index_growing_);
+                    found->second.selectVideoTrack(unit.track_id);
+                    if (index_duration_us_.has_value()) {
+                        found->second.updateDuration(aribtlv::DurationInfo{
+                            aribtlv::Timestamp{*index_duration_us_, 1000000},
+                            aribtlv::DurationStatus::Provisional,
+                        });
+                    }
+                }
+                found->second.observe(unit);
+            }
+        }
         if (mse_enabled_) {
             const auto automatic = mse_remuxer_.push(unit);
             if (automatic) synchronizeAcceptedLayerSwitch(*automatic);
@@ -633,6 +720,9 @@ public:
             unit.codec == aribtlv::Codec::Ttml ||
             (unit.pts.timescale > 1 && unit.dts.timescale > 1);
         const bool playback_event = unit.codec == aribtlv::Codec::Ttml ||
+            (recorded_seek_observation_active_ &&
+             (unit.codec == aribtlv::Codec::Hevc ||
+              unit.codec == aribtlv::Codec::AacLatm)) ||
             (unit.codec == aribtlv::Codec::Hevc &&
              (unit.random_access || unit.discontinuity)) ||
             (unit.codec == aribtlv::Codec::AacLatm && unit.discontinuity);
@@ -785,6 +875,24 @@ public:
     }
 
 private:
+    void observeIndexInput(const std::size_t size) {
+        if (!index_active_ || size == 0) return;
+        const auto start = index_input_cursor_;
+        const auto end = start + static_cast<std::uint64_t>(size);
+        index_input_cursor_ = end;
+        index_input_ranges_.emplace_back(start, end);
+        std::sort(index_input_ranges_.begin(), index_input_ranges_.end());
+        std::vector<std::pair<std::uint64_t, std::uint64_t>> merged;
+        for (const auto& range : index_input_ranges_) {
+            if (!merged.empty() && range.first <= merged.back().second) {
+                merged.back().second = std::max(merged.back().second, range.second);
+            } else {
+                merged.push_back(range);
+            }
+        }
+        index_input_ranges_ = std::move(merged);
+    }
+
     void apply_video_presentation_policy(const std::uint64_t track_id) {
         const auto decision = presentation_policy_.decision(
             explicit_sdr_video_track_ids_.count(track_id) != 0,
@@ -1067,6 +1175,11 @@ private:
     aribtlv::ApplicationResourceStore application_resources_;
     WasmMseRemuxer mse_remuxer_;
     aribtlv::RecordingIndex recording_index_;
+    std::map<std::uint64_t, aribtlv::RecordingIndex> video_recording_indexes_;
+    bool recorded_seek_observation_active_ = false;
+    std::optional<std::int64_t> index_duration_us_;
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> index_input_ranges_;
+    std::uint64_t index_input_cursor_ = 0;
     bool index_active_ = false;
     bool index_growing_ = false;
     bool mse_enabled_ = false;

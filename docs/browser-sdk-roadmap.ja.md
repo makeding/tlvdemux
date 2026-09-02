@@ -48,19 +48,17 @@ consumer injection のままです。demo と DPlayer の Range/Duration loop �
 
 ## Batch 5: Playback entry／recovery／stream helper
 
-recorded/live entry gating、selected-layer playback damage recovery、live input coalescing を public module
-へ移します。位置変更を許可するのは user の明示 seek、selected layer の
-`PlaybackDamage.action === "seek"`、既存 live-start rule だけです。subtitle rendering と
-data-broadcast DOM は consumer の責任です。
+recorded/live entry gating、selected-layer A/V evidence recovery、live input coalescing を public module
+へ移します。user の明示 seek は独立した bounded transaction のままです。自動 Recorded recovery は
+対応 A/V の exact evidence 後に一度だけ reposition でき、Live recovery は reposition も visible clock
+への書き込みも行いません。subtitle rendering と data-broadcast DOM は consumer の責任です。
 
-同じ public batch が video-unavailable resilience を所有します。相異なる前方 RAP を 3 回試しても新しい
-提示 frame がない場合は required track set を audio にし、audio clock を進め、後続 RAP の実提示 frame
-だけで video を復帰できます。SourceBuffer の in-place 非 active 化は runtime probe 済み optimization、
-新しい audio-only／A/V MediaSource への置換を portable path とします。録画置換は 16 MiB seek budget を
-共有し、Live 置換は input を再接続しない有界 demux-output fan-out を使い、demo は structured mode／error event だけを表示します。
-public `mse-live-transition` helper がこの有界 candidate fan-out と提示 frame commit 境界を所有し、
-consumer での再実装を禁止します。consumer は attachment を維持した candidate MediaElement を
-昇格し、buffer 済み candidate の SourceBuffer list を空にする detach／reattach は行いません。
+同じ public batch が `starting`、`av`、`switching`、`held-audio`、`stalled`、`restoring` の六状態 core
+machine で video-unavailable resilience を所有します。安定 video window 後の実 output RAP と、整列して
+連続する対応 AAC だけが自動 recovery candidate です。Recorded は controller で cache hit または 64 MiB
+以内の一回の exact landing を行います。Live は同じ demuxer への入力を 16 MiB を越えて継続し、復旧 pair
+を原位置の anchor へ in-place SourceBuffer splice します。旧三回 RAP、audio-only MediaSource replacement、
+candidate MediaElement、`mse-live-transition` path は fallback として残さず削除します。
 
 ## Release／migration 順序
 

@@ -493,7 +493,7 @@ public:
             }
             recovery_observation_eligible_ = true;
         }
-        if (recorded_seek_concealment_target_us_ &&
+        if (output_enabled && recorded_seek_concealment_target_us_ &&
             source_damage_observation_ == SourceDamageObservation::None &&
             scaled(unit.pts.value, unit.pts.timescale, 1000000) >
                 *recorded_seek_concealment_target_us_) {

@@ -173,8 +173,8 @@ for (const firstType of ['video', 'audio']) {
   pipeline.onMseSegment(segment(firstType, firstType === 'video' ? 3 : 4,
     ...timing[firstType]));
   pipeline.onMseInit(init(secondType, secondType === 'video' ? 1 : 2));
-  assert.equal(pipeline.queues.size, 0,
-    `${firstType}-first startup committed before common A/V was known`);
+  assert.equal(pipeline.queues.size, firstType === 'video' ? 2 : 0,
+    `${firstType}-first startup did not wait for the first video entry boundary`);
   pipeline.onMseSegment(segment(secondType, secondType === 'video' ? 3 : 4,
     ...timing[secondType]));
   assert.deepEqual(pipeline.queues.get('video').operations, [
@@ -185,8 +185,44 @@ for (const firstType of ['video', 'audio']) {
   assert.deepEqual(pipeline.queues.get('audio').operations, [
     ['offset', -0.166833],
     ['append', 2, null],
-    ['append', 4, {startTimeSeconds: 0.004875, endTimeSeconds: 0.260875}],
-  ], `${firstType}-first audio did not share the atomic entry mapping`);
+  ], `${firstType}-first audio prefix was not cut at the video entry mapping`);
+}
+
+{
+  const discarded = [];
+  const pipeline = createMseOutputPipeline({
+    mediaSource: {}, media: {}, freshRecordedEntryAlignment: true,
+    recordedPresentationStartUs: 534666n,
+    queueFactory(type, trackInit) { return new FakeQueue(type, trackInit); },
+    onInactiveOutput(event) { discarded.push(event); },
+  });
+  pipeline.onMseInit(init('video', 1));
+  pipeline.onMseInit(init('audio', 2));
+  assert.equal(pipeline.queues.size, 0,
+    'fresh Recorded startup created one or both SourceBuffers before a video boundary');
+  assert.doesNotThrow(() => pipeline.onMseSegment({
+    type: 'video', data: new Uint8Array(MSE_OUTPUT_PENDING_LIMIT_BYTES + 1),
+    startTimeUs: 600000n, endTimeUs: 1600000n,
+  }), 'the first video segment hit the wait limit before atomically installing the A/V pair');
+  assert.deepEqual([...pipeline.queues.keys()], ['video', 'audio'],
+    'fresh Recorded startup did not create the matched SourceBuffer pair atomically');
+  assert.equal(pipeline.pendingState().segmentBytes.video, 0,
+    'fresh Recorded startup accumulated initialized video outside its queue');
+  assert.deepEqual(pipeline.queues.get('video').operations.slice(0, 2), [
+    ['offset', -0.6],
+    ['append', 1, null],
+  ], 'fresh Recorded video did not map the first video boundary to zero');
+  assert.deepEqual(pipeline.queues.get('audio').operations, [
+    ['offset', -0.6],
+    ['append', 2, null],
+  ], 'fresh Recorded audio did not share the video boundary mapping');
+  pipeline.onMseSegment(segment('audio', 5, 100000n, 700000n));
+  pipeline.onMseSegment(segment('audio', 6, 600000n, 800000n));
+  assert.deepEqual(pipeline.queues.get('audio').operations.at(-1), [
+    'append', 6, {startTimeSeconds: 0.6, endTimeSeconds: 0.8},
+  ], 'audio beginning at the video entry boundary was not retained');
+  assert.deepEqual(discarded.map(event => event.kind), ['entry-prefix'],
+    'audio wholly before the first video boundary was not discarded');
 }
 
 {
@@ -199,10 +235,10 @@ for (const firstType of ['video', 'audio']) {
   pipeline.onMseSegment(segment('video', 3, 200000n, 1200000n));
   pipeline.onMseInit(init('audio', 2));
   pipeline.onMseSegment(segment('audio', 4, 180000n, 1200000n));
-  assert.deepEqual(pipeline.queues.get('video').operations[0], ['offset', -0.1],
-    'fresh MSE video did not use the union presentation start');
-  assert.deepEqual(pipeline.queues.get('audio').operations[0], ['offset', -0.1],
-    'fresh MSE audio did not share the union presentation start');
+  assert.deepEqual(pipeline.queues.get('video').operations[0], ['offset', -0.2],
+    'fresh MSE video did not map the first video boundary to zero');
+  assert.deepEqual(pipeline.queues.get('audio').operations[0], ['offset', -0.2],
+    'fresh MSE audio did not share the first video boundary');
 }
 
 {

@@ -12,9 +12,11 @@
 
 #include <cmath>
 #include <cstddef>
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -780,6 +782,8 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("getMseRecordedSeekLandingEvidence",
                   &WasmDemuxer::getMseRecordedSeekLandingEvidence)
         .function("beginMseRecordedSeek", &WasmDemuxer::beginMseRecordedSeek)
+        .function("prepareMseRecordedSeekLanding",
+                  &WasmDemuxer::prepareMseRecordedSeekLanding)
         .function("flushMseRecordedSeekAudio",
                   &WasmDemuxer::flushMseRecordedSeekAudio)
         .function("flushMseRecordedSeekLanding",
@@ -788,6 +792,8 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("cancelMseRecordedSeek", &WasmDemuxer::cancelMseRecordedSeek)
         .function("setMsePlaybackPosition",
                   &WasmDemuxer::setMsePlaybackPosition)
+        .function("setMseRecoveryGeneration",
+                  &WasmDemuxer::setMseRecoveryGeneration)
         .function("setMseSdrInHlg", &WasmDemuxer::setMseSdrInHlg)
         .function("setMseToneMappingMode", &WasmDemuxer::setMseToneMappingMode)
         .function("setMseHlgOutputSupported",
@@ -809,6 +815,7 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("seekPointCount", &WasmDemuxer::seekPointCount)
         .function("indexedVideoTrack", &WasmDemuxer::indexedVideoTrack)
         .function("previousSync", &WasmDemuxer::previousSync)
+        .function("previousSyncForTrack", &WasmDemuxer::previousSyncForTrack)
         .function("seekPointsFor", &WasmDemuxer::seekPointsFor)
         .function("estimateOffset", &WasmDemuxer::estimateOffset)
         .function("applicationResources", &WasmDemuxer::applicationResources)

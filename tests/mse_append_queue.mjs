@@ -327,10 +327,11 @@ for (const mime of [
 
 {
   const removals = [];
+  let endOfStreamCalls = 0;
   const mediaSource = {
     duration: 10,
     readyState: 'open',
-    endOfStream() { this.readyState = 'ended'; },
+    endOfStream() { endOfStreamCalls += 1; this.readyState = 'ended'; },
   };
   const queue = end => ({
     sourceBuffer: {remove: (start, finish) => removals.push([start, finish])},
@@ -344,6 +345,26 @@ for (const mime of [
   assert.equal(result.truncatedTo, 9);
   assert.equal(mediaSource.duration, 9);
   assert.equal(mediaSource.readyState, 'ended');
+  assert.equal(endOfStreamCalls, 1);
+}
+
+{
+  let endOfStreamCalls = 0;
+  const mediaSource = {
+    duration: 10,
+    readyState: 'open',
+    endOfStream() { endOfStreamCalls += 1; this.readyState = 'ended'; },
+  };
+  const queue = {
+    sourceBuffer: {remove() {}},
+    bufferedRanges: () => [{start: 0, end: 10}],
+    waitIdle: async () => undefined,
+  };
+  await finalizeMseMediaSource(mediaSource, [queue], {endOfStream: false});
+  assert.equal(mediaSource.readyState, 'open',
+    'seekable Recorded EOF ended its retained MediaSource');
+  assert.equal(endOfStreamCalls, 0,
+    'seekable Recorded EOF called MediaSource.endOfStream()');
 }
 
 console.log('mse append queue regression tests passed');

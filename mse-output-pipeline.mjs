@@ -1,7 +1,6 @@
 import {MseAppendQueue, finalizeMseMediaSource} from './mse-append-queue.mjs';
 
 export const MSE_OUTPUT_PENDING_LIMIT_BYTES = 4 * 1024 * 1024;
-const MSE_FRESH_RECORDED_PENDING_LIMIT_BYTES = 16 * 1024 * 1024;
 
 function normalizeRequiredTracks(requiredTracks) {
   const tracks = [...new Set(requiredTracks)];
@@ -39,9 +38,8 @@ export function createMseOutputPipeline({
   const segmentTypes = new Set();
   let currentRequiredTracks = normalizeRequiredTracks(requiredTracks);
   let discardedBytes = 0;
-  const resolvedPendingBytesLimit = pendingBytesLimit ?? (freshRecordedEntryAlignment
-    ? MSE_FRESH_RECORDED_PENDING_LIMIT_BYTES
-    : MSE_OUTPUT_PENDING_LIMIT_BYTES);
+  let initialEntryBoundaryUs = null;
+  const resolvedPendingBytesLimit = pendingBytesLimit ?? MSE_OUTPUT_PENDING_LIMIT_BYTES;
 
   const pendingBytes = type => (pendingSegments.get(type) ?? [])
     .reduce((sum, segment) => sum + segment.data.byteLength, 0);
@@ -59,14 +57,16 @@ export function createMseOutputPipeline({
       discard('segment', segment);
       return;
     }
+    if (freshRecordedEntryAlignment && initialEntryBoundaryUs !== null &&
+        segment.type === 'audio' && BigInt(segment.startTimeUs) < initialEntryBoundaryUs) {
+      discard('entry-prefix', segment);
+      return;
+    }
     const queue = queues.get(segment.type);
     if (!queue) {
       const pending = pendingSegments.get(segment.type);
       if (!pending) throw new Error(`Unsupported MSE segment type: ${segment.type}`);
       pending.push(segment);
-      if (pendingBytes(segment.type) > resolvedPendingBytesLimit) {
-        throw new Error(`${segment.type} media exceeded the initialization wait limit.`);
-      }
       return;
     }
     queue.append(segment.data, {
@@ -75,7 +75,7 @@ export function createMseOutputPipeline({
     });
   };
 
-  const firstCommonEntryUs = () => {
+  const firstVideoEntryUs = () => {
     if (currentRequiredTracks.length === 1) {
       const segments = pendingSegments.get(currentRequiredTracks[0]);
       return segments.reduce((earliest, segment) => {
@@ -83,17 +83,10 @@ export function createMseOutputPipeline({
         return earliest === null || start < earliest ? start : earliest;
       }, null);
     }
-    let earliest = null;
-    for (const video of pendingSegments.get('video')) {
-      for (const audio of pendingSegments.get('audio')) {
-        const start = BigInt(video.startTimeUs) > BigInt(audio.startTimeUs)
-          ? BigInt(video.startTimeUs) : BigInt(audio.startTimeUs);
-        const end = BigInt(video.endTimeUs) < BigInt(audio.endTimeUs)
-          ? BigInt(video.endTimeUs) : BigInt(audio.endTimeUs);
-        if (end > start && (earliest === null || start < earliest)) earliest = start;
-      }
-    }
-    return earliest;
+    return pendingSegments.get('video').reduce((earliest, segment) => {
+      const start = BigInt(segment.startTimeUs);
+      return earliest === null || start < earliest ? start : earliest;
+    }, null);
   };
 
   const installRequiredInits = () => {
@@ -106,11 +99,10 @@ export function createMseOutputPipeline({
       if (pendingSplices.size > 0) {
         if (!currentRequiredTracks.every(type => pendingSplices.has(type))) return false;
       } else {
-        const entryUs = firstCommonEntryUs();
+        const entryUs = firstVideoEntryUs();
         if (entryUs === null) return false;
-        if (entryTimestampOffsetSeconds === null) {
-          entryTimestampOffsetSeconds = -Number(entryUs) / 1000000;
-        }
+        initialEntryBoundaryUs = entryUs;
+        entryTimestampOffsetSeconds = -Number(entryUs) / 1000000;
       }
     }
     for (const type of currentRequiredTracks) {
@@ -166,6 +158,10 @@ export function createMseOutputPipeline({
     }
     appendSegment(segment);
     installRequiredInits();
+    if (!queues.has(segment.type) &&
+        pendingBytes(segment.type) > resolvedPendingBytesLimit) {
+      throw new Error(`${segment.type} media exceeded the initialization wait limit.`);
+    }
   };
 
   const splice = (type, detail) => {

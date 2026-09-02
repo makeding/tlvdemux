@@ -6,6 +6,11 @@ export interface HlgSdrRendererOptions {
   onBackendChange?: (backend: "WebGPU" | "WebGL") => void;
 }
 
+export interface HlgSdrRenderedFrame {
+  source: HTMLCanvasElement;
+  mediaTime: number;
+}
+
 export class HlgSdrRenderer {
   constructor(options: HlgSdrRendererOptions);
   setColorLut(lut: {
@@ -16,5 +21,8 @@ export class HlgSdrRenderer {
   }): void;
   setComparisonEnabled(enabled: boolean): void;
   setEnabled(enabled: boolean): void;
+  readonly activeCanvas: HTMLCanvasElement | null;
+  readonly hasActivePresentation: boolean;
+  onRenderedFrame(listener: (frame: HlgSdrRenderedFrame) => void): () => void;
   destroy(): void;
 }

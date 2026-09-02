@@ -49,6 +49,17 @@ assert.equal(demuxer.seekPointsFor(0n), null);
 assert.equal(demuxer.estimateOffset(0n, 1n), 0n);
 demuxer.delete();
 
+const sparseIndexDemuxer = new module.TlvDemuxer({});
+sparseIndexDemuxer.startIndex(false);
+assert.equal(sparseIndexDemuxer.setIndexDuration(1000000n), true);
+sparseIndexDemuxer.reposition(1024n, true);
+assert.equal(sparseIndexDemuxer.push(new Uint8Array([0])), true);
+sparseIndexDemuxer.flush();
+assert.equal(sparseIndexDemuxer.finalizeIndex(), true);
+assert.equal(sparseIndexDemuxer.indexState(), 'partial',
+  'a sparse byte observation was falsely finalized as a complete recording index');
+sparseIndexDemuxer.delete();
+
 assert.deepEqual(errors, []);
 
 const cancellations = [];

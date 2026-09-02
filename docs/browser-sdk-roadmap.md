@@ -87,28 +87,26 @@ no recovery path falls back to downloading the complete recording.
 
 ## Batch 5: Playback entry, recovery, and stream helpers
 
-Move recorded/live playback-entry gating, selected-layer playback-damage
-recovery, and live input coalescing into public modules. Recovery may reposition
-only for an explicit user seek, selected-layer `PlaybackDamage.action ===
-"seek"`, or the existing live-start rule. Subtitle rendering and data-broadcast
-DOM remain consumer responsibilities.
+Move recorded/live playback-entry gating, selected-layer A/V evidence recovery,
+and live input coalescing into public modules. Explicit user seek remains its
+own bounded transaction. Automatic Recorded recovery may reposition once only
+after exact matched A/V evidence; Live recovery never repositions or writes the
+visible media clock. Subtitle rendering and data-broadcast DOM remain consumer
+responsibilities.
 
 Acceptance: no hidden seek, no recovery from an unselected layer, generation
 and restart races cancel cleanly, live coalescing is bounded, and error codes
 remain visible to the consumer.
 
-The same public batch owns video-unavailable resilience. After three distinct
-forward RAP attempts with no newly presented frame it may switch the required
-track set to audio, keep the audio clock moving, and restore only after a later
-RAP produces an actual presented frame. In-place SourceBuffer deactivation is a
-runtime-probed optimization; fresh audio-only/A/V MediaSource replacement is the
-portable path. Recorded replacement shares the 16 MiB seek budget, live
-replacement uses bounded demux-output fan-out without reconnecting input, and the demo only renders structured
-mode/error events.
-The public `mse-live-transition` helper owns that bounded candidate fan-out and
-presented-frame commit boundary so consumers do not reproduce it. The consumer
-promotes the still-attached candidate MediaElement; it never detaches and
-reattaches a buffered candidate whose SourceBuffer lists would be emptied.
+The same public batch owns video-unavailable resilience through the six-state
+core machine: `starting`, `av`, `switching`, `held-audio`, `stalled`, and
+`restoring`. A real output RAP after a stable video window plus aligned,
+continuous matched AAC is the only automatic recovery candidate. Recorded uses
+its controller for a cache hit or one exact landing within 64 MiB. Live keeps
+feeding the same demuxer beyond 16 MiB and maps the recovered pair onto its
+stalled anchor with in-place SourceBuffer splices. The superseded three-RAP,
+audio-only MediaSource replacement, candidate MediaElement, and
+`mse-live-transition` paths are removed rather than retained as fallbacks.
 
 ## Release and migration order
 

@@ -26,6 +26,11 @@ public:
         source_buffer_timestamp_offset_us_ = timestamp_offset_us;
     }
 
+    void set_minimum_presentation_time(
+        const std::optional<std::int64_t> presentation_time_us) noexcept {
+        minimum_presentation_time_us_ = presentation_time_us;
+    }
+
     // Continue this muxer's mapped output timeline at the exact end of the
     // previous audio track. The media timestamps remain in SourceBuffer input
     // coordinates, so remove this muxer's complete absolute timestamp offset
@@ -186,6 +191,11 @@ public:
             }
         }
         if (timestamp < 0) return;
+        if (minimum_presentation_time_us_) {
+            if (scaled(timestamp, track_->timescale, 1000000) <
+                *minimum_presentation_time_us_) return;
+            minimum_presentation_time_us_.reset();
+        }
         if (track_configuration_differs(frame)) {
             // LATM can carry a new StreamMuxConfig on the same broadcast
             // audio track (this stream changes from 5.1 to stereo). The old
@@ -324,6 +334,7 @@ private:
     bool first_after_resume_ = false;
     std::optional<std::int64_t> contiguous_emitted_end_us_;
     std::int64_t source_buffer_timestamp_offset_us_ = 0;
+    std::optional<std::int64_t> minimum_presentation_time_us_;
     std::int64_t timestamp_correction_ticks_ = 0;
     std::optional<std::int64_t> timeline_offset_us_;
     std::deque<Sample> history_;

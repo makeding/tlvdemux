@@ -52,6 +52,23 @@ const queue = (ranges, committed = ranges) => ({
 }
 
 {
+  const target = 341.943285;
+  const video = queue([{start: 341.941462, end: 346.095611}]);
+  const audio = queue([{start: 341.961889, end: 345.737889}]);
+  const queues = new Map([['video', video], ['audio', audio]]);
+  const flow = createMsePlaybackFlowControl({
+    media: {currentTime: target}, queues, entryKind: 'seek', entryTimeSeconds: target,
+  });
+  assert.equal(flow.entryCovered(), true,
+    'exact video plus a first AAC frame within one frame boundary was rejected');
+  assert.equal(flow.landingMode(), 'exact');
+  audio.ranges = [{start: target + 0.022001, end: 345.737889}];
+  audio.committed = audio.ranges;
+  assert.equal(flow.entryCovered(), false,
+    'an audio gap beyond one AAC frame was accepted as an exact landing');
+}
+
+{
   const media = {currentTime: 50};
   const video = queue([{start: 49, end: 53}], []);
   const audio = queue([{start: 49, end: 53}], []);
@@ -167,22 +184,37 @@ const queue = (ranges, committed = ranges) => ({
 }
 
 {
-  const media = {currentTime: 0};
+  let visibleTime = 0;
+  let currentTimeWrites = 0;
+  const media = {
+    get currentTime() { return visibleTime; },
+    set currentTime(value) {
+      currentTimeWrites += 1;
+      visibleTime = value;
+    },
+  };
   const queues = new Map([
-    ['video', queue([])],
-    ['audio', queue([])],
+    ['video', {...queue([]), waitFlowControlled() {
+      throw new Error('stalled Live video MSE callback must not gate input');
+    }}],
+    ['audio', {...queue([]), waitFlowControlled() {
+      throw new Error('stalled Live audio MSE callback must not gate input');
+    }}],
   ]);
   const flow = createMsePlaybackFlowControl({media, queues, entryKind: 'live'});
   let bytes = 0;
-  await assert.rejects(async () => {
-    while (true) {
-      bytes += 2 * 1024 * 1024;
-      await flow.afterPush(2 * 1024 * 1024);
-    }
-  }, error => error.code === MSE_STARTUP_NO_COMMON_AV &&
-    error.message.includes('common live A/V range'));
-  assert.equal(bytes, 16 * 1024 * 1024,
-    'live startup without common A/V exceeded the 16 MiB input budget');
+  for (let push = 0; push < 20; push += 1) {
+    bytes += 2 * 1024 * 1024;
+    const result = await flow.afterPush(2 * 1024 * 1024);
+    assert.deepEqual(result, {commonAhead: 0, entryCovered: false},
+      'temporary Live A/V loss stopped accepting input while recovery evidence was absent');
+  }
+  assert.equal(bytes, 40 * 1024 * 1024,
+    'Live recovery test did not cross the former 16 MiB fatal boundary');
+  assert.equal(currentTimeWrites, 0,
+    'Live flow control moved the visible media clock while waiting in place');
+  assert.equal(media.currentTime, 0,
+    'Live flow control changed the visible stalled position');
 }
 
 {

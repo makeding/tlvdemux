@@ -5,6 +5,37 @@
 > labelled **legacy `tlvdemux` implementation**; this is a historical name,
 > not a separate product line.
 
+## Unreleased
+
+- Replace the video-only three-RAP recovery and candidate-MediaSource paths
+  with one matched A/V evidence machine (`starting`, `av`, `switching`,
+  `held-audio`, `stalled`, `restoring`). Recorded may perform one exact,
+  generation-fenced recovery reposition; Live stays on the same media clock and
+  MediaSource while input continues beyond the former 16 MiB fatal boundary.
+- Keep a stateful Recorded seek on the same contiguous parser window when its
+  preceding RAP appears at a planning-tier frontier, promoting one fixed tier
+  to mature the target-relative stable horizon instead of failing `no-rap`.
+
+## ~~[0.3.6] - 2026-08-31~~
+
+> **Deprecated:** All changes released in 0.3.6 were reverted. This entry is
+> retained only as release history.
+
+- ~~Give an explicit recorded seek exclusive ownership of probe, landing,
+  append, and exact A/V commit so automatic layer switching, resilience
+  recovery, and stale asynchronous playback intents cannot replace its
+  requested `currentTime` or frozen entry clock.~~
+- ~~Commit a landing from the remuxer's acknowledged coded A/V intervals while
+  still requiring an intersecting real browser-buffered range, tolerating
+  Chromium's imprecise HEVC RAP boundary without accepting genuinely
+  later-only media.~~
+- ~~Keep probing and landing inside one 16 MiB budget with bounded 1 MiB reads,
+  stable RAP observations, earlier-AAC preroll, idempotent worker track replay,
+  and failure diagnostics that snapshot phase, entry decision, committed and
+  browser-buffered ranges, and byte consumption before cancellation.~~
+- ~~Refresh generated CMake metadata during WASM builds so Nix Emscripten and
+  Ninja store-path upgrades do not reuse stale toolchain paths.~~
+
 ## [0.3.5] - 2026-08-29
 
 - Preserve the complete absolute `SourceBuffer.timestampOffset` across AAC

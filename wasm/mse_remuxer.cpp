@@ -84,8 +84,9 @@ public:
     std::optional<std::int64_t> switch_audio(
         const std::uint64_t id, const std::int64_t earliest_presentation_time_us,
         const std::optional<std::int64_t> output_boundary_us = std::nullopt,
-        const std::optional<std::int64_t> timestamp_offset_us = std::nullopt) {
-        if (pending_layer) return std::nullopt;
+        const std::optional<std::int64_t> timestamp_offset_us = std::nullopt,
+        const bool completing_layer_transaction = false) {
+        if (pending_layer && !completing_layer_transaction) return std::nullopt;
         if (audio_id == id && active_audio != nullptr) return std::nullopt;
         const auto candidate = audio.find(id);
         if (candidate == audio.end()) return std::nullopt;
@@ -176,14 +177,18 @@ public:
             return;
         }
         const auto completed = *pending_layer;
-        pending_layer.reset();
-        output.commit_staged_video();
+        output.begin_audio_staging();
         const auto boundary = switch_audio(
             completed.audio_track_id, earliest_audio, video_boundary,
-            std::optional<std::int64_t>{timestamp_offset_us});
-        if (!boundary) return;
+            std::optional<std::int64_t>{timestamp_offset_us}, true);
+        if (!boundary) {
+            output.cancel_audio_staging();
+            return;
+        }
+        pending_layer.reset();
         mse_timestamp_offset_us = timestamp_offset_us;
         synchronize_timestamp_offsets();
+        output.commit_staged_video();
         output.layer_switch(
             completed.video_track_id, completed.audio_track_id,
             video_boundary, *boundary);
@@ -220,6 +225,9 @@ public:
             }
             const auto automatic = recorded_seek_active
                 ? VideoLayerObservation{} : automatic_layers.observe(unit);
+            if (!recorded_seek_active && automatic.recovery_evidence) {
+                sink.onMseAvRecovery(*automatic.recovery_evidence);
+            }
             if (!recorded_seek_active && !pending_layer && automatic.playback_damage) {
                 sink.onPlaybackDamage(*automatic.playback_damage);
             }
@@ -247,6 +255,9 @@ public:
                                   video.timeline_offset_us());
             const auto automatic = recorded_seek_active
                 ? VideoLayerObservation{} : automatic_layers.observe(unit);
+            if (!recorded_seek_active && automatic.recovery_evidence) {
+                sink.onMseAvRecovery(*automatic.recovery_evidence);
+            }
             if (!recorded_seek_active && !pending_layer && automatic.playback_damage) {
                 sink.onPlaybackDamage(*automatic.playback_damage);
             }
@@ -270,8 +281,20 @@ public:
         if (!playback_damage) return std::nullopt;
         if (recorded_seek_active) return std::nullopt;
         const auto observation = automatic_layers.observeDamage(*playback_damage);
+        if (observation.recovery_evidence) {
+            sink.onMseAvRecovery(*observation.recovery_evidence);
+        }
         if (!observation.playback_damage && !observation.switch_request) {
-            sink.onPlaybackDamage(*playback_damage);
+            // A damage span's first parser-visible RAP is only a possible
+            // decoder restart. Without a configured matched A/V tracker there
+            // is no authority to expose it as a seek target. Keep the legacy
+            // diagnostic surface, but normalize the decision to waiting.
+            auto waiting = *playback_damage;
+            waiting.recovery_time_us.reset();
+            waiting.recovery_input_offset = 0;
+            waiting.recovery_restart_offset = 0;
+            waiting.action = PlaybackRecoveryAction::WaitForRecovery;
+            sink.onPlaybackDamage(waiting);
             return std::nullopt;
         }
         if (!pending_layer && observation.playback_damage) {
@@ -334,8 +357,17 @@ public:
         automatic_layers.suspend();
     }
 
+    void prepare_recorded_seek_landing(const std::int64_t source_boundary_us) {
+        if (!recorded_seek_active) return;
+        if (active_audio) {
+            active_audio->set_minimum_presentation_time(source_boundary_us);
+        }
+        output.recorded_seek_splice(source_boundary_us, mse_timestamp_offset_us);
+    }
+
     void finish_recorded_seek(const std::int64_t playback_position_us) {
         if (!recorded_seek_active) return;
+        if (active_audio) active_audio->set_minimum_presentation_time(std::nullopt);
         automatic_layers.setPlaybackPosition(
             playback_position_us - mse_timestamp_offset_us);
         recorded_seek_active = false;
@@ -350,6 +382,7 @@ public:
 
     void cancel_recorded_seek() {
         if (!recorded_seek_active) return;
+        if (active_audio) active_audio->set_minimum_presentation_time(std::nullopt);
         recorded_seek_active = false;
         automatic_layers.discardDeferredDecision();
         if (automatic_requested) automatic_layers.resume();
@@ -531,6 +564,11 @@ void tlvdemux::MseRemuxer::beginMseRecordedSeek() {
     impl_->begin_recorded_seek();
 }
 
+void tlvdemux::MseRemuxer::prepareMseRecordedSeekLanding(
+    const std::int64_t source_boundary_us) {
+    impl_->prepare_recorded_seek_landing(source_boundary_us);
+}
+
 void tlvdemux::MseRemuxer::finishMseRecordedSeek(
     const std::int64_t playback_position_us) {
     impl_->finish_recorded_seek(playback_position_us);
@@ -544,6 +582,11 @@ void tlvdemux::MseRemuxer::setPlaybackPosition(
     const std::int64_t presentation_time_us) {
     impl_->automatic_layers.setPlaybackPosition(
         presentation_time_us - impl_->mse_timestamp_offset_us);
+}
+
+void tlvdemux::MseRemuxer::setRecoveryGeneration(
+    const std::uint64_t generation) {
+    impl_->automatic_layers.setGeneration(generation);
 }
 
 void tlvdemux::MseRemuxer::setSdrInHlg(

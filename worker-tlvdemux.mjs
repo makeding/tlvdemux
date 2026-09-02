@@ -262,6 +262,9 @@ class WorkerDemuxer extends WorkerObject {
     return this.call('getMseRecordedSeekLandingEvidence');
   }
   beginMseRecordedSeek() { return this.call('beginMseRecordedSeek'); }
+  prepareMseRecordedSeekLanding(sourceBoundaryUs) {
+    return this.call('prepareMseRecordedSeekLanding', [sourceBoundaryUs]);
+  }
   flushMseRecordedSeekAudio() {
     return this.call('flushMseRecordedSeekAudio');
   }
@@ -274,6 +277,10 @@ class WorkerDemuxer extends WorkerObject {
   cancelMseRecordedSeek() { return this.call('cancelMseRecordedSeek'); }
   setMsePlaybackPosition(presentationTimeUs) {
     return this.call('setMsePlaybackPosition', [presentationTimeUs]);
+  }
+
+  setMseRecoveryGeneration(generation) {
+    return this.call('setMseRecoveryGeneration', [generation]);
   }
   setMseSdrInHlg(videoTrackId, enabled) {
     return this.call('setMseSdrInHlg', [videoTrackId, enabled]);
@@ -303,6 +310,13 @@ class WorkerDemuxer extends WorkerObject {
   }
   seekPointCount() { return this.call('seekPointCount'); }
   indexState() { return this.call('indexState'); }
+  indexDuration() { return this.call('indexDuration'); }
+  indexedVideoTrack() { return this.call('indexedVideoTrack'); }
+  previousSync(target) { return this.call('previousSync', [target]); }
+  previousSyncForTrack(target, videoTrackId) {
+    return this.call('previousSyncForTrack', [target, videoTrackId]);
+  }
+  seekPointsFor(target) { return this.call('seekPointsFor', [target]); }
   applicationEntry(contextId) {
     return this.cache()?.entries.get(contextId) ?? null;
   }

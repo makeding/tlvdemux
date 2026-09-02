@@ -106,6 +106,9 @@ demuxer = new module.TlvDemuxer({
     }
   },
   onMseSegment(segment) {
+    if (startedLayers.length > 0 && completedLayer === null) {
+      eventOrder.push(`segment:${segment.type}`);
+    }
     segmentRanges[segment.type]?.push({
       startUs: BigInt(segment.startTimeUs),
       endUs: BigInt(segment.endTimeUs),
@@ -130,9 +133,11 @@ demuxer = new module.TlvDemuxer({
     });
   },
   onMseVideoSplice(splice) {
+    eventOrder.push('splice:video');
     splices.video.push(splice);
   },
   onMseAudioSplice(splice) {
+    eventOrder.push('splice:audio');
     splices.audio.push(splice);
   },
   onMseLayerSwitch(layer) {
@@ -216,6 +221,24 @@ try {
     'startup video splice did not map rainfall output to timestamp zero');
   assert.equal(BigInt(splices.audio[0]?.timestampOffsetUs), -821944n,
     'startup audio splice did not use the video timestamp mapping');
+  const switchStartIndex = eventOrder.findIndex(event =>
+    event.startsWith('switch-started:'));
+  const firstReplacementVideoMediaIndex = eventOrder.findIndex(
+    (event, index) => index > switchStartIndex && event === 'segment:video');
+  for (const requiredEvent of [
+    'splice:video', 'splice:audio', 'init:video:1920x1080', 'init:audio:0x0',
+  ]) {
+    const eventIndex = eventOrder.findIndex(
+      (event, index) => index > switchStartIndex && event === requiredEvent);
+    assert.ok(eventIndex > switchStartIndex && eventIndex < firstReplacementVideoMediaIndex,
+      `${requiredEvent} was not published before replacement media: ${JSON.stringify(eventOrder)}`);
+  }
+  const replacementAudioInitIndex = eventOrder.findIndex(
+    (event, index) => index > switchStartIndex && event === 'init:audio:0x0');
+  const firstReplacementAudioMediaIndex = eventOrder.findIndex(
+    (event, index) => index > replacementAudioInitIndex && event === 'segment:audio');
+  assert.ok(firstReplacementAudioMediaIndex > replacementAudioInitIndex,
+    `replacement audio media preceded its init: ${JSON.stringify(eventOrder)}`);
   assert.equal(startedLayers.length, 1,
     'parser progress started a second automatic layer switch at a stalled playhead');
   assert.equal(completedLayers.length, 1,

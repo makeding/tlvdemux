@@ -2,7 +2,6 @@
 #include <tlvdemux/hevc_metadata.hpp>
 #include "../src/mse/hevc_parser.hpp"
 #include "mse_remuxer_test_media.hpp"
-
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
@@ -13,15 +12,12 @@
 #include <string>
 #include <utility>
 #include <vector>
-
 namespace {
-
 void check(const bool condition, const std::string& message) {
     if (condition) return;
     std::cerr << "FAIL: " << message << '\n';
     std::exit(1);
 }
-
 class TestSink final : public tlvdemux::MseSink {
 public:
     void onMseInit(tlvdemux::MseTrackInit&& init) override {
@@ -54,6 +50,10 @@ public:
         const tlvdemux::MseVideoRecoveryEvent& recovery) override {
         video_recovery.push_back(recovery);
     }
+    void onMseAvRecovery(const tlvdemux::MseAvRecoveryEvidence& recovery) override {
+        events.push_back("av-recovery");
+        av_recovery.push_back(recovery);
+    }
     void onMseLayerSwitch(const tlvdemux::MseLayerSwitch& layer) override {
         events.push_back("layer-switch");
         layer_switches.push_back(layer);
@@ -72,7 +72,6 @@ public:
         events.push_back("playback-damage");
         playback_damage.push_back(damage);
     }
-
     std::vector<tlvdemux::MseTrackInit> inits;
     std::vector<tlvdemux::MseMediaSegment> segments;
     std::vector<tlvdemux::MseAudioSplice> splices;
@@ -80,13 +79,13 @@ public:
     std::vector<tlvdemux::MseVideoSplice> video_splices;
     std::vector<tlvdemux::MseVideoProperties> video_properties;
     std::vector<tlvdemux::MseVideoRecoveryEvent> video_recovery;
+    std::vector<tlvdemux::MseAvRecoveryEvidence> av_recovery;
     std::vector<tlvdemux::MseLayerSwitch> layer_switches;
     std::vector<tlvdemux::MseLayerSwitchStarted> layer_switch_starts;
     std::vector<tlvdemux::MseLayerSwitchCancelled> layer_switch_cancellations;
     std::vector<tlvdemux::PlaybackDamage> playback_damage;
     std::vector<std::string> events;
 };
-
 std::vector<std::uint8_t> loas_frame(const std::uint32_t channel_configuration) {
     BitWriter writer;
     writer.bits(0, 1);  // useSameStreamMux
@@ -117,7 +116,6 @@ std::vector<std::uint8_t> loas_frame(const std::uint32_t channel_configuration) 
     result.insert(result.end(), payload.begin(), payload.end());
     return result;
 }
-
 tlvdemux::AccessUnit audio_unit(const std::uint32_t channel_configuration) {
     tlvdemux::AccessUnit unit;
     unit.track_id = 1;
@@ -1190,45 +1188,61 @@ void test_source_damage_prefers_accepted_automatic_layer_switch() {
           "completed source-damage layer switch leaked the held seek advice");
 }
 
-void test_source_damage_waits_then_seeks_at_real_recovery_rap() {
+void test_source_damage_requires_stable_matched_av_recovery() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
     remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
     remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
     remuxer.configureAutomaticLayerSwitch({2, 1, 3, 9});
-    for (std::int64_t timestamp = 0; timestamp <= 5000000;
-         timestamp += 500000) {
-        remuxer.push(hevc_unit(
-            2, timestamp, timestamp, timestamp % 1000000 == 0, false));
-    }
-
+    constexpr std::int64_t audio_frame = 1024;
+    for (std::int64_t index = 0; index <= 234; ++index)
+        remuxer.push(audio_unit(1, index * audio_frame));
+    for (std::int64_t timestamp = 0; timestamp <= 5000000; timestamp += 500000)
+        remuxer.push(hevc_unit(2, timestamp, timestamp,
+                              timestamp % 1000000 == 0, false));
     check(!remuxer.observeDamage(unrecovered_source_damage(2)).has_value() &&
               sink.playback_damage.size() == 1 &&
               sink.playback_damage.front().action ==
                   tlvdemux::PlaybackRecoveryAction::WaitForRecovery,
           "unprepared rainfall layer did not publish wait-for-recovery");
     remuxer.push(hevc_unit(2, 6000000, 6000000, true, false));
-    check(sink.playback_damage.size() == 2 &&
-              sink.playback_damage.back().action ==
-                  tlvdemux::PlaybackRecoveryAction::Seek &&
-              sink.playback_damage.back().recovery_time_us ==
-                  std::optional<std::int64_t>{6000000},
-          "preferred layer did not seek at its first real recovery RAP");
+    check(sink.playback_damage.size() == 1 && sink.av_recovery.size() == 1,
+          "a bare preferred-layer RAP authorized recovery");
+    for (std::int64_t index = 235; index <= 305; ++index)
+        remuxer.push(audio_unit(1, index * audio_frame));
+    remuxer.push(hevc_unit(2, 6500000, 6500000, false, false));
+    check(sink.av_recovery.size() == 1,
+          "stable video without the next output RAP authorized recovery");
+    for (std::int64_t index = 306; index <= 329; ++index)
+        remuxer.push(audio_unit(1, index * audio_frame));
+    remuxer.push(hevc_unit(2, 7000000, 7000000, true, false));
+    check(sink.playback_damage.size() == 1 && sink.av_recovery.size() == 2 &&
+              sink.av_recovery.back().state ==
+                  tlvdemux::MseAvRecoveryState::Restoring &&
+              sink.av_recovery.back().from_state ==
+                  tlvdemux::MseAvRecoveryState::HeldAudio &&
+              sink.av_recovery.back().video_track_id == 2 &&
+              sink.av_recovery.back().audio_track_id == 1 &&
+              sink.av_recovery.back().source_rap_time_us == 7000000,
+          "stable matched preferred A/V did not publish recovery evidence");
     remuxer.endOfStream();
-    check(sink.playback_damage.size() == 2,
+    check(sink.playback_damage.size() == 1,
           "end of input invented an additional recovery target");
 }
 
-void test_fixed_mode_keeps_immediate_source_damage_seek() {
+void test_fixed_mode_waits_for_its_selected_pair() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
     remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
     remuxer.selectTrack(tlvdemux::TrackKind::Audio, 1);
+    remuxer.suspendAutomaticLayerSwitch({2, 1, 3, 9});
+    warm_automatic_layer_pair(remuxer);
     remuxer.observeDamage(severe_source_damage(2));
     check(sink.layer_switch_starts.empty() && sink.playback_damage.size() == 1 &&
               sink.playback_damage.front().action ==
-                  tlvdemux::PlaybackRecoveryAction::Seek,
-          "fixed video selection did not preserve immediate damage seek advice");
+                  tlvdemux::PlaybackRecoveryAction::WaitForRecovery &&
+              sink.av_recovery.size() == 1,
+          "fixed video selection did not wait for its selected A/V pair");
 }
 
 void test_reposition_discards_retained_source_damage() {
@@ -1299,13 +1313,24 @@ void test_layer_switch_coordinates_video_rap_and_prepared_audio() {
     const auto video_splice = std::find(
         sink.events.begin(), sink.events.end(), "video-splice");
     const auto audio_splice = std::find(sink.events.begin(), sink.events.end(), "splice");
+    const auto replacement_video_init = std::find(
+        video_splice, sink.events.end(), "init:video");
+    const auto replacement_audio_init = std::find(
+        audio_splice, sink.events.end(), "init:audio");
     const auto replacement_video_segment = std::find(
         video_splice, sink.events.end(), "segment:video");
+    const auto replacement_audio_segment = std::find(
+        audio_splice, sink.events.end(), "segment:audio");
     const auto completion = std::find(
         sink.events.begin(), sink.events.end(), "layer-switch");
-    check(video_splice < replacement_video_segment &&
-              replacement_video_segment < audio_splice && audio_splice < completion,
-          "layer switch did not release staged video before prepared audio and completion");
+    check(video_splice < replacement_video_init &&
+              audio_splice < replacement_audio_init &&
+              replacement_video_init < replacement_video_segment &&
+              replacement_audio_init < replacement_video_segment &&
+              replacement_audio_init < replacement_audio_segment &&
+              replacement_video_segment < completion &&
+              replacement_audio_segment < completion,
+          "layer switch published media before both matched splices and init segments");
     check(!remuxer.endOfStream().has_value() &&
               sink.layer_switch_cancellations.empty(),
           "completed layer switch was later reported as cancelled");
@@ -1621,6 +1646,8 @@ void test_recorded_seek_audio_flush_seals_subthreshold_prefix_only() {
           "Recorded AAC prefix flush emitted another track");
 }
 
+#include "mse_remuxer_recorded_seek_tests.inc"
+
 void test_video_configuration_change_is_a_rap_splice_boundary() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink);
@@ -1934,53 +1961,4 @@ void test_hevc_hdr_static_metadata_reaches_mp4_and_properties() {
 
 } // namespace
 
-int main() {
-    test_audio_switch_uses_cached_frame_boundary_without_video_rap();
-    test_video_track_switch_preserves_prepared_alternate_audio();
-    test_alternate_audio_keeps_warming_while_selected_video_has_no_timeline();
-    test_startup_fallback_stages_splice_init_media_without_preferred_video();
-    test_manual_startup_layer_switch_maps_to_playback_entry();
-    test_source_damage_prefers_accepted_automatic_layer_switch();
-    test_source_damage_waits_then_seeks_at_real_recovery_rap();
-    test_fixed_mode_keeps_immediate_source_damage_seek();
-    test_reposition_discards_retained_source_damage();
-    test_layer_switch_coordinates_video_rap_and_prepared_audio();
-    test_automatic_mode_supersedes_pending_manual_layer_switch();
-    test_layer_switch_replays_cached_target_video_from_requested_rap();
-    test_layer_switch_waits_for_target_audio_after_video_rap();
-    test_layer_switch_retries_distant_audio_at_later_video_boundary();
-    test_layer_switch_uses_first_replacement_presentation_time();
-    test_unspecified_media_timescale_is_not_remuxed();
-    test_layer_switch_cancels_once_at_end_of_input();
-    test_layer_switch_cancels_on_reposition_and_explicit_selection();
-    test_audio_init_is_restored_when_output_is_reenabled();
-    test_audio_channel_limit();
-    test_unlimited_22_2_channel_count();
-    test_recorded_seek_audio_flush_seals_subthreshold_prefix_only();
-    test_video_configuration_change_is_a_rap_splice_boundary();
-    test_video_track_switch_configuration_change_preserves_old_pending_media();
-    test_video_track_switch_same_configuration_is_a_splice_without_new_init();
-    test_multiplexed_output_has_two_tracks_and_global_sequences();
-    test_video_only_output_does_not_wait_for_audio();
-    test_sdr_in_hlg_rewrites_video_colour_signalling();
-    test_hlg_sdr_prototype_emits_internal_carrier_signalling();
-    test_b60_and_sps_colour_mismatch_is_reported_without_rewriting_sps();
-    test_b60_and_sps_colour_match_is_preserved_without_mismatch();
-    test_sdr_in_hlg_policy_change_reconfigures_at_next_rap();
-    test_hevc_hdr_static_metadata_reaches_mp4_and_properties();
-    test_audio_drops_non_advancing_dts();
-    test_audio_forward_gap_keeps_decoder_timeline_contiguous();
-    test_audio_source_damage_keeps_queued_media_and_decoder_timeline();
-    test_video_source_damage_does_not_discard_independent_audio();
-    test_startup_source_damage_starts_at_first_rap_without_observation();
-    test_video_source_damage_waits_for_a_clean_gop_before_restart();
-    test_audio_configuration_change_emits_matching_init();
-    test_video_fragments_do_not_overlap_in_composition_time();
-    test_video_fragments_do_not_overlap_with_broadcast_timescale();
-    test_video_queue_bound_forces_emit_without_safe_cut();
-    test_mid_stream_bla_drops_rasl();
-    test_cra_after_eos_drops_rasl();
-    test_plain_mid_stream_cra_keeps_rasl();
-    test_radl_does_not_reopen_gate();
-    std::cout << "mse remuxer tests passed\n";
-}
+#include "mse_remuxer_tests_main.inc"

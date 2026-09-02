@@ -536,7 +536,9 @@ export async function finalizeMseMediaSource(mediaSource, queues, options = {}) 
       truncatedTo = commonEnd;
     }
   }
-  if (mediaSource.readyState === 'open') mediaSource.endOfStream();
+  if (options.endOfStream !== false && mediaSource.readyState === 'open') {
+    mediaSource.endOfStream();
+  }
   return { truncatedTo };
 }
 

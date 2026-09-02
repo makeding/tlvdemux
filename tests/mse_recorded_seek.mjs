@@ -23,10 +23,16 @@ function fixture({
   maxBudget = 64 * MiB, sourceSize = 32 * MiB,
   targetTimeSeconds = 50, bootstrapRapUs = 0n, planRap = true,
   reusedIndex = false, estimateBytes = 16 * MiB, indexedRestartBytes = 12 * MiB,
+  completeIndex = false,
+  indexedTrackPoints = null, fixedVideoTrackId = null,
   videoWidth = 3840, videoHeight = 2160,
   landingAfterPushes = 1, planRaps = null, damageEpisode = null,
   planRapsByPush = null, planningClocksByPush = null,
+  planVideoPtsByPush = null, planVideoDtsByPush = null, planDamageByPush = null,
+  planRecoveryByPush = null,
+  layeredTracks = false, planAudioByPush = null,
   planRapAfterPlanningBytes = null,
+  planRapAtOrBelowBytes = null,
   abortAfterReads = null, endAfterReads = null, failAfterReads = null,
 } = {}) {
   const media = {currentTime: targetTimeSeconds};
@@ -44,6 +50,7 @@ function fixture({
   let session;
   let landingPushes = 0;
   let backwardPushes = 0;
+  let setIndexDurationCalls = 0;
   const source = {
     size: BigInt(sourceSize),
     async read(offset, length) {
@@ -58,17 +65,39 @@ function fixture({
   const videoTrack = {
     kind: 'video', codec: 'hevc', trackId: 1,
     video: {width: videoWidth, height: videoHeight},
+    assetGroups: layeredTracks ? [{selectionLevel: 0}] : [],
   };
-  const audioTrack = {kind: 'audio', codec: 'aac-latm', trackId: 2};
+  const fallbackVideoTrack = {
+    kind: 'video', codec: 'hevc', trackId: 3,
+    video: {width: 1920, height: 1080},
+    assetGroups: layeredTracks ? [{selectionLevel: 1}] : [],
+  };
+  const audioTrack = {
+    kind: 'audio', codec: 'aac-latm', trackId: 2,
+    audio: {sampleRate: 48000},
+    assetGroups: layeredTracks ? [{selectionLevel: 0}] : [],
+  };
+  const fallbackAudioTrack = {
+    kind: 'audio', codec: 'aac-latm', trackId: 4,
+    audio: {sampleRate: 48000},
+    assetGroups: layeredTracks ? [{selectionLevel: 1}] : [],
+  };
   const demuxer = {
     async beginMseRecordedSeek() { lifecycle.push(['begin']); },
+    async prepareMseRecordedSeekLanding(sourceBoundaryUs) {
+      lifecycle.push(['prepare', sourceBoundaryUs, session.phase]);
+    },
     async finishMseRecordedSeek(target) { lifecycle.push(['finish', target, session.phase]); },
     async cancelMseRecordedSeek() { lifecycle.push(['cancel', session.phase]); },
     async flushMseRecordedSeekLanding() { flushLandingCalls += 1; },
     async flushMseRecordedSeekAudio() { flushAudioCalls += 1; },
     async setMseOutputEnabled() {},
     async setMseTimestampOffset() {},
-    async setIndexDuration() { return true; },
+    async indexState() { return completeIndex ? 'complete' : 'building'; },
+    async setIndexDuration() {
+      setIndexDurationCalls += 1;
+      return !completeIndex;
+    },
     async estimateOffset() { return BigInt(estimateBytes); },
     async previousSync() {
       return reusedIndex ? {
@@ -77,6 +106,15 @@ function fixture({
         randomAccessOffset: BigInt(indexedRestartBytes) + 1024n,
         videoTrackId: 1,
       } : null;
+    },
+    async previousSyncForTrack(_target, trackId) {
+      const point = indexedTrackPoints?.[trackId];
+      return point ? {
+        presentationTimeUs: point.presentationTimeUs,
+        signallingOffset: point.restartOffset,
+        randomAccessOffset: point.restartOffset + 1024n,
+        videoTrackId: trackId,
+      } : (trackId === 1 ? await this.previousSync() : null);
     },
     async reposition(offset) { operations.push([session.phase, offset]); position = offset; },
     async broadcastClock() {
@@ -96,6 +134,10 @@ function fixture({
     async push(data) {
       session.observeTrack(videoTrack);
       session.observeTrack(audioTrack);
+      if (layeredTracks) {
+        session.observeTrack(fallbackVideoTrack);
+        session.observeTrack(fallbackAudioTrack);
+      }
       if (session.phase === 'bootstrap') {
         session.observeAccessUnit({
           codec: 'hevc', trackId: 1, ptsValue: bootstrapRapUs, ptsTimescale: 1_000_000,
@@ -103,25 +145,68 @@ function fixture({
         });
       } else if (session.phase === 'backward-plan' && planRap) {
         backwardPushes += 1;
+        const pushedDamage = planDamageByPush?.[backwardPushes - 1];
+        if (pushedDamage) session.observeDamage({
+          severity: 'severe', videoTrackId: 1,
+          startTimeUs: pushedDamage.startUs,
+          recoveryTimeUs: pushedDamage.endUs,
+        });
         if (damageEpisode) session.observeDamage({
           severity: 'severe', videoTrackId: 1,
           startTimeUs: damageEpisode.startUs,
           recoveryTimeUs: damageEpisode.endUs,
         });
-        const observedRaps = planRapAfterPlanningBytes === null
-          ? planRapsByPush?.[backwardPushes - 1] ??
-            (planRapsByPush ? [] : planRaps ?? [51_000_000n])
-          : session.bytesRead >= BigInt(planRapAfterPlanningBytes)
-            ? [49_000_000n] : backwardPushes === 1 ? [53_000_000n] : [];
-        for (const [index, ptsValue] of observedRaps.entries()) {
+        const recovery = planRecoveryByPush?.[backwardPushes - 1];
+        if (recovery) session.observeVideoRecovery(recovery);
+        const indexedPlan = indexedTrackPoints === null ? null
+          : Object.entries(indexedTrackPoints).map(([trackId, point]) => ({
+            trackId: Number(trackId), ptsValue: point.presentationTimeUs,
+            restartOffset: point.restartOffset,
+            stableThroughUs: point.stableThroughUs ?? 53_000_000n,
+          }));
+        const positionRaps = planRapAtOrBelowBytes === null ? null
+          : position <= BigInt(planRapAtOrBelowBytes) ? [{
+              trackId: 1, ptsValue: 49_000_000n, restartOffset: position,
+            }] : [];
+        const observedRaps = indexedPlan ?? positionRaps ??
+          (planRapAfterPlanningBytes === null
+            ? planRapsByPush?.[backwardPushes - 1] ??
+              (planRapsByPush ? [] : planRaps ?? [51_000_000n])
+            : session.bytesRead >= BigInt(planRapAfterPlanningBytes)
+              ? [49_000_000n] : backwardPushes === 1 ? [53_000_000n] : [])
+          .map((ptsValue, index) => ({
+            trackId: 1, ptsValue, restartOffset: position + BigInt(index * 4096),
+          }));
+        for (const observed of observedRaps) {
           session.observeAccessUnit({
-            codec: 'hevc', trackId: 1, ptsValue, ptsTimescale: 1_000_000,
-            randomAccess: true, restartOffset: position + BigInt(index * 4096),
+            codec: 'hevc', trackId: observed.trackId,
+            ptsValue: observed.ptsValue, ptsTimescale: 1_000_000,
+            randomAccess: true, restartOffset: observed.restartOffset,
           });
         }
-        session.observeAccessUnit({
-          codec: 'hevc', trackId: 1, ptsValue: 53_000_000n, ptsTimescale: 1_000_000,
-          randomAccess: false, restartOffset: position,
+        const observedVideo = indexedPlan?.map(item => ({
+          trackId: item.trackId, ptsValue: item.stableThroughUs,
+        })) ?? (planVideoPtsByPush?.[backwardPushes - 1] ?? [53_000_000n])
+          .map(ptsValue => ({trackId: 1, ptsValue}));
+        for (const observed of observedVideo) {
+          const dtsValue = planVideoDtsByPush?.[backwardPushes - 1]?.[
+            observedVideo.indexOf(observed)] ?? observed.ptsValue;
+          session.observeAccessUnit({
+            codec: 'hevc', trackId: observed.trackId,
+            ptsValue: observed.ptsValue, ptsTimescale: 1_000_000,
+            dtsValue, dtsTimescale: 1_000_000,
+            randomAccess: false, restartOffset: position,
+          });
+        }
+        const observedAudio = planAudioByPush?.[backwardPushes - 1] ?? [
+          {trackId: 2, ptsValue: 51_990_000n},
+        ];
+        for (const observed of observedAudio) session.observeAccessUnit({
+          codec: 'aac-latm', trackId: observed.trackId,
+          ptsValue: observed.ptsValue, ptsTimescale: 1_000_000,
+          dtsValue: observed.ptsValue, dtsTimescale: 1_000_000,
+          restartOffset: position, inputOffset: observed.inputOffset ?? position,
+          data: observed.data ?? new Uint8Array([0x56, 0xe0, 0x00]),
         });
       } else if (session.phase === 'single-landing') {
         landingPushes += 1;
@@ -162,14 +247,76 @@ function fixture({
     maxReadBudgetBytes: maxBudget,
     landingReserveBytes: 7 * MiB,
     signal: {get aborted() { return aborted; }},
-    initialTracks: reusedIndex ? [videoTrack, audioTrack] : [],
+    initialTracks: reusedIndex
+      ? [videoTrack, fallbackVideoTrack, audioTrack, fallbackAudioTrack] : [],
     timelineEstablished: reusedIndex,
+    candidateTrack: fixedVideoTrackId === null
+      ? undefined : track => track.kind === 'video' && track.trackId === fixedVideoTrackId,
   });
   return {
     session, media, requests, operations, lifecycle, flowControl,
     get flushAudioCalls() { return flushAudioCalls; },
     get flushLandingCalls() { return flushLandingCalls; },
+    get setIndexDurationCalls() { return setIndexDurationCalls; },
+    get backwardPushes() { return backwardPushes; },
   };
+}
+
+{
+  const seek = fixture({
+    planRapsByPush: [[51_000_000n], [51_000_000n]],
+    planVideoPtsByPush: [[52_600_000n], [52_700_000n]],
+    planVideoDtsByPush: [[52_100_000n], [52_600_000n]],
+  });
+  const result = await seek.session.run();
+  assert.equal(result.rapPresentationTimeUs, 51_000_000n);
+  assert.ok(seek.backwardPushes >= 2,
+    'reordered PTS authorized a candidate before decode order reached the stable horizon');
+}
+
+{
+  const seek = fixture({
+    sourceSize: 128 * MiB,
+    estimateBytes: 64 * MiB,
+    layeredTracks: true,
+    planRapAtOrBelowBytes: 40 * MiB,
+    planAudioByPush: [
+      [
+        {trackId: 2, ptsValue: 51_500_000n},
+        {trackId: 4, ptsValue: 51_500_022n, inputOffset: 53n * BigInt(MiB) + 379_219n},
+      ],
+      [
+        {trackId: 2, ptsValue: 51_900_000n},
+        {trackId: 4, ptsValue: 51_900_022n, inputOffset: 54n * BigInt(MiB) + 379_219n},
+      ],
+      [{trackId: 2, ptsValue: 51_990_000n}],
+    ],
+  });
+  const result = await seek.session.run();
+  assert.equal(result.rapPresentationTimeUs, 49_000_000n);
+  assert.ok(result.budgetBytes < 64n * BigInt(MiB),
+    'interleaved layer anchors manufactured a saturated landing budget');
+  const planOffsets = seek.operations.filter(([phase]) => phase === 'backward-plan')
+    .map(([, offset]) => offset);
+  assert.ok(planOffsets.some(offset => offset <= 40n * BigInt(MiB)),
+    'same-track anchors did not project the bounded long-GOP lookback');
+}
+
+{
+  const seek = fixture({
+    planRapAtOrBelowBytes: 1 * MiB,
+    planAudioByPush: [
+      [{trackId: 2, ptsValue: 51_500_000n}],
+      [{trackId: 2, ptsValue: 51_900_000n}],
+      [{trackId: 2, ptsValue: 51_990_000n}],
+    ],
+  });
+  const result = await seek.session.run();
+  const planOffsets = seek.operations.filter(([phase]) => phase === 'backward-plan')
+    .map(([, offset]) => offset);
+  assert.equal(result.rapPresentationTimeUs, 49_000_000n);
+  assert.ok(planOffsets.length >= 2 && planOffsets[1] < planOffsets[0],
+    'two pre-target anchors did not authorize the bounded long-GOP lookback');
 }
 
 {
@@ -192,6 +339,69 @@ function fixture({
     .reduce((total, request) => total + request.length, 0n);
   assert.ok(planningBytes <= 9n * BigInt(MiB),
     'coarse location and candidate expansion invaded the landing reserve');
+}
+
+{
+  const seek = fixture({
+    sourceSize: 160 * MiB,
+    estimateBytes: 96 * MiB,
+    bootstrapRapUs: 60_000_000n,
+    planRapAfterPlanningBytes: 20 * MiB,
+    planningClocksByPush: [
+      {ptsUs: 70_000_000n, offset: 96n * BigInt(MiB)},
+      ...Array.from({length: 20}, () =>
+        ({ptsUs: 48_000_000n, offset: 72n * BigInt(MiB)})),
+    ],
+  });
+  const result = await seek.session.run();
+  const planningBytes = seek.requests.filter(request => request.phase !== 'single-landing')
+    .reduce((total, request) => total + request.length, 0n);
+  assert.ok(planningBytes > 16n * BigInt(MiB) && planningBytes <= 25n * BigInt(MiB),
+    'proved sparse planning did not preserve the 32 MiB tier landing reserve');
+  assert.equal(result.rapPresentationTimeUs, 49_000_000n);
+  assert.equal(result.budgetBytes, 32n * BigInt(MiB));
+}
+
+{
+  const lateRapPush = 25;
+  const seek = fixture({
+    sourceSize: 160 * MiB,
+    estimateBytes: 96 * MiB,
+    bootstrapRapUs: 60_000_000n,
+    planRapAfterPlanningBytes: lateRapPush * MiB,
+    planningClocksByPush: [
+      {ptsUs: 70_000_000n, offset: 96n * BigInt(MiB)},
+      ...Array.from({length: 40}, () =>
+        ({ptsUs: 48_000_000n, offset: 72n * BigInt(MiB)})),
+    ],
+    planVideoPtsByPush: Array.from({length: 40}, (_, index) =>
+      [index + 1 <= lateRapPush ? 52_400_000n : 52_600_000n]),
+  });
+  const result = await seek.session.run();
+  assert.equal(result.rapPresentationTimeUs, 49_000_000n);
+  assert.equal(result.budgetBytes, 48n * BigInt(MiB),
+    'a RAP discovered at the 32 MiB frontier did not promote the same stable window');
+  assert.equal(seek.operations.filter(([phase]) => phase === 'backward-plan').length, 2,
+    'frontier promotion repositioned away from the still-maturing RAP');
+}
+
+{
+  const seek = fixture({
+    sourceSize: 160 * MiB,
+    estimateBytes: 96 * MiB,
+    bootstrapRapUs: 60_000_000n,
+    maxBudget: 32 * MiB,
+    planRapAfterPlanningBytes: 25 * MiB,
+    planningClocksByPush: [
+      {ptsUs: 70_000_000n, offset: 96n * BigInt(MiB)},
+      ...Array.from({length: 40}, () =>
+        ({ptsUs: 48_000_000n, offset: 72n * BigInt(MiB)})),
+    ],
+    planVideoPtsByPush: Array.from({length: 40}, () => [52_400_000n]),
+  });
+  await assert.rejects(seek.session.run(), error =>
+    error.code === MSE_SEEK_NO_COMMON_AV && error.reason === 'no-rap' &&
+      error.diagnostics.budgetBytes === String(32 * MiB));
 }
 
 {
@@ -329,8 +539,116 @@ function fixture({
     'reused indexed demuxer reread the file head');
   assert.equal(result.restartOffset, 12n * BigInt(MiB),
     'reused demuxer did not land from RecordingIndex.previousSync()');
-  assert.equal(operations.filter(([phase]) => phase === 'backward-plan').length, 0,
-    'reused RecordingIndex point was replaced with a sparse probe');
+  assert.equal(operations.filter(([phase]) => phase === 'backward-plan').length, 1,
+    'reused RecordingIndex point was not validated before formal landing');
+}
+
+{
+  const seek = fixture({
+    reusedIndex: true, completeIndex: true,
+    indexedTrackPoints: {
+      1: {
+        presentationTimeUs: 51_800_000n, restartOffset: 8n * BigInt(MiB),
+        stableThroughUs: 52_350_000n,
+      },
+      3: {
+        presentationTimeUs: 51_000_000n, restartOffset: 9n * BigInt(MiB),
+        stableThroughUs: 53_000_000n,
+      },
+    },
+  });
+  const result = await seek.session.run();
+  assert.equal(result.rapPresentationTimeUs, 51_000_000n,
+    'an indexed RAP without 500 ms of clean video after the target displaced the stable fallback');
+  assert.equal(result.restartOffset, 9n * BigInt(MiB));
+  assert.equal(seek.operations.filter(([phase]) => phase === 'single-landing').length, 1,
+    'index validation consumed or repeated the single formal landing');
+}
+
+{
+  const seek = fixture({
+    reusedIndex: true, completeIndex: true,
+    indexedTrackPoints: {
+      1: {
+        presentationTimeUs: 52_000_000n, restartOffset: 8n * BigInt(MiB),
+        stableThroughUs: 53_000_000n,
+      },
+      3: {
+        presentationTimeUs: 51_000_000n, restartOffset: 9n * BigInt(MiB),
+        stableThroughUs: 53_000_000n,
+      },
+    },
+    planRecoveryByPush: [{
+      videoTrackId: 1, presentationTimeUs: 51_900_000n,
+      phase: 'observation-started',
+    }],
+  });
+  const result = await seek.session.run();
+  assert.equal(result.rapPresentationTimeUs, 51_000_000n,
+    'native planning damage did not veto the preferred GOP before formal landing');
+  assert.equal(result.restartOffset, 9n * BigInt(MiB));
+  assert.equal(seek.operations.filter(([phase]) => phase === 'single-landing').length, 1,
+    'native planning damage consumed or repeated the formal landing');
+}
+
+{
+  const seek = fixture({
+    reusedIndex: true, completeIndex: true, layeredTracks: true,
+    indexedTrackPoints: {
+      1: {
+        presentationTimeUs: 51_800_000n, restartOffset: 8n * BigInt(MiB),
+        stableThroughUs: 53_000_000n,
+      },
+      3: {
+        presentationTimeUs: 51_000_000n, restartOffset: 9n * BigInt(MiB),
+        stableThroughUs: 53_000_000n,
+      },
+    },
+    planAudioByPush: [[
+      {trackId: 2, ptsValue: 52_220_000n},
+      {trackId: 4, ptsValue: 51_990_000n},
+    ]],
+  });
+  const result = await seek.session.run();
+  assert.equal(result.rapPresentationTimeUs, 51_000_000n,
+    'video-only planning selected a layer whose matched AAC missed the immutable target');
+  assert.equal(result.restartOffset, 9n * BigInt(MiB));
+}
+
+{
+  const seek = fixture({reusedIndex: true, completeIndex: true});
+  const result = await seek.session.run();
+  assert.equal(result.restartOffset, 12n * BigInt(MiB));
+  assert.equal(seek.setIndexDurationCalls, 0,
+    'post-EOF seek tried to replace the complete RecordingIndex duration');
+  assert.equal(seek.requests.some(request => request.phase === 'bootstrap'), false,
+    'post-EOF seek reread source bytes during bootstrap');
+}
+
+{
+  const seek = fixture({
+    reusedIndex: true, completeIndex: true,
+    indexedTrackPoints: {
+      1: {presentationTimeUs: 51_000_000n, restartOffset: 8n * BigInt(MiB)},
+      3: {presentationTimeUs: 51_500_000n, restartOffset: 13n * BigInt(MiB)},
+    },
+  });
+  const result = await seek.session.run();
+  assert.equal(result.restartOffset, 13n * BigInt(MiB),
+    'complete Recorded index flattened the fallback layer into the selected layer');
+}
+
+{
+  const seek = fixture({
+    reusedIndex: true, completeIndex: true, fixedVideoTrackId: 1,
+    indexedTrackPoints: {
+      1: {presentationTimeUs: 51_000_000n, restartOffset: 8n * BigInt(MiB)},
+      3: {presentationTimeUs: 51_500_000n, restartOffset: 13n * BigInt(MiB)},
+    },
+  });
+  const result = await seek.session.run();
+  assert.equal(result.restartOffset, 8n * BigInt(MiB),
+    'fixed video selection consumed another layer\'s RecordingIndex point');
 }
 
 {
@@ -368,20 +686,51 @@ function fixture({
     'formal landing reread the byte window already cached during planning');
   assert.equal(seek.flushAudioCalls, 1,
     'a short selected AAC prefix was not sealed after its landing push');
-  assert.deepEqual(lifecycle, [['begin'], ['finish', 50_000_000n, 'committing']]);
+  assert.deepEqual(lifecycle, [
+    ['begin'],
+    ['prepare', 51_000_000n, 'single-landing'],
+    ['finish', 50_000_000n, 'committing'],
+  ], 'formal landing did not prepare exactly one matched A/V splice before commit');
 }
 
 {
   const {session, media} = fixture({
-    planRaps: [47_000_000n, 51_000_000n],
+    planRaps: [47_000_000n, 52_000_000n],
     damageEpisode: {startUs: 50_000_000n, endUs: 52_000_000n},
   });
   const result = await session.run();
-  assert.equal(result.rapPresentationTimeUs, 47_000_000n,
-    'severe damage selected a RAP from inside the damage episode');
+  assert.equal(result.rapPresentationTimeUs, 52_000_000n,
+    'severe damage selected a RAP whose path to the target crosses damage');
   assert.equal(result.requestedTimeSeconds, 50);
   assert.equal(media.currentTime, 50,
     'damage fallback replaced the requested target with the earlier RAP');
+}
+
+{
+  const {session} = fixture({
+    planRapsByPush: [[49_000_000n], [51_000_000n]],
+    planVideoPtsByPush: [[49_200_000n], [52_600_000n]],
+    planDamageByPush: [null, {startUs: 49_300_000n, endUs: 51_000_000n}],
+  });
+  const result = await session.run();
+  assert.equal(result.rapPresentationTimeUs, 51_000_000n,
+    'planning committed the first RAP before its path to the requested time was stable');
+}
+
+{
+  const seek = fixture({
+    planRapsByPush: [[51_000_000n], [51_000_000n], [51_000_000n]],
+    planVideoPtsByPush: [[52_100_000n], [52_200_000n], [52_600_000n]],
+    planningClocksByPush: [
+      {ptsUs: 51_000_000n, offset: 12n * BigInt(MiB)},
+      {ptsUs: 53_000_000n, offset: 16n * BigInt(MiB)},
+      {ptsUs: 53_100_000n, offset: 17n * BigInt(MiB)},
+    ],
+  });
+  const result = await seek.session.run();
+  assert.equal(result.rapPresentationTimeUs, 51_000_000n);
+  assert.equal(seek.operations.filter(([phase]) => phase === 'backward-plan').length, 1,
+    'byte refinement jumped away from a preceding RAP before its stable window matured');
 }
 
 {

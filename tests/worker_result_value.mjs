@@ -116,6 +116,10 @@ await demuxer.flushMseRecordedSeekLanding();
 assert.deepEqual(fake.messages.find(entry =>
   entry.message.method === 'flushMseRecordedSeekLanding')?.message.args, [],
   'worker proxy did not forward the Recorded-seek final landing flush');
+await demuxer.previousSyncForTrack(44_821_944n, 3n);
+assert.deepEqual(fake.messages.find(entry =>
+  entry.message.method === 'previousSyncForTrack')?.message.args, [44_821_944n, 3n],
+  'worker proxy did not forward the per-layer RecordingIndex lookup');
 assert.equal(await demuxer.switchLayerAtPlaybackEntry(3n, 4n, 0n), true,
   'worker proxy lost the playback-entry layer-switch result');
 await demuxer.push(bytes);

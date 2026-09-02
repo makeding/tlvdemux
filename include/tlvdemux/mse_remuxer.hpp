@@ -112,6 +112,28 @@ struct MseVideoRecoveryEvent {
     MseVideoRecoveryPhase phase = MseVideoRecoveryPhase::ObservationStarted;
 };
 
+enum class MseAvRecoveryState {
+    Starting,
+    Av,
+    Switching,
+    HeldAudio,
+    Stalled,
+    Restoring,
+};
+
+struct MseAvRecoveryEvidence {
+    MseAvRecoveryState state = MseAvRecoveryState::Starting;
+    MseAvRecoveryState from_state = MseAvRecoveryState::Starting;
+    std::uint64_t episode_id = 0;
+    std::uint64_t video_track_id = 0;
+    std::uint64_t audio_track_id = 0;
+    std::int64_t source_rap_time_us = 0;
+    std::int64_t common_av_boundary_us = 0;
+    std::uint64_t restart_offset = 0;
+    std::int64_t timestamp_anchor_us = 0;
+    std::uint64_t generation = 0;
+};
+
 enum class MseRecordedSeekLandingMode {
     Exact,
     HeldFrame,
@@ -194,6 +216,7 @@ public:
     virtual void onMseLayerSwitchCancelled(const MseLayerSwitchCancelled&) {}
     virtual void onMseVideoStart(const MseVideoStart&) {}
     virtual void onMseVideoRecovery(const MseVideoRecoveryEvent&) {}
+    virtual void onMseAvRecovery(const MseAvRecoveryEvidence&) {}
     virtual void onMseVideoProperties(const MseVideoProperties&) {}
     virtual void onPlaybackDamage(const PlaybackDamage&) {}
 };
@@ -224,10 +247,14 @@ public:
         std::optional<std::int64_t> presentation_time_us);
     MseRecordedSeekLandingEvidence recordedSeekLandingEvidence() const;
     void beginMseRecordedSeek();
+    /** Atomically replace both SourceBuffer timelines at the one formal landing. */
+    void prepareMseRecordedSeekLanding(std::int64_t source_boundary_us);
     void finishMseRecordedSeek(std::int64_t playback_position_us);
     void cancelMseRecordedSeek();
     /** Report the real media playhead used to authorize rainfall recovery. */
     void setPlaybackPosition(std::int64_t presentation_time_us);
+    /** Fence structured recovery evidence to the owning playback generation. */
+    void setRecoveryGeneration(std::uint64_t generation);
     // Reinterpret an explicitly identified HLG video track as UHD SDR.
     void setSdrInHlg(std::uint64_t video_track_id, bool enabled);
     // Experimental 1/13/9 carrier for a controlled GPU HLG-to-SDR transform.

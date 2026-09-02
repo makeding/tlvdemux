@@ -40,9 +40,11 @@ public:
         std::optional<std::int64_t> presentation_time_us);
     tlvdemux::MseRecordedSeekLandingEvidence recordedSeekLandingEvidence() const;
     void beginMseRecordedSeek();
+    void prepareMseRecordedSeekLanding(std::int64_t source_boundary_us);
     void finishMseRecordedSeek(std::int64_t playback_position_us);
     void cancelMseRecordedSeek();
     void setPlaybackPosition(std::int64_t presentation_time_us);
+    void setRecoveryGeneration(std::uint64_t generation);
     void setSdrInHlg(std::uint64_t video_track_id, bool enabled);
     void setHlgSdrPrototype(std::uint64_t video_track_id, bool enabled);
     void setVideoSignalling(std::uint64_t video_track_id,

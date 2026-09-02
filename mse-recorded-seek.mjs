@@ -10,6 +10,9 @@ const DEFAULT_CHUNK_BYTES = 1024 * 1024;
 const DEFAULT_LANDING_RESERVE_BYTES = 7 * 1024 * 1024;
 const BUDGET_TIERS_BYTES = [32, 48, 64].map(value => value * 1024 * 1024);
 const LONG_GOP_LOOKBACK_US = 5_000_000n;
+const RECOVERY_STABLE_WINDOW_US = 500_000n;
+const AAC_EDGE_TOLERANCE_US = 22_000n;
+const MIN_LOCAL_ANCHOR_SPAN_US = 10_000n;
 
 function abortError() {
   if (typeof DOMException === 'function') return new DOMException('The seek was superseded.', 'AbortError');
@@ -21,6 +24,24 @@ function abortError() {
 function timestampUs(unit) {
   if (unit.ptsValue === undefined || !unit.ptsTimescale) return null;
   return BigInt(unit.ptsValue) * 1000000n / BigInt(unit.ptsTimescale);
+}
+
+function decodeTimestampUs(unit) {
+  if (unit.dtsValue === undefined || !unit.dtsTimescale) return timestampUs(unit);
+  return BigInt(unit.dtsValue) * 1000000n / BigInt(unit.dtsTimescale);
+}
+
+function loasFrameCount(data) {
+  if (!(data instanceof Uint8Array)) return 0;
+  let count = 0;
+  for (let offset = 0; offset + 3 <= data.byteLength;) {
+    if (data[offset] !== 0x56 || (data[offset + 1] & 0xe0) !== 0xe0) return 0;
+    const length = ((data[offset + 1] & 0x1f) << 8) | data[offset + 2];
+    offset += 3 + length;
+    if (offset > data.byteLength) return 0;
+    count += 1;
+  }
+  return count;
 }
 
 function clampBigInt(value, minimum, maximum) {
@@ -92,7 +113,8 @@ export function createMseRecordedSeekSession({
   }
   for (const method of [
     'beginMseRecordedSeek', 'finishMseRecordedSeek', 'cancelMseRecordedSeek',
-    'flushMseRecordedSeekAudio', 'flushMseRecordedSeekLanding',
+    'prepareMseRecordedSeekLanding', 'flushMseRecordedSeekAudio',
+    'flushMseRecordedSeekLanding',
   ]) {
     if (typeof demuxer[method] !== 'function') {
       throw new TypeError(`The demuxer must support ${method}().`);
@@ -105,7 +127,6 @@ export function createMseRecordedSeekSession({
   const maximumBudget = BigInt(maxReadBudgetBytes);
   const landingReserve = BigInt(landingReserveBytes);
   const basePlanningLimit = baseBudget - landingReserve;
-  const evidencePlanningLimit = baseBudget;
   if (chunkSize <= 0n || landingReserve < chunkSize || landingReserve >= baseBudget) {
     throw new RangeError('The recorded seek landing reserve must fit inside the read budget.');
   }
@@ -119,9 +140,13 @@ export function createMseRecordedSeekSession({
   const cachedRanges = [];
   const plannedRaps = new Map();
   const futureRaps = new Map();
+  const plannedVideoThrough = new Map();
+  const plannedAudioRanges = new Map();
+  const planningAnchorSeries = new Map();
   const damageEpisodes = [];
   const planningTrace = [];
   let anchorBefore = {ptsUs: BigInt(presentationStartUs), offset: 0n};
+  let previousAnchorBefore = null;
   let anchorAfter = null;
   let anchorBeforeObserved = false;
   let timedObservationRevision = 0;
@@ -132,6 +157,7 @@ export function createMseRecordedSeekSession({
   let planningRangeExtended = false;
   let currentPushOffset = 0n;
   let bootstrapTimelineReady = timelineEstablished;
+  let planningWindow = 0;
 
   for (const track of initialTracks) tracks.set(track.trackId, track);
 
@@ -139,12 +165,30 @@ export function createMseRecordedSeekSession({
   const ensureActive = () => { if (!active()) throw abortError(); };
   const hasVideo = () => requiredTracks.includes('video');
   const planningLimit = () => planningRangeExtended
-    ? evidencePlanningLimit
+    ? authorizedBudget - landingReserve
     : basePlanningLimit;
 
   const observePlanningAnchor = anchor => {
     timedObservationRevision += 1;
+    const key = anchor.key;
+    const series = planningAnchorSeries.get(key) ?? {
+      key, planningWindow, before: null, previousBefore: null, after: null,
+    };
+    if (anchor.ptsUs <= sourceTargetUs &&
+        (series.before === null || anchor.ptsUs > series.before.ptsUs)) {
+      series.previousBefore = series.before && anchor.offset > series.before.offset
+        ? series.before : null;
+      series.before = anchor;
+    }
+    if (anchor.ptsUs > sourceTargetUs &&
+        (series.after === null || anchor.ptsUs < series.after.ptsUs)) {
+      series.after = anchor;
+    }
+    planningAnchorSeries.set(key, series);
     if (anchor.ptsUs <= sourceTargetUs && anchor.ptsUs > anchorBefore.ptsUs) {
+      previousAnchorBefore = anchorBeforeObserved && anchor.key === anchorBefore.key &&
+          anchor.offset > anchorBefore.offset
+        ? anchorBefore : null;
       anchorBefore = anchor;
       anchorBeforeObserved = true;
     }
@@ -157,15 +201,38 @@ export function createMseRecordedSeekSession({
   const observeTrack = track => tracks.set(track.trackId, track);
   const observeTrackRemoved = track => tracks.delete(track.trackId);
   const observeDamage = damage => {
-    if (damage?.severity !== 'severe') return;
-    const startUs = damage.startTimeUs ?? damage.endTimeUs;
+    const rawVideoDamage = damage?.kind === 'video' &&
+      ((Number(damage.reasons ?? 0) & 1) !== 0);
+    if (damage?.severity !== 'severe' && !rawVideoDamage) return;
+    const startUs = damage.startTimeUs ?? damage.endTimeUs ??
+      (damage.startPtsValue === undefined ? null
+        : BigInt(damage.startPtsValue) * 1000000n / BigInt(damage.startPtsTimescale));
     if (startUs === null || startUs === undefined) return;
+    const recoveryTimeUs = damage.recoveryTimeUs ??
+      (damage.recoveryPtsValue === undefined ? null
+        : BigInt(damage.recoveryPtsValue) * 1000000n / BigInt(damage.recoveryPtsTimescale));
     damageEpisodes.push({
-      trackId: damage.videoTrackId,
+      trackId: damage.videoTrackId ?? damage.trackId,
       startUs: BigInt(startUs),
-      endUs: damage.recoveryTimeUs === null || damage.recoveryTimeUs === undefined
-        ? null : BigInt(damage.recoveryTimeUs),
+      endUs: recoveryTimeUs === null || recoveryTimeUs === undefined
+        ? null : BigInt(recoveryTimeUs),
     });
+  };
+  const observeVideoRecovery = event => {
+    if (phase !== 'bootstrap' && phase !== 'backward-plan') return;
+    const trackId = event?.videoTrackId;
+    const presentationTimeUs = event?.presentationTimeUs;
+    if (trackId === undefined || presentationTimeUs === undefined) return;
+    const ptsUs = BigInt(presentationTimeUs);
+    if (event.phase === 'observation-started') {
+      damageEpisodes.push({
+        trackId, startUs: ptsUs, endUs: null, authority: 'native-recovery',
+      });
+    } else if (event.phase === 'stable-rap-committed') {
+      const open = [...damageEpisodes].reverse().find(episode =>
+        episode.trackId === trackId && episode.endUs === null);
+      if (open) open.endUs = ptsUs;
+    }
   };
   const observeAccessUnit = unit => {
     if (phase !== 'bootstrap' && phase !== 'backward-plan') return;
@@ -174,16 +241,43 @@ export function createMseRecordedSeekSession({
     const ptsUs = timestampUs(unit);
     if (ptsUs === null) return;
     const unitInputOffset = unit.inputOffset ?? unit.restartOffset;
+    if (phase === 'backward-plan' && track.kind === 'video' && unit.codec === 'hevc') {
+      const key = `${planningWindow}:${unit.trackId}`;
+      const previous = plannedVideoThrough.get(key);
+      const decodeUs = decodeTimestampUs(unit);
+      if (decodeUs !== null && (previous === undefined || decodeUs > previous)) {
+        plannedVideoThrough.set(key, decodeUs);
+      }
+    }
     if (phase === 'backward-plan' && track.kind === 'audio' && unit.codec === 'aac-latm' &&
         unitInputOffset !== undefined) {
-      observePlanningAnchor({ptsUs, offset: BigInt(unitInputOffset)});
+      observePlanningAnchor({
+        ptsUs, offset: BigInt(unitInputOffset),
+        key: `audio:${unit.trackId}`,
+      });
+    }
+    if (phase === 'backward-plan' && track.kind === 'audio' && unit.codec === 'aac-latm') {
+      const sampleRate = Number(track.audio?.sampleRate ?? 48000);
+      const frames = Math.max(1, loasFrameCount(unit.data));
+      const durationUs = BigInt(Math.ceil(frames * 1024 * 1000000 / sampleRate));
+      const key = `${planningWindow}:${unit.trackId}`;
+      const ranges = plannedAudioRanges.get(key) ?? [];
+      const range = {startUs: ptsUs, endUs: ptsUs + durationUs};
+      const previous = ranges.at(-1);
+      if (previous && range.startUs <= previous.endUs + AAC_EDGE_TOLERANCE_US) {
+        if (range.endUs > previous.endUs) previous.endUs = range.endUs;
+      } else {
+        ranges.push(range);
+      }
+      plannedAudioRanges.set(key, ranges);
     }
     if (!candidateVideoTrack(track)) return;
     if (track.kind === 'video' && unit.codec !== 'hevc') return;
     if (track.kind === 'audio' && unit.codec !== 'aac-latm') return;
     if (track.kind === 'video' && unit.randomAccess) {
       const openEpisode = [...damageEpisodes].reverse().find(episode =>
-        episode.trackId === unit.trackId && episode.endUs === null && episode.startUs < ptsUs);
+        episode.trackId === unit.trackId && episode.endUs === null &&
+        episode.authority !== 'native-recovery' && episode.startUs < ptsUs);
       if (openEpisode) openEpisode.endUs = ptsUs;
     }
     if (phase === 'bootstrap') bootstrapTimelineReady = true;
@@ -194,6 +288,7 @@ export function createMseRecordedSeekSession({
       seconds: Number(unit.ptsValue) / unit.ptsTimescale,
       restartOffset: BigInt(unit.restartOffset),
       discoveredDuring: phase,
+      planningWindow,
     };
     if (ptsUs > sourceTargetUs + toleranceUs) {
       futureRaps.set(`${unit.trackId}:${ptsUs}`, rap);
@@ -247,12 +342,44 @@ export function createMseRecordedSeekSession({
           clock.inputOffset !== undefined) {
         const ptsUs = BigInt(clock.mediaTimeValue) * 1000000n /
           BigInt(clock.mediaTimeTimescale);
-        observePlanningAnchor({ptsUs, offset: BigInt(clock.inputOffset)});
+        observePlanningAnchor({
+          ptsUs, offset: BigInt(clock.inputOffset),
+          key: 'broadcast-clock',
+        });
       }
     }
   };
+  const rapHasStablePath = rap => {
+    if (!hasVideo() || rap.discoveredDuring === 'bootstrap') return true;
+    // The candidate must remain clean through the requested time and the
+    // complete following observation window.  Using RAP+window alone can
+    // authorize a GOP shortly before a source-damage marker that arrives
+    // just after the RAP-relative window but before the target is settled.
+    const stableThroughUs = sourceTargetUs + RECOVERY_STABLE_WINDOW_US;
+    const observedThrough = plannedVideoThrough.get(
+      `${rap.planningWindow}:${rap.trackId}`);
+    if (observedThrough === undefined || observedThrough < stableThroughUs) return false;
+    if (requiredTracks.includes('audio')) {
+      const video = tracks.get(rap.trackId);
+      const levels = new Set((video?.assetGroups ?? [])
+        .map(group => group.selectionLevel).filter(level => level !== undefined));
+      const matchedAudio = [...tracks.values()].filter(track =>
+        track.kind === 'audio' && track.codec === 'aac-latm' &&
+        (levels.size === 0 || (track.assetGroups ?? []).some(group =>
+          levels.has(group.selectionLevel))));
+      const audioCoversTarget = matchedAudio.some(track =>
+        (plannedAudioRanges.get(`${rap.planningWindow}:${track.trackId}`) ?? []).some(range =>
+          range.startUs <= sourceTargetUs + AAC_EDGE_TOLERANCE_US &&
+          range.endUs >= sourceTargetUs));
+      if (!audioCoversTarget) return false;
+    }
+    return !damageEpisodes.some(episode => episode.trackId === rap.trackId &&
+      episode.startUs < stableThroughUs &&
+      (episode.endUs === null || episode.endUs > rap.ptsUs));
+  };
   const bestRap = ({allowBootstrap = false} = {}) => [...plannedRaps.values()]
     .filter(rap => rap.ptsUs <= sourceTargetUs && tracks.has(rap.trackId) &&
+      rapHasStablePath(rap) &&
       !damageEpisodes.some(episode => episode.trackId === rap.trackId &&
         rap.ptsUs >= episode.startUs &&
         (episode.endUs === null || rap.ptsUs < episode.endUs)) &&
@@ -264,20 +391,49 @@ export function createMseRecordedSeekSession({
   const closestFutureRap = () => [...futureRaps.values()]
     .filter(rap => tracks.has(rap.trackId) && rap.discoveredDuring === 'backward-plan')
     .sort((left, right) => left.ptsUs < right.ptsUs ? -1 : left.ptsUs > right.ptsUs ? 1 : 0)[0] ?? null;
-  const projectedTargetOffset = () => {
-    if (anchorBeforeObserved && anchorAfter && anchorAfter.ptsUs > anchorBefore.ptsUs &&
-        anchorAfter.offset > anchorBefore.offset) {
-      return anchorBefore.offset + (anchorAfter.offset - anchorBefore.offset) *
-        (sourceTargetUs - anchorBefore.ptsUs) / (anchorAfter.ptsUs - anchorBefore.ptsUs);
+  const localAnchorModel = () => {
+    const models = [];
+    for (const series of planningAnchorSeries.values()) {
+      const {before, previousBefore, after} = series;
+      if (before && after && after.ptsUs - before.ptsUs >= MIN_LOCAL_ANCHOR_SPAN_US &&
+          after.offset > before.offset) {
+        models.push({
+          key: series.key, planningWindow: series.planningWindow,
+          before, after, previousBefore: null, bracketed: true,
+          byteSpan: after.offset - before.offset,
+          timeSpanUs: after.ptsUs - before.ptsUs,
+        });
+      } else if (before && previousBefore &&
+          before.ptsUs - previousBefore.ptsUs >= MIN_LOCAL_ANCHOR_SPAN_US &&
+          before.offset > previousBefore.offset &&
+          sourceTargetUs - before.ptsUs <= LONG_GOP_LOOKBACK_US) {
+        models.push({
+          key: series.key, planningWindow: series.planningWindow,
+          before, after: null, previousBefore, bracketed: false,
+          byteSpan: before.offset - previousBefore.offset,
+          timeSpanUs: before.ptsUs - previousBefore.ptsUs,
+        });
+      }
     }
-    return null;
+    models.sort((left, right) => {
+      if (left.bracketed !== right.bracketed) return left.bracketed ? -1 : 1;
+      const leftDistance = sourceTargetUs - left.before.ptsUs;
+      const rightDistance = sourceTargetUs - right.before.ptsUs;
+      if (leftDistance !== rightDistance) return leftDistance < rightDistance ? -1 : 1;
+      return right.planningWindow - left.planningWindow;
+    });
+    const model = models[0] ?? null;
+    if (model === null) return null;
+    return {
+      ...model,
+      projectedOffset: model.before.offset + model.byteSpan *
+        (sourceTargetUs - model.before.ptsUs) / model.timeSpanUs,
+    };
   };
+  const projectedTargetOffset = () => localAnchorModel()?.projectedOffset ?? null;
   const bytesForDuration = duration => {
-    if (anchorBeforeObserved && anchorAfter && anchorAfter.ptsUs > anchorBefore.ptsUs &&
-        anchorAfter.offset > anchorBefore.offset) {
-      return (anchorAfter.offset - anchorBefore.offset) * duration /
-        (anchorAfter.ptsUs - anchorBefore.ptsUs);
-    }
+    const model = localAnchorModel();
+    if (model) return model.byteSpan * duration / model.timeSpanUs;
     return source.size * duration / BigInt(durationUs);
   };
   const targetOffsetEstimate = async () => {
@@ -298,6 +454,23 @@ export function createMseRecordedSeekSession({
   const tierFor = requiredBytes => {
     const tiers = BUDGET_TIERS_BYTES.map(BigInt).filter(value => value <= maximumBudget);
     return tiers.find(value => value >= requiredBytes) ?? null;
+  };
+  const extendPlanningBudget = () => {
+    if (planningRangeExtended) return;
+    planningRangeExtended = true;
+    const nextTier = BUDGET_TIERS_BYTES.map(BigInt)
+      .filter(value => value <= maximumBudget)
+      .find(value => value > baseBudget);
+    authorizedBudget = nextTier ?? maximumBudget;
+  };
+  const promotePlanningBudget = () => {
+    const nextTier = BUDGET_TIERS_BYTES.map(BigInt)
+      .filter(value => value <= maximumBudget)
+      .find(value => value > authorizedBudget);
+    if (nextTier === undefined) return false;
+    planningRangeExtended = true;
+    authorizedBudget = nextTier;
+    return true;
   };
   const authorizeLandingBudget = ({chosen, estimate}) => {
     if (budgetAuthorization !== null) {
@@ -338,30 +511,52 @@ export function createMseRecordedSeekSession({
       await push(data, offset);
       offset += BigInt(data.byteLength);
     }
-    if (!await demuxer.setIndexDuration(sourceEndUs)) {
+    const indexState = typeof demuxer.indexState === 'function'
+      ? await demuxer.indexState() : null;
+    if (indexState !== 'complete' && !await demuxer.setIndexDuration(sourceEndUs)) {
       throw new MseRecordedSeekError('demux-failed', 'The demuxer rejected the recording duration.');
     }
   };
 
   const backwardPlan = async () => {
     phase = 'backward-plan';
+    let indexedSeed = null;
     if (timelineEstablished && typeof demuxer.previousSync === 'function') {
-      const indexed = await demuxer.previousSync(sourceTargetUs);
-      if (indexed) {
-        const chosen = {
-          trackId: indexed.videoTrackId,
-          ptsUs: BigInt(indexed.presentationTimeUs),
-          seconds: Number(indexed.presentationTimeUs) / 1000000,
-          restartOffset: BigInt(indexed.signallingOffset ?? indexed.randomAccessOffset),
-          discoveredDuring: 'index',
-        };
-        if (chosen.ptsUs <= sourceTargetUs &&
-            sourceTargetUs - chosen.ptsUs <= 2_000_000n &&
-            tracks.has(chosen.trackId) && !damageEpisodes.some(episode =>
+      const candidateTracks = [...tracks.values()].filter(candidateVideoTrack);
+      const indexedCandidates = await Promise.all(candidateTracks.map(async track => {
+        const indexed = typeof demuxer.previousSyncForTrack === 'function'
+          ? await demuxer.previousSyncForTrack(sourceTargetUs, track.trackId)
+          : await demuxer.previousSync(sourceTargetUs);
+        return indexed ? {indexed, track} : null;
+      }));
+      const indexed = indexedCandidates.filter(Boolean).map(({indexed, track}) => ({
+        trackId: indexed.videoTrackId,
+        ptsUs: BigInt(indexed.presentationTimeUs),
+        seconds: Number(indexed.presentationTimeUs) / 1000000,
+        restartOffset: BigInt(indexed.signallingOffset ?? indexed.randomAccessOffset),
+        discoveredDuring: 'index',
+        priority: videoTrackPriority(track),
+      })).filter(chosen =>
+        chosen.ptsUs <= sourceTargetUs &&
+        sourceTargetUs - chosen.ptsUs <= 2_000_000n &&
+        tracks.has(chosen.trackId) && candidateVideoTrack(tracks.get(chosen.trackId)) &&
+        !damageEpisodes.some(episode =>
           episode.trackId === chosen.trackId && chosen.ptsUs >= episode.startUs &&
-          (episode.endUs === null || chosen.ptsUs < episode.endUs))) {
-          return {chosen, estimate: await targetOffsetEstimate()};
-        }
+          (episode.endUs === null || chosen.ptsUs < episode.endUs)))
+        .sort((left, right) => {
+          if (left.ptsUs !== right.ptsUs) return left.ptsUs > right.ptsUs ? -1 : 1;
+          return left.priority - right.priority;
+        });
+      // RecordingIndex points are byte-location hints, not recovery proof.
+      // Seed the bounded planner at the earliest candidate so it can observe
+      // every matched layer through the target plus the stable window.  The
+      // formal landing is authorized only for the RAP rediscovered by that
+      // observation; an indexed RAP whose GOP crosses damage must not consume
+      // the one landing and fail after the base budget (the 129.984464s case).
+      if (indexed.length) {
+        indexedSeed = indexed.reduce((earliest, item) =>
+          earliest === null || item.restartOffset < earliest.restartOffset ? item : earliest,
+        null);
       }
     }
     const estimate = await targetOffsetEstimate();
@@ -381,7 +576,9 @@ export function createMseRecordedSeekSession({
     // to project a preceding long-GOP candidate. The candidate's file range is
     // then expanded contiguously, one chunk at a time, instead of spending the
     // plan on unrelated sparse windows or a resolution-specific allowance.
-    let candidate = alignCandidate(estimate > initialDistance ? estimate - initialDistance : 0n);
+    let candidate = indexedSeed === null
+      ? alignCandidate(estimate > initialDistance ? estimate - initialDistance : 0n)
+      : alignCandidate(indexedSeed.restartOffset);
     const visited = new Set();
     let fallbackStride = 8n * chunkSize;
     const evidenceCandidate = () => {
@@ -411,28 +608,44 @@ export function createMseRecordedSeekSession({
       ensureActive();
       if (visited.has(candidate)) break;
       visited.add(candidate);
+      planningWindow += 1;
       await demuxer.reposition(candidate, true);
+      // Arm native damage observation for this invisible probe as well as the
+      // formal landing.  A candidate RAP whose next GOP crosses source damage
+      // must be vetoed during planning; otherwise the landing starts with a
+      // parser that correctly withholds video and spends the entire budget
+      // waiting for a frame that was never authorized.
+      await demuxer.setMseRecordedSeekConcealmentTarget(sourceTargetUs);
       let offset = candidate;
       let nextCandidate = null;
       let windowHasTimedEvidence = false;
+      let windowHasPreTargetRap = false;
       while (offset < source.size && bytesRead + chunkSize <= planningLimit()) {
         const observationBefore = timedObservationRevision;
         const data = await read(offset, chunkSize);
         await push(data, offset);
         offset += BigInt(data.byteLength);
         const chosen = bestRap();
-        if (chosen) return {chosen, estimate};
+        if (chosen) return {chosen, estimate: projectedTargetOffset() ?? estimate};
+        windowHasPreTargetRap ||= [...plannedRaps.values()].some(rap =>
+          rap.planningWindow === planningWindow && rap.ptsUs <= sourceTargetUs);
         windowHasTimedEvidence ||= timedObservationRevision > observationBefore;
 
         const refined = evidenceCandidate();
-        if (refined !== null && planningLimit() < evidencePlanningLimit) {
-          planningRangeExtended = true;
+        if (refined !== null) extendPlanningBudget();
+        if (planningTrace.length < 32) {
+          const rateModel = localAnchorModel();
+          planningTrace.push({
+            candidate, offset, refined, windowHasTimedEvidence,
+            beforePtsUs: anchorBefore.ptsUs, beforeOffset: anchorBefore.offset,
+            previousBeforePtsUs: previousAnchorBefore?.ptsUs ?? null,
+            previousBeforeOffset: previousAnchorBefore?.offset ?? null,
+            afterPtsUs: anchorAfter?.ptsUs ?? null, afterOffset: anchorAfter?.offset ?? null,
+            rateAnchorKey: rateModel?.key ?? null,
+            rateTimeSpanUs: rateModel?.timeSpanUs ?? null,
+            rateByteSpan: rateModel?.byteSpan ?? null,
+          });
         }
-        if (planningTrace.length < 32) planningTrace.push({
-          candidate, offset, refined, windowHasTimedEvidence,
-          beforePtsUs: anchorBefore.ptsUs, beforeOffset: anchorBefore.offset,
-          afterPtsUs: anchorAfter?.ptsUs ?? null, afterOffset: anchorAfter?.offset ?? null,
-        });
         const refinedOutsideWindow = refined !== null &&
           (refined + chunkSize < candidate || refined >= offset);
         const refinementDistance = refined === null ? 0n
@@ -441,11 +654,18 @@ export function createMseRecordedSeekSession({
         // continuing the parser's current contiguous Range: the RAP may be in
         // bytes already supplied but not exposed until the following chunk.
         const refinementNeedsReposition = refinementDistance > 4n * chunkSize;
-        if (windowHasTimedEvidence && refinedOutsideWindow && refinementNeedsReposition &&
+        if (!windowHasPreTargetRap && windowHasTimedEvidence && refinedOutsideWindow &&
+            refinementNeedsReposition &&
             !visited.has(refined)) {
           nextCandidate = refined;
           break;
         }
+        // A RAP found at the current tier frontier is stronger evidence than a
+        // sparse time anchor: keep this parser window contiguous until the
+        // target-relative stable horizon can accept or reject the RAP. Promote
+        // only to the next fixed tier and retain its landing reserve.
+        if (windowHasPreTargetRap && bytesRead + chunkSize > planningLimit() &&
+            promotePlanningBudget()) continue;
         if (!windowHasTimedEvidence) break;
       }
       if (nextCandidate !== null) {
@@ -457,8 +677,8 @@ export function createMseRecordedSeekSession({
       candidate = candidate > fallbackStride ? candidate - fallbackStride : 0n;
       fallbackStride *= 2n;
     }
-    const chosen = bestRap({allowBootstrap: true});
-    if (chosen) return {chosen, estimate};
+    const chosen = bestRap();
+    if (chosen) return {chosen, estimate: projectedTargetOffset() ?? estimate};
     throw new MseRecordedSeekError('no-rap');
   };
 
@@ -496,6 +716,7 @@ export function createMseRecordedSeekSession({
     phase = 'single-landing';
     let offset = chosen.restartOffset;
     await demuxer.reposition(offset, true);
+    await demuxer.prepareMseRecordedSeekLanding(chosen.ptsUs);
     await beforeLanding(chosenTrack, chosen);
     await demuxer.setMseOutputEnabled(true);
     await demuxer.setMseRecordedSeekConcealmentTarget(hasVideo() ? sourceTargetUs : null);
@@ -589,9 +810,32 @@ export function createMseRecordedSeekSession({
           ),
           planningAnchors: {
             before: {ptsUs: anchorBefore.ptsUs.toString(), offset: anchorBefore.offset.toString()},
+            previousBefore: previousAnchorBefore === null ? null : {
+              ptsUs: previousAnchorBefore.ptsUs.toString(),
+              offset: previousAnchorBefore.offset.toString(),
+            },
             after: anchorAfter === null ? null : {
               ptsUs: anchorAfter.ptsUs.toString(), offset: anchorAfter.offset.toString(),
             },
+            rateModel: (() => {
+              const model = localAnchorModel();
+              return model === null ? null : {
+                key: model.key,
+                before: {
+                  ptsUs: model.before.ptsUs.toString(),
+                  offset: model.before.offset.toString(),
+                },
+                reference: model.after === null ? {
+                  ptsUs: model.previousBefore.ptsUs.toString(),
+                  offset: model.previousBefore.offset.toString(),
+                } : {
+                  ptsUs: model.after.ptsUs.toString(),
+                  offset: model.after.offset.toString(),
+                },
+                timeSpanUs: model.timeSpanUs.toString(),
+                byteSpan: model.byteSpan.toString(),
+              };
+            })(),
           },
           planningTrace: planningTrace.map(item => Object.fromEntries(
             Object.entries(item).map(([key, value]) => [
@@ -618,6 +862,7 @@ export function createMseRecordedSeekSession({
 
   return {
     run, observeTrack, observeTrackRemoved, observeAccessUnit, observeDamage,
+    observeVideoRecovery,
     get phase() { return phase; },
     get bytesRead() { return bytesRead; },
     get budgetBytes() { return authorizedBudget; },

@@ -13,6 +13,12 @@ import {
   MseStartupBufferError,
 } from './mse-playback-contract.mjs';
 
+// AAC-LATM frames are 1024 samples (about 21.3 ms at 48 kHz).  A decoded
+// video frame may begin just before the first AAC frame that can be appended;
+// accept that one-frame audio preroll while still requiring video itself to
+// cover the immutable seek target exactly.
+const AAC_BOUNDARY_TOLERANCE_SECONDS = 0.022;
+
 export function createMsePlaybackFlowControl({
   media,
   queues,
@@ -50,12 +56,29 @@ export function createMsePlaybackFlowControl({
       entryTimeSeconds,
       entryToleranceSeconds,
     );
-    if (!committed) return null;
+    const video = queues.get('video');
+    const videoExact = currentRequiredTracks.includes('video') && video
+      ? coveringBufferedRange(video.committedRanges?.() ?? [], entryTimeSeconds,
+        entryToleranceSeconds)
+      : null;
+    // The common coded range is authoritative when it covers the target.  If
+    // only its audio edge trails by one AAC frame, retain the exact video
+    // requirement and use the bounded boundary tolerance for both coded and
+    // browser-buffered intersections.  This rejects a later-only video entry
+    // while accepting normal video/AAC timestamp quantization.
+    const committedBoundary = committed ?? (
+      currentRequiredTracks.length === 2 && videoExact
+        ? coveringBufferedRange(
+          commonCommittedRanges(queues, currentRequiredTracks),
+          entryTimeSeconds, AAC_BOUNDARY_TOLERANCE_SECONDS)
+        : null);
+    if (!committedBoundary) return null;
     const buffered = commonBufferedRanges(queues, currentRequiredTracks).find(range =>
-      range.start <= entryTimeSeconds + browserBoundaryToleranceSeconds &&
+      range.start <= entryTimeSeconds + (committed ? browserBoundaryToleranceSeconds
+        : AAC_BOUNDARY_TOLERANCE_SECONDS) &&
       range.end >= entryTimeSeconds &&
-      range.start < committed.end && range.end > committed.start);
-    return buffered ? committed : null;
+      range.start < committedBoundary.end && range.end > committedBoundary.start);
+    return buffered ? committedBoundary : null;
   };
   const naturalStartRange = () => {
     if (!allowNaturalStart || entryKind !== 'seek' || entryTimeSeconds !== 0 ||
@@ -149,22 +172,27 @@ export function createMsePlaybackFlowControl({
     },
     async afterPush(byteLength, isActive = () => true) {
       trim();
-      await Promise.all([...requiredQueues().values()].map(
-        queue => queue.waitFlowControlled(queueHighBytes),
-      ));
+      // Live A/V recovery has no byte- or callback-based terminal boundary.
+      // While there is no playable required-track intersection, keep consuming
+      // input so the remuxer can observe a later stable RAP/AAC pair. The core
+      // withholds damaged/unverified GOPs, so there is no active MSE queue to
+      // drain until a playable intersection exists again. Audio-only Live still
+      // has an entry range and therefore retains normal bounded backpressure.
+      if (entryKind !== 'live' || api.entryCovered()) {
+        await Promise.all([...requiredQueues().values()].map(
+          queue => queue.waitFlowControlled(queueHighBytes),
+        ));
+      }
       if (!isActive()) return {commonAhead: 0, entryCovered: api.entryCovered()};
 
       const mode = detectedLandingMode();
       if (mode) {
         committedLandingMode = mode;
-      } else if (!committedLandingMode) {
-        if (entryKind === 'startup' || entryKind === 'live') startupBytes += byteLength;
-        if ((entryKind === 'startup' || entryKind === 'live') &&
-            startupBytes >= startupNoProgressBytes) {
+      } else if (!committedLandingMode && entryKind === 'startup') {
+        startupBytes += byteLength;
+        if (startupBytes >= startupNoProgressBytes) {
           throw new MseStartupBufferError(
-            entryKind === 'live'
-              ? `${startupNoProgressBytes} bytes were read without forming a common live A/V range.`
-              : `${startupNoProgressBytes} bytes were read without forming a common A/V range at timestamp 0.`);
+            `${startupNoProgressBytes} bytes were read without forming a common A/V range at timestamp 0.`);
         }
       }
 

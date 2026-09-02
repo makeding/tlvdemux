@@ -30,8 +30,11 @@ public:
         staged_video_events_.clear();
         stage_video_ = true;
     }
+    void begin_audio_staging() noexcept { stage_audio_ = true; }
+    void cancel_audio_staging() noexcept { stage_audio_ = false; }
     void discard_staged_video() noexcept {
         stage_video_ = false;
+        stage_audio_ = false;
         staged_video_events_.clear();
     }
     std::optional<std::pair<std::int64_t, std::int64_t>> staged_video_range() const {
@@ -63,23 +66,40 @@ public:
     }
     void commit_staged_video() {
         stage_video_ = false;
+        stage_audio_ = false;
         auto events = std::move(staged_video_events_);
         staged_video_events_.clear();
-        for (auto& event : events) {
-            std::visit([this](auto& value) {
-                using Event = std::decay_t<decltype(value)>;
-                if constexpr (std::is_same_v<Event, tlvdemux::MseTrackInit>) {
-                    sink_.onMseInit(std::move(value));
-                } else if constexpr (std::is_same_v<Event, tlvdemux::MseMediaSegment>) {
-                    sink_.onMseSegment(std::move(value));
-                } else if constexpr (std::is_same_v<Event, tlvdemux::MseVideoSplice>) {
-                    sink_.onMseVideoSplice(value);
-                } else if constexpr (std::is_same_v<Event, tlvdemux::MseVideoProperties>) {
-                    sink_.onMseVideoProperties(value);
-                } else {
-                    sink_.onMseVideoStart(value);
-                }
-            }, event);
+        const auto phase = [](const StagedVideoEvent& event) {
+            if (std::holds_alternative<tlvdemux::MseVideoSplice>(event) ||
+                std::holds_alternative<tlvdemux::MseAudioSplice>(event)) return 0;
+            if (std::holds_alternative<tlvdemux::MseTrackInit>(event)) return 1;
+            if (std::holds_alternative<tlvdemux::MseMediaSegment>(event)) return 3;
+            return 2;
+        };
+        for (int current_phase = 0; current_phase != 4; ++current_phase) {
+            for (auto& event : events) {
+                if (phase(event) != current_phase) continue;
+                std::visit([this](auto& value) {
+                    using Event = std::decay_t<decltype(value)>;
+                    if constexpr (std::is_same_v<Event, tlvdemux::MseTrackInit>) {
+                        sink_.onMseInit(std::move(value));
+                    } else if constexpr (
+                        std::is_same_v<Event, tlvdemux::MseMediaSegment>) {
+                        sink_.onMseSegment(std::move(value));
+                    } else if constexpr (
+                        std::is_same_v<Event, tlvdemux::MseVideoSplice>) {
+                        sink_.onMseVideoSplice(value);
+                    } else if constexpr (
+                        std::is_same_v<Event, tlvdemux::MseAudioSplice>) {
+                        sink_.onMseAudioSplice(value);
+                    } else if constexpr (
+                        std::is_same_v<Event, tlvdemux::MseVideoProperties>) {
+                        sink_.onMseVideoProperties(value);
+                    } else {
+                        sink_.onMseVideoStart(value);
+                    }
+                }, event);
+            }
         }
     }
 
@@ -100,7 +120,8 @@ public:
         event.height = track.height;
         event.sample_rate = track.sample_rate;
         event.channels = track.channels;
-        if (stage_video_ && type == "video") {
+        if ((stage_video_ && type == "video") ||
+            (stage_audio_ && type == "audio")) {
             staged_video_events_.push_back(std::move(event));
             return;
         }
@@ -122,7 +143,8 @@ public:
         const auto end_us = scaled(end, track.timescale, 1000000);
         if (mode_ == tlvdemux::MseOutputMode::SeparateTracks) {
             tlvdemux::MseMediaSegment event{type, std::move(data), start_us, end_us};
-            if (stage_video_ && type == "video") {
+            if ((stage_video_ && type == "video") ||
+                (stage_audio_ && type == "audio")) {
                 staged_video_events_.push_back(std::move(event));
                 return;
             }
@@ -140,8 +162,13 @@ public:
     void audio_splice(const std::int64_t presentation_time_us,
                       const std::int64_t timestamp_offset_us = 0) {
         if (!enabled_) return;
-        sink_.onMseAudioSplice(tlvdemux::MseAudioSplice{
-            presentation_time_us, timestamp_offset_us});
+        const tlvdemux::MseAudioSplice event{
+            presentation_time_us, timestamp_offset_us};
+        if (stage_audio_) {
+            staged_video_events_.push_back(event);
+            return;
+        }
+        sink_.onMseAudioSplice(event);
     }
 
     void video_splice(const std::int64_t presentation_time_us,
@@ -154,6 +181,17 @@ public:
             return;
         }
         sink_.onMseVideoSplice(event);
+    }
+
+    // Recorded planning suppresses media output, but the one formal landing
+    // must still replace both existing SourceBuffer timelines before init and
+    // media are re-enabled. This is transaction control, not demux output.
+    void recorded_seek_splice(const std::int64_t presentation_time_us,
+                              const std::int64_t timestamp_offset_us) {
+        sink_.onMseVideoSplice(tlvdemux::MseVideoSplice{
+            presentation_time_us, timestamp_offset_us});
+        sink_.onMseAudioSplice(tlvdemux::MseAudioSplice{
+            presentation_time_us, timestamp_offset_us});
     }
 
     void layer_switch(const std::uint64_t video_track_id,
@@ -177,7 +215,9 @@ public:
     }
 
     void video_recovery(const tlvdemux::MseVideoRecoveryEvent& event) {
-        if (!enabled_) return;
+        // This is structured parser/remuxer evidence, not presentation output.
+        // Recorded planning deliberately disables init/media emission while it
+        // still needs native damage episodes to veto a landing candidate.
         sink_.onMseVideoRecovery(event);
     }
 
@@ -218,11 +258,13 @@ private:
     bool multiplexed_init_emitted_ = false;
     bool enabled_ = true;
     using StagedVideoEvent = std::variant<
-        tlvdemux::MseVideoSplice, tlvdemux::MseTrackInit,
+        tlvdemux::MseVideoSplice, tlvdemux::MseAudioSplice,
+        tlvdemux::MseTrackInit,
         tlvdemux::MseVideoStart, tlvdemux::MseVideoProperties,
         tlvdemux::MseMediaSegment>;
     std::vector<StagedVideoEvent> staged_video_events_;
     bool stage_video_ = false;
+    bool stage_audio_ = false;
 };
 
 class BaseMuxer {

@@ -695,6 +695,24 @@ declare namespace createTlvDemuxModule {
     phase: "observation-started" | "candidate-rejected" | "stable-rap-committed";
   }
 
+  type MseAvRecoveryState =
+    | "starting" | "av" | "switching" | "held-audio" | "stalled" | "restoring";
+
+  interface MseAvRecoveryEvidence {
+    type: "recovery-candidate" | "recovery-state";
+    state: MseAvRecoveryState;
+    avState: MseAvRecoveryState;
+    episodeId: bigint;
+    videoTrackId: bigint;
+    audioTrackId: bigint;
+    sourceRapTimeUs: bigint;
+    commonAvBoundaryUs: bigint;
+    restartOffset: bigint;
+    timestampAnchorUs: bigint;
+    generation: bigint;
+    exact: boolean;
+  }
+
   interface MseVideoColor {
     primaries: number;
     transfer: number;
@@ -829,6 +847,7 @@ declare namespace createTlvDemuxModule {
     onMseLayerSwitchCancelled?: (cancelled: MseLayerSwitchCancelled) => void;
     onMseVideoStart?: (start: MseVideoStart) => void;
     onMseVideoRecovery?: (event: MseVideoRecoveryEvent) => void;
+    onMseAvRecovery?: (event: MseAvRecoveryEvidence) => void;
     /** HEVC VUI/output colour state, pushed at each parameter-set/RAP boundary. */
     onMseVideoProperties?: (properties: MseVideoProperties) => void;
     /** Output capability and connection state after EDID/mode changes. */
@@ -873,12 +892,15 @@ declare namespace createTlvDemuxModule {
     setMseRecordedSeekConcealmentTarget(presentationTimeUs?: bigint | null): void;
     getMseRecordedSeekLandingEvidence(): MseRecordedSeekLandingEvidence;
     beginMseRecordedSeek(): void;
+    /** Splice both A/V SourceBuffer timelines at the formal Recorded landing RAP. */
+    prepareMseRecordedSeekLanding(sourceBoundaryUs: bigint): void;
     flushMseRecordedSeekAudio(): void;
     flushMseRecordedSeekLanding(): void;
     finishMseRecordedSeek(playbackPositionUs: bigint): void;
     cancelMseRecordedSeek(): void;
     /** Report the unchanged media clock for automatic layer recovery decisions. */
     setMsePlaybackPosition(presentationTimeUs: bigint): void;
+    setMseRecoveryGeneration(generation: bigint): void;
     switchAudioTrack(trackId: bigint, earliestPresentationTimeUs: bigint): bigint | null;
     switchLayer(
       videoTrackId: bigint,
@@ -919,6 +941,7 @@ declare namespace createTlvDemuxModule {
     seekPointCount(): number;
     indexedVideoTrack(): bigint | null;
     previousSync(targetUs: bigint): SeekPoint | null;
+    previousSyncForTrack(targetUs: bigint, videoTrackId: bigint): SeekPoint | null;
     seekPointsFor(targetUs: bigint): SeekPointPair | null;
     estimateOffset(targetUs: bigint, sourceSize: bigint): bigint | null;
     applicationResources(contextId?: number | null): ApplicationResourceMetadata[];

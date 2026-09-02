@@ -212,7 +212,7 @@ class WebGlBackend {
 
   draw() {
     if (!this.gl || !this.lut || this.video.readyState < 2 ||
-        this.video.videoWidth === 0 || this.video.videoHeight === 0) return;
+        this.video.videoWidth === 0 || this.video.videoHeight === 0) return false;
     this.resize();
     const gl = this.gl;
     gl.useProgram(this.program);
@@ -225,6 +225,7 @@ class WebGlBackend {
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
+    return true;
   }
 
   resize() {
@@ -365,7 +366,7 @@ class WebGpuBackend {
   draw() {
     if (!this.device || !this.context || !this.pipeline || !this.lutTexture ||
         this.video.readyState < 2 || this.video.videoWidth === 0 ||
-        this.video.videoHeight === 0) return;
+        this.video.videoHeight === 0) return false;
     this.resize();
     const videoFrame = this.device.importExternalTexture({source: this.video});
     const bindGroup = this.device.createBindGroup({
@@ -391,6 +392,7 @@ class WebGpuBackend {
     pass.draw(3);
     pass.end();
     this.device.queue.submit([encoder.finish()]);
+    return this.device.queue.onSubmittedWorkDone?.() ?? true;
   }
 
   resize() {
@@ -426,21 +428,34 @@ export class HlgSdrRenderer {
     this.enabled = false;
     this.activeBackend = null;
     this.activeName = null;
+    this.lastPresentedCanvas = null;
     this.generation = 0;
     this.frameRequest = null;
     this.animationRequest = null;
+    this.renderedFrameListeners = new Set();
     this.handlePlay = () => this.schedule();
-    this.handlePause = () => this.cancelFrame();
+    this.handlePause = () => {
+      if (typeof this.video.requestVideoFrameCallback === 'function') this.schedule();
+      else this.cancelFrame();
+    };
+    this.handleSeeked = () => {
+      if (typeof this.video.requestVideoFrameCallback !== 'function') {
+        this.presentCurrentFrame({mediaTime: this.video.currentTime});
+      }
+      this.schedule();
+    };
     this.webGl = new WebGlBackend(video, webGlCanvas, onError);
     this.webGpu = new WebGpuBackend(video, webGpuCanvas, onError, () => {
       if (this.activeBackend === this.webGpu) {
         this.activeBackend = null;
         this.activeName = null;
+        this.lastPresentedCanvas = null;
         if (this.enabled) void this.selectBackend(++this.generation);
       }
     });
     video.addEventListener('play', this.handlePlay);
     video.addEventListener('pause', this.handlePause);
+    video.addEventListener('seeked', this.handleSeeked);
     webGpuCanvas.hidden = true;
     webGlCanvas.hidden = true;
   }
@@ -453,6 +468,7 @@ export class HlgSdrRenderer {
     this.cancelFrame();
     this.video.removeEventListener('play', this.handlePlay);
     this.video.removeEventListener('pause', this.handlePause);
+    this.video.removeEventListener('seeked', this.handleSeeked);
     this.webGpu.destroy();
     this.webGl.destroy();
     this.video = video;
@@ -461,6 +477,7 @@ export class HlgSdrRenderer {
       if (this.activeBackend === this.webGpu) {
         this.activeBackend = null;
         this.activeName = null;
+        this.lastPresentedCanvas = null;
         if (this.enabled) void this.selectBackend(++this.generation);
       }
     });
@@ -472,8 +489,10 @@ export class HlgSdrRenderer {
     this.webGpu.setComparisonEnabled(comparison);
     video.addEventListener('play', this.handlePlay);
     video.addEventListener('pause', this.handlePause);
+    video.addEventListener('seeked', this.handleSeeked);
     this.activeBackend = null;
     this.activeName = null;
+    this.lastPresentedCanvas = null;
     if (enabled) void this.selectBackend(++this.generation);
   }
 
@@ -497,6 +516,7 @@ export class HlgSdrRenderer {
       this.cancelFrame();
       this.activeBackend = null;
       this.activeName = null;
+      this.lastPresentedCanvas = null;
       this.webGpuCanvas.hidden = true;
       this.webGlCanvas.hidden = true;
       return;
@@ -517,33 +537,74 @@ export class HlgSdrRenderer {
       name = 'WebGL';
     }
     this.activeBackend = backend;
+    this.lastPresentedCanvas = null;
     this.webGpuCanvas.hidden = backend !== this.webGpu;
     this.webGlCanvas.hidden = backend !== this.webGl;
     if (name !== this.activeName) {
       this.activeName = name;
       if (name) this.onBackendChange(name);
     }
-    this.draw();
+    this.presentCurrentFrame();
     this.schedule();
   }
 
+  get activeCanvas() {
+    return this.lastPresentedCanvas;
+  }
+
+  get hasActivePresentation() {
+    return this.enabled && this.activeCanvas !== null;
+  }
+
+  onRenderedFrame(listener) {
+    this.renderedFrameListeners.add(listener);
+    return () => this.renderedFrameListeners.delete(listener);
+  }
+
+  presentCurrentFrame(metadata = null) {
+    if (!this.enabled || !this.activeBackend) return false;
+    const backend = this.activeBackend;
+    const generation = this.generation;
+    const source = backend === this.webGpu ? this.webGpuCanvas : this.webGlCanvas;
+    const completion = backend.draw();
+    if (!completion) return false;
+    const presentation = {
+      source,
+      mediaTime: Number.isFinite(metadata?.mediaTime) ?
+        metadata.mediaTime : this.video.currentTime,
+    };
+    const notify = () => {
+      if (!this.enabled || generation !== this.generation ||
+          backend !== this.activeBackend) return;
+      this.lastPresentedCanvas = source;
+      for (const listener of this.renderedFrameListeners) listener(presentation);
+    };
+    if (typeof completion.then === 'function') {
+      void completion.then(notify, error => this.onError('WebGPU', error));
+    } else {
+      notify();
+    }
+    return true;
+  }
+
   draw() {
-    if (this.enabled) this.activeBackend?.draw();
+    return this.presentCurrentFrame();
   }
 
   schedule() {
-    if (!this.enabled || !this.activeBackend || this.video.paused || this.video.ended ||
+    if (!this.enabled || !this.activeBackend || this.video.ended ||
         this.frameRequest !== null || this.animationRequest !== null) return;
     if (typeof this.video.requestVideoFrameCallback === 'function') {
-      this.frameRequest = this.video.requestVideoFrameCallback(() => {
+      this.frameRequest = this.video.requestVideoFrameCallback((_now, metadata) => {
         this.frameRequest = null;
-        this.draw();
+        this.presentCurrentFrame(metadata);
         this.schedule();
       });
     } else {
+      if (this.video.paused) return;
       this.animationRequest = requestAnimationFrame(() => {
         this.animationRequest = null;
-        this.draw();
+        this.presentCurrentFrame();
         this.schedule();
       });
     }
@@ -563,6 +624,8 @@ export class HlgSdrRenderer {
     this.setEnabled(false);
     this.video.removeEventListener('play', this.handlePlay);
     this.video.removeEventListener('pause', this.handlePause);
+    this.video.removeEventListener('seeked', this.handleSeeked);
+    this.renderedFrameListeners.clear();
     this.webGpu.destroy();
     this.webGl.destroy();
   }

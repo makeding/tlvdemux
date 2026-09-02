@@ -131,10 +131,71 @@ renderer.setComparisonEnabled(false);
 assert.equal(calls.draws, 2);
 assert.equal(calls.clears, 2);
 assert.deepEqual(calls.comparison, [1, 0]);
+const fallbackDrawsBeforeSeeked = calls.draws;
+video.dispatchEvent(new Event('seeked'));
+assert.equal(calls.draws, fallbackDrawsBeforeSeeked + 1,
+  'a paused seek without requestVideoFrameCallback did not present its SDR frame');
 
 renderer.setEnabled(false);
 assert.equal(webGlCanvas.hidden, true);
 renderer.destroy();
+
+const pausedVideo = new EventTarget();
+let pausedFrameCallback = null;
+let pausedFrameRequestId = 0;
+let pausedFrameCancels = 0;
+Object.assign(pausedVideo, {
+  readyState: 2,
+  videoWidth: 1920,
+  videoHeight: 1080,
+  paused: true,
+  ended: false,
+  currentTime: 44,
+  requestVideoFrameCallback(callback) {
+    pausedFrameCallback = callback;
+    return ++pausedFrameRequestId;
+  },
+  cancelVideoFrameCallback() { pausedFrameCancels += 1; },
+});
+const pausedGl = fakeWebGl();
+const pausedCanvas = {
+  hidden: true,
+  clientWidth: 640,
+  clientHeight: 360,
+  width: 0,
+  height: 0,
+  getContext: kind => kind === 'webgl' ? pausedGl.gl : null,
+};
+const pausedPresentations = [];
+const pausedRenderer = new HlgSdrRenderer({
+  video: pausedVideo,
+  webGpuCanvas: {hidden: true},
+  webGlCanvas: pausedCanvas,
+});
+pausedRenderer.onRenderedFrame(frame => pausedPresentations.push(frame));
+pausedRenderer.setColorLut({
+  size: 2,
+  width: 4,
+  height: 2,
+  data: new Uint8Array(4 * 2 * 4).fill(255),
+});
+pausedRenderer.setEnabled(true);
+await new Promise(resolve => setTimeout(resolve, 0));
+assert.equal(typeof pausedFrameCallback, 'function',
+  'the renderer did not observe a frame presented by a paused seek');
+const drawsBeforePause = pausedGl.calls.draws;
+pausedVideo.dispatchEvent(new Event('pause'));
+assert.equal(pausedFrameCancels, 0,
+  'pause cancelled the requestVideoFrameCallback needed by paused seek');
+const landedCallback = pausedFrameCallback;
+landedCallback(0, {mediaTime: 44});
+assert.equal(pausedGl.calls.draws, drawsBeforePause + 1);
+assert.equal(pausedPresentations.at(-1).mediaTime, 44);
+const drawsBeforeSeeked = pausedGl.calls.draws;
+pausedVideo.dispatchEvent(new Event('seeked'));
+assert.equal(pausedGl.calls.draws, drawsBeforeSeeked,
+  'seeked duplicated a frame before requestVideoFrameCallback presentation');
+pausedRenderer.destroy();
 
 const originalNavigator = globalThis.navigator;
 const originalGpuBufferUsage = globalThis.GPUBufferUsage;
@@ -143,6 +204,7 @@ const gpuCalls = {
   shader: '', textureDescriptors: [], writeTextures: [], textureViews: 0,
   samplerDescriptors: [], draws: 0,
 };
+let resolveGpuPresentation = null;
 const gpuContext = {
   configure() {},
   getCurrentTexture: () => ({createView: () => ({})}),
@@ -155,6 +217,9 @@ const gpuDevice = {
     },
     writeBuffer() {},
     submit() {},
+    onSubmittedWorkDone() {
+      return new Promise(resolve => { resolveGpuPresentation = resolve; });
+    },
   },
   createShaderModule({code}) {
     gpuCalls.shader = code;
@@ -262,6 +327,12 @@ for (let blue = 0; blue < gpuLutSize; blue += 1) {
 }
 assert.equal(gpuCalls.draws, 1);
 assert.equal(gpuCalls.textureViews, 1);
+assert.equal(gpuRenderer.activeCanvas, null,
+  'WebGPU was reported as presented before its submitted work completed');
+resolveGpuPresentation();
+await new Promise(resolve => setTimeout(resolve, 0));
+assert.equal(gpuRenderer.activeCanvas, gpuCanvas,
+  'WebGPU completion did not publish the presented SDR canvas');
 gpuRenderer.destroy();
 
 Object.defineProperty(globalThis, 'navigator', {

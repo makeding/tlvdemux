@@ -120,18 +120,17 @@ The install includes the playback/MSE library, public headers, the
 `tlvdemux::tlvdemux` CMake package target, the `tlvdemux` executable when enabled,
 and the MIT license. Its CMake package requires an installed `aribtlv` package.
 
-`MseRemuxer` tracks the preferred and rainfall A/V layers independently from
-their continuous DTS, observed RAPs, usable AAC, and explicit source-damage
-spans. Automatic playback has only two modes: preferred or rainfall. If the
-active layer is damaged, the core starts a same-timeline switch when the other
-layer already has aligned decodable video and audio. Otherwise it emits
-`PlaybackDamage` for the active layer. A recovered span shorter than the
-two-second severe threshold with an explicit recovery RAP is a `warning` with
-action `seek-if-stalled`: parser prefetch only arms that recovery and never
-moves the media clock. A severe recovered span remains `severe` with action
-`seek`, while a span without a recovery RAP remains `wait-for-recovery` until a
-real RAP arrives. Damage is never retained until EOF and never inferred across
-an unobserved interval.
+`MseRemuxer` owns one A/V evidence state machine for the preferred and rainfall
+track pairs. It combines continuous DTS, real RAP/IRAP boundaries, aligned AAC,
+explicit source-damage episodes, and the caller-owned generation. An active
+layer failure switches to the other pair only when complete aligned A/V is
+already usable. Otherwise the state is `held-audio` while selected AAC remains
+continuous, or `stalled` when both selected tracks are unavailable. A
+transport-reported recovery RAP is diagnostic input only: recovery is exposed
+as `restoring` only at a later real output RAP after a stable video window and
+matching continuous AAC. No `PlaybackDamage` action, parser frontier, bare RAP,
+bare AAC unit, buffered range, or `waiting` event independently authorizes a
+seek.
 Emergency preferred-to-rainfall switching also covers startup. If the selected
 preferred layer has not produced a decodable MSE video entry while the rainfall
 layer has a real RAP, a following continuous video DTS, continuous AAC, and an
@@ -197,7 +196,9 @@ Browser Recorded/File input is owned by
 `cancelled`, and `failed`; only `supplying` reads the source. The controller
 owns the sequential offset, `demuxer.push()`, 15/8-second common-A/V watermarks,
 seek-generation cancellation, and true-EOF flush, index-finalize, queue-drain,
-and `endOfStream()` ordering. It keeps bounded state/no-progress diagnostics.
+and output-finalization ordering. It keeps bounded state/no-progress diagnostics;
+the browser binding decides whether that finalization is terminal or remains
+open for later Recorded seeks.
 
 Draining is permitted only for the Recorded high watermark, a real
 SourceBuffer mutation, or queued append/reconfiguration work. Updateend,
@@ -233,8 +234,31 @@ is not itself changing the recording origin.
 
 An explicit seek cancels the previous Recorded generation while retaining the
 exact user time, one bounded read ledger, and one landing reposition. RAP/IRAP
-may supply real or frozen video but cannot move `currentTime`. Layer recovery
-and candidate MediaSources only submit events to the controller.
+may supply real or frozen video but cannot move `currentTime`. Structured core
+recovery evidence is submitted to the Recorded controller; there is no
+candidate MediaSource path.
+
+True source EOF ends the current supply generation, not the attached Recorded
+session. Until explicit stop, input replacement, or cancellation, the browser
+integration retains the controller, demuxer, source, queues, and request abort
+owner so a later backward user seek can start a new generation on the same
+MediaSource. In automatic mode that seek re-evaluates the requested interval and
+lands on the matched rainfall A/V pair when preferred video is damaged. The
+debounced seek handler may ignore only a stale run generation; it must never
+silently leave an active request in the pending UI because EOF cleared its owner.
+If the retained RecordingIndex is already `complete`, the new seek generation
+reuses its finalized duration and `previousSync()` evidence. It does not call
+`setIndexDuration()` again: rejection of a provisional duration update by a
+complete index is normal immutability, not a no-common-A/V seek failure.
+Only uninterrupted byte coverage from offset zero through physical EOF may
+finalize that index as `complete`. A head-plus-tail or otherwise repositioned
+session remains `partial`, so sparse RAPs never claim an unobserved middle
+target is already indexed.
+Recorded source EOF drains its queues and may remove an incomplete unmatched
+tail, but leaves the MediaSource open while the session is seekable. Calling
+`endOfStream()` there would make the following splice destroy its queues as
+detached. Live finalization and terminal Recorded teardown retain the normal
+end/close behavior.
 
 The 16 MiB budget belongs only to an explicit Recorded seek. Sequential
 Recorded startup has no fixed byte budget: until a common A/V entry is formed,
@@ -243,10 +267,11 @@ append/reconfiguration requires draining, and it may read beyond 256 MiB. It
 must not emit `MSE_STARTUP_NO_COMMON_AV`; the 15/8-second common-A/V watermarks
 govern supply after the entry exists.
 
-Live remains on the unchanged `createMsePlaybackFlowControl({entryKind:
-'live'})` and `createLiveMseTransitionManager()` path. Live public state has no
-Recorded lifecycle, file offset, index, seek generation, or EOF branch, and
-Recorded code does not import or wrap the Live transition manager.
+Live uses `createMsePlaybackFlowControl({entryKind: 'live'})` only for bounded
+input flow. Its recovery binding consumes the same structured core evidence and
+splices matched A/V in place on the existing MediaElement and MediaSource. Live
+has no Recorded lifecycle, file offset, source reposition, recovery seek,
+candidate MediaSource, reconnect, or EOF recovery branch.
 
 Release requires synthetic coverage for the 256 MiB stall shape (about 1.1s
 common A/V, 0.1s video, and more than 4 MiB queued), the 10.277733s and
@@ -265,18 +290,19 @@ The demo reports that unchanged media clock to the core for recovery decisions;
 this is observation, not a seek.
 
 Before a fresh recorded SourceBuffer pair is created, the demo enables atomic
-entry alignment in `createMseOutputPipeline()`. The pipeline stages both init
-segments and their first media segments until it finds the earliest common A/V
-source interval, assigns both SourceBuffers the same negative `timestampOffset`
-that maps that interval's start to timestamp zero, and then commits each queue in
-timestamp-offset -> init -> media order. An explicit staged splice offset, such
-as a rainfall-layer startup mapping, always takes precedence: entry alignment
-must neither derive another offset nor add one to the splice mapping. Live,
-explicit-seek, and reused-MediaSource paths do not enable this fresh-entry mode.
-The presence of two later, not-yet-mapped track ranges is therefore not a
-Recorded startup failure. The Recorded controller continues sequential supply
-until it can form and map the common A/V entry, reaches true EOF, or encounters
-a real source/demux failure.
+entry alignment in `createMseOutputPipeline()`. The pipeline waits for both init
+segments and the first stable video entry, creates the two SourceBuffers before
+appending either init, discards complete AAC fragments that begin before that
+video boundary, and gives both queues the same negative `timestampOffset` that
+maps the boundary to timestamp zero. A staged A/V layer transaction likewise
+publishes both splices and both init segments before either track's media. An
+explicit staged splice offset, such as a rainfall-layer startup mapping, always
+takes precedence: entry alignment must neither derive another offset nor add one
+to the splice mapping. Live, explicit-seek, and reused-MediaSource paths do not
+enable this fresh-entry mode. Recorded continues sequential supply until it can
+form and map the matched entry, reaches true EOF, or encounters a real
+source/demux failure; initialization is never failed merely because one staged
+track contains more than 16 MiB before the other init is published.
 When the first usable rainfall RAP is later than that fresh playback entry, the
 splice retains the RAP's source presentation time and carries a negative MSE
 timestamp offset that maps the replacement A/V output onto timestamp zero. The
@@ -293,9 +319,9 @@ A/V buffered interval produced by the current stream, and the media clock is
 aligned to that interval only after the configured live startup buffer is ready.
 Flow control must accept and measure that later interval before the alignment
 write occurs; it must never classify valid live A/V merely because the interval
-does not cover timestamp zero. If live A/V cannot form any common interval, the
-same 16 MiB no-progress limit still stops input with
-`MSE_STARTUP_NO_COMMON_AV`.
+does not cover timestamp zero. If live A/V cannot form a common interval, input
+and both layer trackers keep running. The 16 MiB startup limit is not a fatal
+Live boundary; recovery waits in place for later matched A/V evidence.
 
 An explicit recorded seek is a separate public playback-entry contract. From
 head discovery through backward planning and the final A/V preroll,
@@ -309,9 +335,10 @@ long-GOP candidate using the observed local byte rate where available, then
 expands that same candidate Range contiguously in 1 MiB steps until a usable
 preceding RAP is exposed or the planning allowance is exhausted. When that
 timed evidence proves a different bounded candidate Range but the base planning
-allowance cannot expose its RAP, planning alone may extend from 9 MiB to at most
-the full 16 MiB base transaction; this evidence path is independent of
-resolution. Empty or untimed probes cannot use it. Before the single landing,
+allowance cannot expose its RAP, planning may select the smallest fixed 32, 48,
+or 64 MiB transaction tier while retaining the fixed 7 MiB landing reserve;
+this evidence path is independent of resolution. Empty or untimed probes cannot
+use it. Before the single landing,
 the chosen RAP-to-target byte span may authorize one budget extension. If that
 proved total would leave less than the fixed 7 MiB landing guard inside the
 16 MiB base, the session selects the smallest tier that contains that proved
@@ -320,13 +347,52 @@ total plus the guard. The session chooses the smallest sufficient 32, 48, or
 Because the byte estimate is conservative and a proven
 damage landing may complete earlier, an estimate above the available tiers
 saturates at the track's hard tier for the one landing instead of failing
-before it; reads still cannot cross that tier. Planning cannot consume any
-extension, landing cannot extend it a second time, and playback rate never
-changes a tier. A reused
+before it; reads still cannot cross that tier. Planning and landing share this
+one authorized ledger, landing cannot extend it a second time, and playback
+rate never changes a tier. A reused
 demuxer uses its established tracks, timeline, and RecordingIndex
 `previousSync()` without rereading the file head. Without an index, planning
-moves backward from a conservative pre-target window and stops as soon as a
-usable preceding RAP is observed. If that first sparse window establishes a
+moves backward from a conservative pre-target window and accepts a preceding
+RAP only after the same contiguous observation reaches the requested target
+and then at least 500 ms of clean video, with no intervening damage. The
+`rain.tlv` complete-index target `208.200891s` is the direct regression: its
+preferred RAP-relative 500 ms window ends just before native damage, so only
+the target-relative window can veto that GOP before formal landing.
+Once a preceding RAP is observed in a probe window, that contiguous window is
+allowed to mature through the stable horizon before byte-rate refinement; the
+`306.673539s` target covers the corresponding long-GOP boundary and prevents
+the planner from spending its budget by repeatedly jumping away from the RAP.
+The horizon advances on the monotonic decode timestamp, not reordered PTS, so
+a future B-picture cannot hide a later source-damage marker in decode order.
+Video evidence alone never authorizes landing: the matched layer's observed
+LOAS frames must also cover the immutable target, with only the existing 22 ms
+AAC edge tolerance. The `200.774420s` regression rejects preferred video whose
+first committed audio would begin 216.9 ms after the target.
+The `321.904920s` regression reaches a timed pre-target frontier after the base
+9 MiB planning allowance without having exposed the preceding RAP. That is
+evidence for a bounded long-GOP lookback and tier extension, not authority to
+fail `no-rap`. Damage evidence from an unselected layer must not misclassify a
+clean matched fallback landing as concealment; selected-layer concealment still
+requires its exact video range to begin at the immutable target.
+The stateful `181.719416s` regression can discover a preceding RAP in the last
+chunk permitted by the 32 MiB transaction tier, before its target-relative
+500 ms stable horizon has matured. That RAP is concrete authority to promote
+planning to the next fixed tier and continue the same contiguous parser
+window; it must not be discarded as `no-rap`, cause a new sparse candidate, or
+consume the landing reserve.
+The `274.844249s` regression interleaves preferred and rainfall AAC anchors near
+the target. Byte-rate projection may use only monotonic anchors from the same
+track or the same broadcast-clock sequence; a near-equal timestamp from another
+layer must not manufacture a hundreds-of-MiB landing span or saturate 64 MiB.
+Native source-damage observation is armed for each invisible probe window, so a
+candidate GOP that is later rejected by the remuxer cannot consume the formal
+landing budget. Once native observation starts, an ordinary first RAP cannot
+close that episode; only native `stable-rap-committed` evidence after the full
+candidate GOP can authorize it.
+Disabling MSE output suppresses init/media presentation but not these structured
+recovery events; the planner receives both raw damage spans and native recovery
+phase evidence while the visible element remains unchanged.
+If that first sparse window establishes a
 broadcast-clock or AAC access-unit frontier after the target, planning
 immediately projects an approximately five-second long-GOP lookback with a
 bounded parser guard instead of spending the probe on a future RAP. Probe repositioning never changes the
@@ -334,7 +400,9 @@ media clock, and only the formal landing repositions playback.
 
 The requested time is immutable. Successful landing is `exact` when real
 committed coded A/V covers the target and the actual SourceBuffer intersection
-also covers it; `natural-start` is allowed only at recording time zero when AAC
+also covers it; for a matched pair, an AAC start edge may trail the
+video-covered target by at most one 48 kHz AAC frame (22 ms) for frame-boundary
+quantization. `natural-start` is allowed only at recording time zero when AAC
 starts at zero and the first stable real video RAP follows naturally; and
 `held-frame` requires native proof that the target lies inside a real damage
 episode with a complete earlier frame and a later stable RAP. Damage-episode
@@ -342,10 +410,27 @@ RAPs are excluded, so severe damage may choose an earlier verified decodable
 RAP without replacing the target. The session brackets the transaction with
 `beginMseRecordedSeek()`, `finishMseRecordedSeek(requestedTimeUs)`, or
 `cancelMseRecordedSeek()` so automatic layer evidence cannot leak into the
-seek. It may seal a short real AAC prefix, but never copies AAC, duplicates a
+seek. After the single formal reposition and before output resumes,
+`prepareMseRecordedSeekLanding(sourceRapUs)` publishes one video/audio splice
+pair with the established timestamp mapping, so the selected replacement init
+and media cannot overlap the old coded timelines. Selected AAC before that
+video RAP is discarded. It may seal a short real AAC prefix, but never copies AAC, duplicates a
 future RAP at the target, performs a second landing, exceeds its single
 candidate-proved authorization, scales a limit by playback rate, or enters the
 Live state machine.
+
+While an explicit seek is proving that landing, a permanent canvas slot retains
+the last actually presented frame (or an honest black slot before any frame).
+Native-control target frames observed after `video.seeking` becomes true cannot
+replace that snapshot. In particular, a seek near `44s` in `rain.tlv` must not
+expose a damaged preferred GOP while the UI still says it is checking the A/V
+pair; the cover is released only after the exact matched fallback landing.
+When HLG-to-SDR rendering is active, that slot is driven only by a completed SDR
+canvas presentation, never by an independently timed raw-video callback. It
+covers the complete picture plane while the seek is pending, including the area
+normally reserved for native controls, so a newer raw frame cannot appear below
+an older filtered frame. After an exact landing, the SDR renderer must present
+the landed frame before the cover is released; paused seeks obey the same rule.
 
 No usable RAP, EOF, disjoint committed/buffered A/V, missing native damage
 evidence, or budget exhaustion fails with `MSE_SEEK_NO_COMMON_AV` and stops
@@ -361,6 +446,11 @@ media unit instead seeds the seek session with its existing tracks and
 established timeline; it must not feed byte zero into a parser positioned at the sequential
 playback offset. Explicit seek to media time zero still runs the bounded seek
 transaction; only initial playback at zero takes the sequential-start path.
+RecordingIndex `previousSync()` points are location hints only: even a complete
+index must be re-observed through the requested time and the 500 ms stable video
+window (with matched AAC evidence) before its RAP can authorize the single
+formal landing. A damaged indexed GOP therefore falls through to the earliest
+validated layer pair instead of failing after a misleading base-budget landing.
 During formal landing, selected AAC frames that cover the exact target
 may still sit below the ordinary 250 ms fragment threshold. The Recorded seek
 session explicitly seals that real selected-AAC prefix after each landing push;
@@ -392,62 +482,26 @@ damage recovery, and MSE timestamp offsets must all use this one mapping. An
 explicit `videoPacketId` intentionally restricts the range to that single video
 track instead of forming the automatic pair's union.
 
-Selected-layer recovery remains distinct from an explicit Recorded seek. The
-SDK may retain its damage and compositor evidence, but the demo submits the
-result as a Recorded-controller event. It cannot reposition the source, change
-the Recorded lifecycle, scan the recording, or write `MediaElement.currentTime`.
-A buffered range, parser-observed RAP, damage on either layer, ordinary
-`waiting`, and `wait-for-recovery` do not become implicit Recorded seeks.
+Selected-layer recovery is one core evidence state machine with `starting`,
+`av`, `switching`, `held-audio`, `stalled`, and `restoring` states. A candidate
+requires a real RAP/IRAP, a stable following video window, aligned continuous
+AAC, no unresolved damage, and one episode, matched track pair, and generation.
+The event includes those identities plus the source RAP, common A/V boundary,
+restart offset, and timestamp anchor. A lone RAP, lone AAC frame, parser
+progress, `waiting`, or a buffered range is never recovery authority.
 
-When the selected video remains unpresentable after three different,
-strictly-forward, parser-observed recovery RAP attempts, the public playback
-resilience controller enters `audio-only` with the stable code
-`TLV_VIDEO_UNAVAILABLE`. This is a fourth playback mode beside
-`audio-video`, `recovering-video`, and `restoring-video`; it does not change
-`PlaybackDamage.action` or its severity thresholds. A current-layer damage
-authorization, a causal `waiting` after each attempted RAP, and the absence of
-a newly presented video frame are all required. Ordinary waiting, a paused
-MediaElement, an explicit seek, a layer/audio-track switch, stale generation,
-or damage on an inactive video track must never enter audio-only playback.
-The integration explicitly forwards the visible MediaElement's `pause` and
-`play` lifecycle through `notifyPlaybackPaused()` and
-`notifyPlaybackResumed()`. A pause freezes waiting consumption, recovery-RAP
-attempts, audio-only decisions, and restore commits without clearing the current
-damage episode, stable RAP, or prior attempts. Resume only removes that freeze:
-recovery may continue after a new causal `waiting` event or a newly presented
-video frame, never from a waiting or buffer event retained across the pause. No
-damage-recovery path may call `play()` on the visible MediaElement.
-
-Audio-only playback changes the MSE required-track set to audio, so startup,
-buffer coverage, backpressure, and recorded-seek landing do not wait for the
-video SourceBuffer. Inactive video output is discarded immediately and never
-forms an unbounded transition cache. A runtime in-place switch is accepted only
-after the video SourceBuffer is actually absent from `activeSourceBuffers`;
-otherwise the Recorded controller retains source ownership and receives the
-recovery request as an event. Recovery code cannot stop sequential supply,
-change the Recorded lifecycle state, build through the Live transition manager,
-or alter `currentTime`.
-Live integrations retain bounded current input while the replacement audio
-pipeline becomes playable; they must not reconnect or stop feeding the existing
-audio pipeline. The audio clock remains authoritative throughout the transition.
-`createLiveMseTransitionManager()` owns the 4 MiB candidate MediaSource queue,
-receives the same ongoing demux output as the active pipeline, and commits a
-restored A/V candidate only after its hidden probe MediaElement reports the
-target frame through `requestVideoFrameCallback()`. Commit promotes that still-attached
-candidate MediaElement; detaching and reattaching its object URL is forbidden because
-the MSE detach algorithm empties both SourceBuffer lists.
-
-While audio-only playback continues, each real RAP strictly after the audio
-clock is eligible for one restore attempt. Restoration stays in
-`restoring-video` until a common A/V candidate is buffered and
-`requestVideoFrameCallback()` proves a frame at or after that RAP was actually
-presented. A failed candidate leaves the current audio playback untouched and
-returns to `audio-only` to await a later RAP; it must not seek backward, repeat a
-RAP, or call `play()` over a user pause. Explicit seek, track/layer selection,
-generation replacement, and source end cancel the transition. The demo renders
-these structured SDK modes in a fixed video-stage slot and shows
-“映像を復旧できないため、音声のみ再生しています。利用可能になり次第、自動的に戻ります。
-[TLV_VIDEO_UNAVAILABLE]” without exposing retry counts or timers.
+When only video is unavailable, both Recorded and Live keep the last presented
+frame while audio and `currentTime` continue. When both are unavailable,
+Recorded may perform one generation-fenced `recovery-reposition` at the earliest
+proved common A/V boundary: a committed-and-buffered cache hit writes the clock
+once without source reposition; otherwise the proved restart offset permits one
+formal reposition and one exact landing within 64 MiB. Live never writes the
+clock, repositions, reconnects, or creates a candidate MediaElement/MediaSource.
+It remains stalled on the same visible anchor while input continues, then maps a
+later matched A/V RAP onto that anchor through video/audio splice offsets on the
+same MediaSource. Pause defers commit without stopping observation or calling
+`play()`. The fixed status slot reports the current situation and recovery
+action without retry counters or timers.
 
 Recoverable AAC source-damage markers must not discard already queued audio or
 restart the selected audio fragment timeline. Missing AAC frames are compacted

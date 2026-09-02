@@ -20,6 +20,7 @@ export interface MseAppendTiming {
 export interface FinalizeMseMediaSourceOptions {
   truncateToCommonEnd?: boolean;
   minimumTruncationSeconds?: number;
+  endOfStream?: boolean;
 }
 
 export declare class MseAppendQueue {

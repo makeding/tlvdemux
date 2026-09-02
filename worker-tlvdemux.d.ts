@@ -59,11 +59,13 @@ export interface WorkerDemuxer {
   setMseRecordedSeekConcealmentTarget(presentationTimeUs: bigint | null): Promise<void>;
   getMseRecordedSeekLandingEvidence(): Promise<createTlvDemuxModule.MseRecordedSeekLandingEvidence>;
   beginMseRecordedSeek(): Promise<void>;
+  prepareMseRecordedSeekLanding(sourceBoundaryUs: bigint): Promise<void>;
   flushMseRecordedSeekAudio(): Promise<void>;
   flushMseRecordedSeekLanding(): Promise<void>;
   finishMseRecordedSeek(playbackPositionUs: bigint): Promise<void>;
   cancelMseRecordedSeek(): Promise<void>;
   setMsePlaybackPosition(presentationTimeUs: bigint): Promise<void>;
+  setMseRecoveryGeneration(generation: bigint): Promise<void>;
   setMseSdrInHlg(videoTrackId: bigint, enabled: boolean): Promise<void>;
   setMseToneMappingMode(mode: createTlvDemuxModule.MseToneMappingMode): Promise<void>;
   setMseEdid(edid: Uint8Array): Promise<void>;
@@ -79,6 +81,11 @@ export interface WorkerDemuxer {
   estimateOffset(targetUs: bigint, sourceSize: bigint): Promise<bigint | null>;
   seekPointCount(): Promise<number>;
   indexState(): Promise<createTlvDemuxModule.IndexState>;
+  indexDuration(): Promise<createTlvDemuxModule.DurationInfo>;
+  indexedVideoTrack(): Promise<bigint | null>;
+  previousSync(targetUs: bigint): Promise<createTlvDemuxModule.SeekPoint | null>;
+  previousSyncForTrack(targetUs: bigint, videoTrackId: bigint): Promise<createTlvDemuxModule.SeekPoint | null>;
+  seekPointsFor(targetUs: bigint): Promise<createTlvDemuxModule.SeekPointPair | null>;
   applicationEntry(contextId: number): string | null;
   applications(): createTlvDemuxModule.ApplicationState[];
   broadcastClock(): createTlvDemuxModule.BroadcastClock | null;

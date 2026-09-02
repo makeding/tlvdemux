@@ -290,6 +290,29 @@ void test_reposition_marker_is_not_a_damage_episode() {
           "reposition marker emitted a false damage-recovery episode");
 }
 
+void test_invisible_planning_keeps_damage_observation_armed_past_target() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+    remuxer.setOutputEnabled(false);
+    remuxer.setRecordedSeekConcealmentTarget(99'000'000);
+    remuxer.push(hevc_unit(2, 98'900'000, 98'900'000, true, true));
+    remuxer.push(hevc_unit(2, 99'100'000, 99'100'000, false, false));
+    remuxer.push(damaged(hevc_unit(2, 99'430'000, 99'430'000, false, false)));
+
+    check(sink.video_recovery.size() == 1 &&
+              sink.video_recovery.front().phase ==
+                  tlvdemux::MseVideoRecoveryPhase::ObservationStarted &&
+              sink.video_recovery.front().presentation_time_us == 99'430'000,
+          "invisible Recorded planning expired damage observation at the target: events=" +
+              std::to_string(sink.video_recovery.size()) +
+              (sink.video_recovery.empty() ? std::string{} :
+                  " pts=" + std::to_string(
+                      sink.video_recovery.front().presentation_time_us)));
+    check(sink.segments.empty(),
+          "invisible Recorded planning emitted presentation media");
+}
+
 } // namespace
 
 int main() {
@@ -297,5 +320,6 @@ int main() {
     test_future_stable_rap_is_not_duplicated_without_previous_frame();
     test_target_outside_damage_is_unchanged();
     test_reposition_marker_is_not_a_damage_episode();
+    test_invisible_planning_keeps_damage_observation_armed_past_target();
     std::cout << "MSE recorded-seek concealment tests passed\n";
 }

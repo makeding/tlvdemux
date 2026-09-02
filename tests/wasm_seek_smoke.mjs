@@ -12,21 +12,35 @@ import {
 const [modulePathArgument, mediaPathArgument, ...targetArguments] = process.argv.slice(2);
 assert.ok(modulePathArgument && mediaPathArgument,
   'usage: node tests/wasm_seek_smoke.mjs TLVDEMUX_JS SAMPLE [TARGET_S ...] ' +
-  '[--seed N --random COUNT]');
+  '[--seed N --random COUNT] [--complete-index|--sparse-eof-index|--prefill-mib N]');
 const explicitTargetArguments = [];
 let randomSeed = null;
 let randomCount = 0;
+let completeIndexBeforeSeek = false;
+let sparseEofIndexBeforeSeek = false;
+let prefillBytesBeforeSeek = 0n;
 for (let index = 0; index < targetArguments.length; index += 1) {
   if (targetArguments[index] === '--seed') {
     randomSeed = Number(targetArguments[++index]);
   } else if (targetArguments[index] === '--random') {
     randomCount = Number(targetArguments[++index]);
+  } else if (targetArguments[index] === '--complete-index') {
+    completeIndexBeforeSeek = true;
+  } else if (targetArguments[index] === '--sparse-eof-index') {
+    sparseEofIndexBeforeSeek = true;
+  } else if (targetArguments[index] === '--prefill-mib') {
+    prefillBytesBeforeSeek = BigInt(targetArguments[++index]) * 1024n * 1024n;
   } else {
     explicitTargetArguments.push(targetArguments[index]);
   }
 }
 assert.ok(randomSeed === null || Number.isInteger(randomSeed), 'invalid random seed');
 assert.ok(Number.isInteger(randomCount) && randomCount >= 0, 'invalid random target count');
+assert.equal(completeIndexBeforeSeek && sparseEofIndexBeforeSeek, false,
+  'complete and sparse EOF index modes are mutually exclusive');
+assert.equal((completeIndexBeforeSeek || sparseEofIndexBeforeSeek) &&
+  prefillBytesBeforeSeek > 0n, false,
+'complete, sparse EOF, and bounded prefill index modes are mutually exclusive');
 
 const require = createRequire(import.meta.url);
 const createTlvDemuxModule = require(resolve(modulePathArgument));
@@ -214,6 +228,11 @@ try {
               `${unit.ptsTimescale}:${unit.discontinuity}:${unit.restartOffset}:${session.phase}`;
           }
         }
+      },
+      onPlaybackAccessUnitView(unit) {
+        // Match the browser integration: Recorded planning evidence arrives
+        // through the sparse playback callback, which the WASM wrapper widens
+        // to all timed A/V units only while the bounded seek is active.
         session?.observeAccessUnit(unit);
       },
       onMseVideoSplice(splice) {
@@ -224,7 +243,10 @@ try {
         offsets.audio = BigInt(splice.timestampOffsetUs ?? 0n);
         spliceEvents.push({type: 'audio', ...splice});
       },
-      onMseVideoRecovery(event) { videoRecoveryEvents.push(event); },
+      onMseVideoRecovery(event) {
+        videoRecoveryEvents.push(event);
+        session?.observeVideoRecovery(event);
+      },
       onDamage(damage) {
         damageEvents.push(damage);
         session?.observeDamage(damage);
@@ -250,6 +272,59 @@ try {
       assert.ok(startupData.byteLength > 0, 'sequential startup ended before tracks/timeline');
       assert.equal(demuxer.push(startupData), true);
       startupOffset += BigInt(startupData.byteLength);
+    }
+    if (completeIndexBeforeSeek) {
+      while (startupOffset < sourceSize) {
+        const length = sourceSize - startupOffset < 4n * 1024n * 1024n
+          ? sourceSize - startupOffset : 4n * 1024n * 1024n;
+        const indexedData = await readRange(startupOffset, length);
+        assert.ok(indexedData.byteLength > 0,
+          'complete-index setup ended before the authoritative source size');
+        assert.equal(demuxer.push(indexedData), true,
+          `complete-index setup rejected input at ${startupOffset}`);
+        startupOffset += BigInt(indexedData.byteLength);
+      }
+      demuxer.flush();
+      assert.equal(demuxer.finalizeIndex(), true,
+        'complete-index setup did not finalize its RecordingIndex');
+      assert.equal(demuxer.indexState(), 'complete');
+    } else if (sparseEofIndexBeforeSeek) {
+      const headEnd = sourceSize < 64n * 1024n * 1024n
+        ? sourceSize : 64n * 1024n * 1024n;
+      while (startupOffset < headEnd) {
+        const length = headEnd - startupOffset < 4n * 1024n * 1024n
+          ? headEnd - startupOffset : 4n * 1024n * 1024n;
+        const data = await readRange(startupOffset, length);
+        assert.ok(data.byteLength > 0, 'sparse-index head ended unexpectedly');
+        assert.equal(demuxer.push(data), true);
+        startupOffset += BigInt(data.byteLength);
+      }
+      const tailStart = sourceSize > 32n * 1024n * 1024n
+        ? sourceSize - 32n * 1024n * 1024n : startupOffset;
+      demuxer.reposition(tailStart, true);
+      for (let offset = tailStart; offset < sourceSize;) {
+        const length = sourceSize - offset < 4n * 1024n * 1024n
+          ? sourceSize - offset : 4n * 1024n * 1024n;
+        const data = await readRange(offset, length);
+        assert.ok(data.byteLength > 0, 'sparse-index tail ended unexpectedly');
+        assert.equal(demuxer.push(data), true);
+        offset += BigInt(data.byteLength);
+      }
+      demuxer.flush();
+      assert.equal(demuxer.finalizeIndex(), true);
+      assert.equal(demuxer.indexState(), 'partial',
+        'head-plus-tail session falsely finalized a complete index');
+    } else if (prefillBytesBeforeSeek > startupOffset) {
+      const prefillEnd = prefillBytesBeforeSeek < sourceSize
+        ? prefillBytesBeforeSeek : sourceSize;
+      while (startupOffset < prefillEnd) {
+        const length = prefillEnd - startupOffset < 4n * 1024n * 1024n
+          ? prefillEnd - startupOffset : 4n * 1024n * 1024n;
+        const data = await readRange(startupOffset, length);
+        assert.ok(data.byteLength > 0, 'bounded prefill ended unexpectedly');
+        assert.equal(demuxer.push(data), true);
+        startupOffset += BigInt(data.byteLength);
+      }
     }
     const media = {currentTime: targetTimeSeconds};
     const flowControl = createMsePlaybackFlowControl({
@@ -293,6 +368,7 @@ try {
       },
       checkError: () => { if (callbackError) throw callbackError; },
     });
+    const initialSelectedVideoPacketId = tracks.get(selectedVideo)?.packetId ?? null;
     try {
       let result;
       try {
@@ -330,9 +406,29 @@ try {
         `seek ${targetTimeSeconds}s changed the requested media clock`);
       assert.equal(flowControl.entryCovered(), true,
         `seek ${targetTimeSeconds}s did not form common A/V at the target`);
+      if (basename(mediaPath) === 'rain.tlv' && targetTimeSeconds === 181.719416 &&
+          prefillBytesBeforeSeek === 114n * 1024n * 1024n) {
+        assert.equal(result.budgetBytes, 48n * 1024n * 1024n,
+          'stateful 181.719416s did not promote the 32 MiB frontier RAP to the next tier');
+        assert.ok(result.bytesRead > 25n * 1024n * 1024n,
+          'stateful 181.719416s did not exercise the 32 MiB planning frontier');
+      }
+      assert.deepEqual(spliceEvents.map(event => event.type), ['video', 'audio'],
+        `formal ${targetTimeSeconds}s landing did not replace both old SourceBuffer timelines`);
+      for (const splice of spliceEvents) {
+        assert.equal(BigInt(splice.presentationTimeUs), result.rapPresentationTimeUs,
+          `${splice.type} landing splice did not use the selected source RAP`);
+        assert.equal(BigInt(splice.timestampOffsetUs), -presentationStartUs,
+          `${splice.type} landing splice lost the Recorded timeline mapping`);
+      }
+      const outputRapSeconds = Number(result.rapPresentationTimeUs - presentationStartUs) / 1000000;
+      assert.ok(ranges.audio[0]?.start >= outputRapSeconds - 0.000002,
+        `seek ${targetTimeSeconds}s retained AAC before the selected video RAP: ` +
+          JSON.stringify({outputRapSeconds, audio: ranges.audio}));
       const targetRanges = Object.fromEntries(Object.entries(ranges).map(([type, items]) => [
         type,
-        items.filter(range => range.start <= targetTimeSeconds + 0.001 &&
+        items.filter(range => range.start <= targetTimeSeconds +
+          (type === 'audio' ? 0.022 : 0.001) &&
           range.end >= targetTimeSeconds + 0.001),
       ]));
       if (targetTimeSeconds === 0) {
@@ -351,6 +447,8 @@ try {
       let damageStartUs = null;
       let concealed = false;
       for (const event of videoRecoveryEvents) {
+        if (event.videoTrackId === undefined ||
+            BigInt(event.videoTrackId) !== BigInt(selectedVideo)) continue;
         if (event.phase === 'observation-started') {
           damageStartUs = BigInt(event.presentationTimeUs);
         } else if (event.phase === 'stable-rap-committed' && damageStartUs !== null) {
@@ -361,17 +459,46 @@ try {
       }
       if (concealed) {
         assert.ok(Math.abs(targetRanges.video[0].start - targetTimeSeconds) <= 0.000002,
-          `concealed video did not begin at exact target ${targetTimeSeconds}s`);
+          `concealed video did not begin at exact target ${targetTimeSeconds}s: ` +
+            JSON.stringify({targetRanges, ranges, videoRecoveryEvents,
+              result: {
+                sourceTargetUs: result.sourceTargetUs.toString(),
+                rapPresentationTimeUs: result.rapPresentationTimeUs.toString(),
+                restartOffset: result.restartOffset.toString(),
+                bytesRead: result.bytesRead.toString(),
+                budgetBytes: result.budgetBytes.toString(),
+              }}, (_, value) => typeof value === 'bigint' ? value.toString() : value));
+      }
+      if (basename(mediaPath) === 'rain.tlv' && targetTimeSeconds === 371) {
+        assert.equal(initialSelectedVideoPacketId, 0xf300,
+          '371s regression did not begin from the preferred layer');
+        assert.equal(tracks.get(selectedVideo)?.packetId, 0xf301,
+          'seek into the damaged preferred interval did not land on rainfall video');
+        assert.equal(tracks.get(selectedAudio)?.packetId, 0xf314,
+          'seek into the damaged preferred interval did not use rainfall audio');
+      }
+      if (basename(mediaPath) === 'rain.tlv' && targetTimeSeconds === 178.849) {
+        assert.equal(initialSelectedVideoPacketId, 0xf300,
+          '178.849s regression did not begin from the preferred layer');
+        assert.equal(tracks.get(selectedVideo)?.packetId, 0xf301,
+          '178.849s seek did not land on rainfall video');
+        assert.equal(tracks.get(selectedAudio)?.packetId, 0xf314,
+          '178.849s seek did not use rainfall audio');
       }
       results.push({
         targetTimeSeconds,
+        initialSelectedVideoPacketId,
+        selectedVideoPacketId: tracks.get(selectedVideo)?.packetId ?? null,
+        selectedAudioPacketId: tracks.get(selectedAudio)?.packetId ?? null,
         rapTimeSeconds: Number(result.rapPresentationTimeUs) / 1000000,
         restartOffset: result.restartOffset.toString(),
         nextOffset: result.nextOffset.toString(),
         bytesRead: result.bytesRead.toString(),
+        budgetBytes: result.budgetBytes.toString(),
         landingMode: result.landingMode,
         targetRanges,
         concealed,
+        spliceEvents,
         videoRecoveryEvents,
       });
     } finally {

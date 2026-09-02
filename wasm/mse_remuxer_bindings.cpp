@@ -99,6 +99,19 @@ const char* recovery_action_name(
     return "none";
 }
 
+const char* av_recovery_state_name(
+    const tlvdemux::MseAvRecoveryState state) noexcept {
+    switch (state) {
+    case tlvdemux::MseAvRecoveryState::Starting: return "starting";
+    case tlvdemux::MseAvRecoveryState::Av: return "av";
+    case tlvdemux::MseAvRecoveryState::Switching: return "switching";
+    case tlvdemux::MseAvRecoveryState::HeldAudio: return "held-audio";
+    case tlvdemux::MseAvRecoveryState::Stalled: return "stalled";
+    case tlvdemux::MseAvRecoveryState::Restoring: return "restoring";
+    }
+    return "starting";
+}
+
 } // namespace
 
 class WasmMseRemuxer::Impl final : public tlvdemux::MseSink {
@@ -208,6 +221,27 @@ public:
         }
         event.set("phase", std::string(phase));
         emit("onMseVideoRecovery", event);
+    }
+
+    void onMseAvRecovery(
+        const tlvdemux::MseAvRecoveryEvidence& recovery) override {
+        if (!has("onMseAvRecovery")) return;
+        auto event = val::object();
+        event.set("type", std::string(recovery.state ==
+            tlvdemux::MseAvRecoveryState::Restoring
+                ? "recovery-candidate" : "recovery-state"));
+        event.set("state", std::string(av_recovery_state_name(recovery.state)));
+        event.set("avState", std::string(av_recovery_state_name(recovery.from_state)));
+        event.set("episodeId", recovery.episode_id);
+        event.set("videoTrackId", recovery.video_track_id);
+        event.set("audioTrackId", recovery.audio_track_id);
+        event.set("sourceRapTimeUs", recovery.source_rap_time_us);
+        event.set("commonAvBoundaryUs", recovery.common_av_boundary_us);
+        event.set("restartOffset", recovery.restart_offset);
+        event.set("timestampAnchorUs", recovery.timestamp_anchor_us);
+        event.set("generation", recovery.generation);
+        event.set("exact", recovery.state == tlvdemux::MseAvRecoveryState::Restoring);
+        emit("onMseAvRecovery", event);
     }
 
     void onMseVideoProperties(
@@ -339,6 +373,11 @@ void WasmMseRemuxer::beginMseRecordedSeek() {
     impl_->remuxer().beginMseRecordedSeek();
 }
 
+void WasmMseRemuxer::prepareMseRecordedSeekLanding(
+    const std::int64_t source_boundary_us) {
+    impl_->remuxer().prepareMseRecordedSeekLanding(source_boundary_us);
+}
+
 void WasmMseRemuxer::finishMseRecordedSeek(
     const std::int64_t playback_position_us) {
     impl_->remuxer().finishMseRecordedSeek(playback_position_us);
@@ -351,6 +390,10 @@ void WasmMseRemuxer::cancelMseRecordedSeek() {
 void WasmMseRemuxer::setPlaybackPosition(
     const std::int64_t presentation_time_us) {
     impl_->remuxer().setPlaybackPosition(presentation_time_us);
+}
+
+void WasmMseRemuxer::setRecoveryGeneration(const std::uint64_t generation) {
+    impl_->remuxer().setRecoveryGeneration(generation);
 }
 
 void WasmMseRemuxer::setSdrInHlg(

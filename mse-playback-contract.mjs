@@ -5,10 +5,12 @@ export const MSE_SEEK_READ_BUDGET_BYTES = 16 * 1024 * 1024;
 export const MSE_SEEK_MAX_READ_BUDGET_BYTES = 64 * 1024 * 1024;
 
 export const MsePlaybackMode = Object.freeze({
-  AUDIO_VIDEO: 'audio-video',
-  RECOVERING_VIDEO: 'recovering-video',
-  AUDIO_ONLY: 'audio-only',
-  RESTORING_VIDEO: 'restoring-video',
+  STARTING: 'starting',
+  AV: 'av',
+  SWITCHING: 'switching',
+  HELD_AUDIO: 'held-audio',
+  STALLED: 'stalled',
+  RESTORING: 'restoring',
 });
 
 export class MseStartupBufferError extends Error {
